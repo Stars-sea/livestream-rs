@@ -29,7 +29,7 @@ COPY . ./
 
 # Build with release profile (dynamic linking)
 RUN cargo build --release && \
-    strip target/release/medicloud-streaming-rs
+    strip target/release/livestream-rs
 
 FROM debian:trixie-slim
 
@@ -43,7 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/medicloud-streaming-rs ./
+COPY --from=builder /app/target/release/livestream-rs ./
 COPY --from=builder /app/settings.json ./
 
 ENV GRPC_PORT=50051
@@ -55,4 +55,4 @@ ENV RUST_LOG=info
 
 RUN mkdir ./cache
 
-ENTRYPOINT ["./medicloud-streaming-rs"]
+ENTRYPOINT ["./livestream-rs"]

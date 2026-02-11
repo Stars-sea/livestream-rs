@@ -1,4 +1,4 @@
-# medicloud-streaming-rs
+# livestream-rs
 
 使用 Rust 重写的 SRT 拉流项目  
 A project for SRT Streaming rewritten in Rust
@@ -36,7 +36,7 @@ cargo build --release
 ### Docker 构建 / Docker Build
 
 ```bash
-docker build -t medicloud-streaming-rs .
+docker build -t livestream-rs .
 ```
 
 ## 配置 / Configuration
@@ -78,7 +78,7 @@ export MINIO_BUCKET=videos
 export RUST_LOG=info
 
 # Run
-./target/release/medicloud-streaming-rs
+./target/release/livestream-rs
 ```
 
 ## API 使用 / API Usage
