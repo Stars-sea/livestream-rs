@@ -4,10 +4,10 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      REDIS_ADDRESS: redis://redis-service
-      MINIO_ENDPOINT: http://minio-service:9000
-      MINIO_ACCESS_KEY: admin
-      MINIO_SECRET_KEY: 123456MinIO
+      REDIS_URI: redis://redis-service
+      MINIO_URI: http://minio-service:9000
+      MINIO_ACCESSKEY: admin
+      MINIO_SECRETKEY: 123456MinIO
       MINIO_BUCKET: videos
       RUST_LOG: info
       GRPC_PORT: 50051

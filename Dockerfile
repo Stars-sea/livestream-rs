@@ -47,9 +47,10 @@ COPY --from=builder /app/target/release/livestream-rs ./
 COPY --from=builder /app/settings.json ./
 
 ENV GRPC_PORT=50051
-ENV MINIO_ENDPOINT=http://localhost:9000
-ENV MINIO_ACCESS_KEY=minioadmin
-ENV MINIO_SECRET_KEY=miniokey
+ENV REDIS_URI=redis://localhost:6379
+ENV MINIO_URI=http://localhost:9000
+ENV MINIO_ACCESSKEY=minioadmin
+ENV MINIO_SECRETKEY=miniokey
 ENV MINIO_BUCKET=videos
 ENV RUST_LOG=info
 

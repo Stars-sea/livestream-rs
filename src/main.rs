@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
 
     let settings = settings::Settings::load()?;
 
-    let redis_client = RedisClient::create(&env_var("REDIS_ADDRESS")?).await?;
+    let redis_client = RedisClient::create(&env_var("REDIS_URI")?).await?;
 
     let segment_complete_tx = spawn_minio_uploader().await?;
 
@@ -56,9 +56,9 @@ fn env_var(key: &str) -> Result<String> {
 
 async fn spawn_minio_uploader() -> Result<SegmentCompleteTx> {
     let minio_client = MinioClient::create(
-        &env_var("MINIO_ENDPOINT")?,
-        &env_var("MINIO_ACCESS_KEY")?,
-        &env_var("MINIO_SECRET_KEY")?,
+        &env_var("MINIO_URI")?,
+        &env_var("MINIO_ACCESSKEY")?,
+        &env_var("MINIO_SECRETKEY")?,
         &env_var("MINIO_BUCKET")?,
     )
     .await?;
