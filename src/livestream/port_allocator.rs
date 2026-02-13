@@ -18,7 +18,7 @@ impl PortAllocator {
     ///
     /// # Arguments
     /// * `start_port` - First port in the range (inclusive)
-    /// * `end_port` - Last port in the range (inclusive)
+    /// * `end_port` - Last port in the range (exclusive)
     pub fn new(start_port: u16, end_port: u16) -> Self {
         Self {
             start_port,
@@ -34,7 +34,7 @@ impl PortAllocator {
     /// `Some(port)` if an available port is found, `None` if all ports are in use.
     pub async fn allocate_safe_port(&self) -> Option<u16> {
         let mut allocated = self.allocated_ports.write().await;
-        for port in self.start_port..=self.end_port {
+        for port in self.start_port..self.end_port {
             if !allocated.contains(&port) && test_port(port).await {
                 allocated.insert(port);
                 return Some(port);
