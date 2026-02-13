@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-option csharp_namespace = "MediCloud.Application.Common.Protos";
+option csharp_namespace = "LiveService.Protos";
 
 package livestream;
 
