@@ -46,17 +46,20 @@ docker build -t livestream-rs .
 | 变量名 / Variable | 描述 / Description | 默认值 / Default |
 |-------------------|-------------------|------------------|
 | `GRPC_PORT` | gRPC 服务端口 / gRPC server port | `50051` |
-| `MINIO_ENDPOINT` | MinIO 端点 / MinIO endpoint | `http://localhost:9000` |
-| `MINIO_ACCESS_KEY` | MinIO 访问密钥 / MinIO access key | `minioadmin` |
-| `MINIO_SECRET_KEY` | MinIO 密钥 / MinIO secret key | `miniokey` |
+| `REDIS_URI` | Redis URI | `redis://localhost:6379` |
+| `MINIO_URI` | MinIO URI | `http://localhost:9000` |
+| `MINIO_ACCESSKEY` | MinIO 访问密钥 / MinIO access key | `minioadmin` |
+| `MINIO_SECRETKEY` | MinIO 密钥 / MinIO secret key | `miniokey` |
 | `MINIO_BUCKET` | MinIO 存储桶 / MinIO bucket | `videos` |
 | `RUST_LOG` | 日志级别 / Log level | `info` |
+| `SRT_PORTS` | SRT 监听端口范围 / SRT listening port range | `4000-4100` |
+| `SEGMENT_TIME` | 分段时长 / Segment duration | `10` (sec) |
 
 ### settings.json
 
 ```json
 {
-  "srt_ports": "4000-5000",
+  "srt_ports": "4000-4100",
   "cache_dir": "./cache",
   "segment_time": 10
 }
@@ -71,11 +74,14 @@ docker build -t livestream-rs .
 ```bash
 # Set environment variables
 export GRPC_PORT=50051
-export MINIO_ENDPOINT=http://localhost:9000
-export MINIO_ACCESS_KEY=minioadmin
-export MINIO_SECRET_KEY=miniokey
+export REDIS_URI=redis://localhost:6379
+export MINIO_URI=http://localhost:9000
+export MINIO_ACCESSKEY=minioadmin
+export MINIO_SECRETKEY=miniokey
 export MINIO_BUCKET=videos
 export RUST_LOG=info
+export SRT_PORTS=4000-4100
+export SEGMENT_TIME=10
 
 # Run
 ./target/release/livestream-rs

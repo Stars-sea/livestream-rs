@@ -25,8 +25,22 @@ impl Settings {
         let path = Path::new(Self::DEFAULT_PATH);
 
         let data = fs::read_to_string(path)?;
-        serde_json::from_str(&data)
-            .with_context(|| format!("Failed to parse settings from {}", path.display()))
+        let mut settings: Settings = serde_json::from_str(&data)
+            .with_context(|| format!("Failed to parse settings from {}", path.display()))?;
+
+        if let Ok(srt_ports) = std::env::var("SRT_PORTS") {
+            settings.srt_ports = srt_ports;
+        }
+
+        if let Ok(segment_time_str) = std::env::var("SEGMENT_TIME") {
+            if let Ok(segment_time) = segment_time_str.parse::<i32>() {
+                settings.segment_time = segment_time;
+            } else {
+                eprintln!("Warning: Invalid SEGMENT_TIME environment variable, ignoring.");
+            }
+        }
+
+        Ok(settings)
     }
 
     /// Parses the SRT port range from the configuration.
