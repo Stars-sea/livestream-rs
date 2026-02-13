@@ -1,3 +1,4 @@
+use log::warn;
 use tokio_stream::StreamExt;
 
 use super::events::{
@@ -15,7 +16,7 @@ pub(super) async fn stream_connected_handler(rx: StreamConnectedRx, redis: Redis
             .publish_stream_event(connected.live_id(), "connected")
             .await;
         if let Err(e) = result {
-            eprintln!("Failed to publish stream event: {}", e);
+            warn!("Failed to publish stream event: {}", e);
         }
     }
 }
@@ -30,7 +31,7 @@ pub(super) async fn stream_terminate_handler(rx: StreamTerminateRx, redis: Redis
             .publish_stream_event(connected.live_id(), "terminate")
             .await;
         if let Err(e) = result {
-            eprintln!("Failed to publish stream event: {}", e);
+            warn!("Failed to publish stream event: {}", e);
         }
     }
 }
