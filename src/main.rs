@@ -8,12 +8,12 @@ use tonic::transport::Server;
 
 use crate::livestream::events::{OnSegmentComplete, SegmentCompleteStream, SegmentCompleteTx};
 use crate::livestream::service::{LiveStreamService, LivestreamServer};
-use crate::persistence::minio::MinioClient;
-use crate::persistence::redis::RedisClient;
+use crate::services::minio::MinioClient;
+use crate::services::redis::RedisClient;
 
 mod core;
 mod livestream;
-mod persistence;
+mod services;
 mod settings;
 
 #[tokio::main]
@@ -64,7 +64,7 @@ async fn spawn_minio_uploader() -> Result<SegmentCompleteTx> {
     .await?;
 
     let (tx, rx) = OnSegmentComplete::channel();
-    tokio::spawn(persistence::minio::minio_uploader(
+    tokio::spawn(services::minio::minio_uploader(
         SegmentCompleteStream::new(rx),
         minio_client,
     ));

@@ -7,7 +7,8 @@ use super::port_allocator::PortAllocator;
 use super::pull_stream::pull_srt_loop;
 use super::stream_info::StreamInfo;
 
-use crate::persistence::redis::RedisClient;
+use crate::livestream::handlers;
+use crate::services::redis::RedisClient;
 use crate::settings::Settings;
 
 use std::pin::Pin;
@@ -58,8 +59,19 @@ impl LiveStreamService {
     ) -> Self {
         let (stop_stream_tx, _) = OnStopStream::channel(STOP_STREAM_CHANNEL_SIZE);
 
-        let (stream_connected_tx, _) = OnStreamConnected::channel(STREAM_EVENT_CHANNEL_SIZE);
-        let (stream_terminate_tx, _) = OnStreamTerminate::channel(STREAM_EVENT_CHANNEL_SIZE);
+        let (stream_connected_tx, stream_connected_rx) =
+            OnStreamConnected::channel(STREAM_EVENT_CHANNEL_SIZE);
+        let (stream_terminate_tx, stream_terminate_rx) =
+            OnStreamTerminate::channel(STREAM_EVENT_CHANNEL_SIZE);
+
+        tokio::spawn(handlers::stream_connected_handler(
+            stream_connected_rx,
+            redis_client.clone(),
+        ));
+        tokio::spawn(handlers::stream_terminate_handler(
+            stream_terminate_rx,
+            redis_client.clone(),
+        ));
 
         let port_allocator = {
             let (start_port, end_port) = settings

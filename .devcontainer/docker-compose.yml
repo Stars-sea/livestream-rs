@@ -13,7 +13,7 @@ services:
       GRPC_PORT: 50051
     ports:
       - "50051:50051"
-      - "4000-5000:4000-5000/udp"
+      - "4000-4100:4000-4100/udp"
     volumes:
       - ../..:/workspaces:cached
     networks:

@@ -16,15 +16,15 @@ impl RedisClient {
     }
 
     fn stream_info_key(live_id: &str) -> String {
-        format!("streaming.{live_id}")
+        format!("livestream:streams:{live_id}")
     }
 
     pub async fn get_live_ids(&self) -> Result<Vec<String>> {
         let mut conn = self.conn.clone();
-        let keys: Vec<String> = conn.keys("streaming.*").await?;
+        let keys: Vec<String> = conn.keys("livestream:streams:").await?;
         let live_ids = keys
             .iter()
-            .map(|key| key.trim_start_matches("streaming.").to_string())
+            .map(|key| key.trim_start_matches("livestream:streams:").to_string())
             .collect();
         Ok(live_ids)
     }
@@ -59,6 +59,13 @@ impl RedisClient {
         if conn.del(key).await? != 1 {
             bail!("Errors occurred when removing stream info {live_id} from the cache")
         }
+        Ok(())
+    }
+
+    pub async fn publish_stream_event(&self, live_id: &str, event: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let channel = format!("livestream:events:{live_id}");
+        conn.publish(channel, event).await?;
         Ok(())
     }
 }
