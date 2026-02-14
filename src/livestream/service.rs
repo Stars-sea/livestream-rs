@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use log::{info, warn};
-use tokio::fs;
+use tokio::{fs, sync::oneshot, task};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::{Request, Response, Status};
@@ -137,7 +137,11 @@ impl LiveStreamService {
         Ok(())
     }
 
-    pub async fn start_stream_impl(&self, stream_info: StreamInfo) -> Result<()> {
+    pub async fn start_stream_impl(
+        &self,
+        stream_info: StreamInfo,
+        created_signal: Option<oneshot::Sender<StreamInfo>>,
+    ) -> Result<()> {
         let live_id = stream_info.live_id().to_string();
         info!(
             "Ready to pull stream at port {} (LiveId: {live_id})",
@@ -147,6 +151,12 @@ impl LiveStreamService {
         self.redis_client
             .cache_stream_info(stream_info.clone())
             .await?;
+
+        if let Some(created_signal) = created_signal {
+            created_signal.send(stream_info.clone()).map_err(|_| {
+                anyhow::anyhow!("Failed to send created signal for stream {live_id}")
+            })?;
+        }
 
         let result = pull_srt_loop(
             self.stream_connected_tx.clone(),
@@ -209,10 +219,18 @@ impl Livestream for Arc<LiveStreamService> {
             Err(e) => return Err(Status::resource_exhausted(e.to_string())),
         };
 
-        let cloned_self = Arc::clone(self);
-        tokio::spawn(async move { cloned_self.start_stream_impl(stream_info).await });
+        let (created_tx, created_rx) = oneshot::channel();
 
-        if let Some(info) = self.get_stream_info_impl(request.live_id.clone()).await {
+        let cloned_self = Arc::clone(self);
+        tokio::spawn(async move {
+            cloned_self
+                .start_stream_impl(stream_info, Some(created_tx))
+                .await
+        });
+
+        task::yield_now().await;
+
+        if let Ok(info) = created_rx.await {
             let resp: StartPullStreamResponse = info.into();
             Ok(Response::new(resp))
         } else {
