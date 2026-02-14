@@ -2,7 +2,7 @@ use std::env::var;
 use std::sync::Arc;
 
 use anyhow::Result;
-use log::info;
+use log::{info, warn};
 use tokio::signal;
 use tonic::transport::Server;
 
@@ -41,9 +41,11 @@ async fn main() -> Result<()> {
     let grpc_addr = format!("0.0.0.0:{}", grpc_port);
     info!("Server will listen on {}", grpc_addr);
 
+    let livestream_clone = Arc::clone(&livestream);
+
     Server::builder()
         .add_service(LivestreamServer::new(livestream))
-        .serve_with_shutdown(grpc_addr.parse()?, shutdown_signal())
+        .serve_with_shutdown(grpc_addr.parse()?, shutdown_signal(livestream_clone))
         .await?;
 
     info!("Server shutdown complete");
@@ -73,7 +75,7 @@ async fn spawn_minio_uploader() -> Result<SegmentCompleteTx> {
 }
 
 /// Handles graceful shutdown on SIGINT (Ctrl+C) or SIGTERM
-async fn shutdown_signal() {
+async fn shutdown_signal(server: Arc<LiveStreamService>) {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
@@ -91,7 +93,6 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
-    // TODO: Notify tasks to shut down gracefully
     tokio::select! {
         _ = ctrl_c => {
             info!("Received Ctrl+C signal, shutting down gracefully...");
@@ -99,5 +100,17 @@ async fn shutdown_signal() {
         _ = terminate => {
             info!("Received SIGTERM signal, shutting down gracefully...");
         },
+    }
+
+    let active_streams = server.list_active_streams_impl().await.unwrap_or_else(|e| {
+        warn!("Failed to list active streams during shutdown: {}", e);
+        vec![]
+    });
+
+    for live_id in active_streams {
+        info!("Cleaning up stream: {}", live_id);
+        server.stop_stream_impl(&live_id).await.unwrap_or_else(|e| {
+            warn!("Failed to stop stream {}: {}", live_id, e);
+        });
     }
 }

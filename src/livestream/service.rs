@@ -137,7 +137,7 @@ impl LiveStreamService {
         Ok(())
     }
 
-    async fn start_stream_impl(&self, stream_info: StreamInfo) -> Result<()> {
+    pub async fn start_stream_impl(&self, stream_info: StreamInfo) -> Result<()> {
         let live_id = stream_info.live_id().to_string();
         info!(
             "Ready to pull stream at port {} (LiveId: {live_id})",
@@ -165,16 +165,16 @@ impl LiveStreamService {
         result
     }
 
-    async fn stop_stream_impl(&self, live_id: &str) -> Result<()> {
+    pub async fn stop_stream_impl(&self, live_id: &str) -> Result<()> {
         self.stop_stream_tx.send(OnStopStream::new(live_id))?;
         Ok(())
     }
 
-    async fn list_active_streams_impl(&self) -> Result<Vec<String>> {
+    pub async fn list_active_streams_impl(&self) -> Result<Vec<String>> {
         self.redis_client.get_live_ids().await
     }
 
-    async fn get_stream_info_impl(&self, live_id: String) -> Option<StreamInfo> {
+    pub async fn get_stream_info_impl(&self, live_id: String) -> Option<StreamInfo> {
         match self.redis_client.find_stream_info(&live_id).await {
             Ok(info) => info,
             Err(e) => {
