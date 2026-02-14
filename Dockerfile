@@ -27,6 +27,8 @@ RUN mkdir -p ~/.cargo && \
 WORKDIR /app
 COPY . ./
 
+RUN cargo fetch
+
 # Build with release profile (dynamic linking)
 RUN cargo build --release && \
     strip target/release/livestream-rs

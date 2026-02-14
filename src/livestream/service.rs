@@ -11,15 +11,13 @@ use crate::livestream::handlers;
 use crate::services::redis::RedisClient;
 use crate::settings::Settings;
 
-use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
-use async_stream::try_stream;
 use log::{info, warn};
 use tokio::fs;
+use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
-use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status};
 
 pub use super::grpc::livestream_server::LivestreamServer;
@@ -184,34 +182,6 @@ impl LiveStreamService {
             }
         }
     }
-
-    fn watch_stream_status_impl(
-        live_id: String,
-        connected_rx: StreamConnectedRx,
-        terminate_rx: StreamTerminateRx,
-    ) -> impl Stream<Item = Result<WatchStreamStatusResponse>> {
-        let mut connected_stream = StreamConnectedStream::new(connected_rx);
-        let mut terminate_stream = StreamTerminateStream::new(terminate_rx);
-
-        try_stream! {
-            loop {
-                tokio::select! {
-                    Some(Ok(connected)) = connected_stream.next() => {
-                        if connected.live_id() == live_id {
-                            yield WatchStreamStatusResponse { live_id: live_id.clone(), is_streaming: true };
-                        }
-                    }
-
-                    Some(Ok(terminate)) = terminate_stream.next() => {
-                        if terminate.live_id() == live_id {
-                            yield WatchStreamStatusResponse { live_id: live_id.clone(), is_streaming: false };
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[tonic::async_trait]
@@ -298,31 +268,6 @@ impl Livestream for Arc<LiveStreamService> {
         } else {
             Err(Status::not_found("Stream not found"))
         }
-    }
-
-    type WatchStreamStatusStream =
-        Pin<Box<dyn Stream<Item = Result<WatchStreamStatusResponse, Status>> + Send>>;
-
-    async fn watch_stream_status(
-        &self,
-        request: Request<WatchStreamStatusRequest>,
-    ) -> Result<Response<Self::WatchStreamStatusStream>, Status> {
-        let live_id = request.into_inner().live_id;
-
-        // Validate input
-        if live_id.is_empty() {
-            return Err(Status::invalid_argument("live_id cannot be empty"));
-        }
-
-        let stream = LiveStreamService::watch_stream_status_impl(
-            live_id.clone(),
-            self.stream_connected_tx.subscribe(),
-            self.stream_terminate_tx.subscribe(),
-        )
-        .map(|r| r.map_err(|e| Status::cancelled(e.to_string())));
-        Ok(Response::new(
-            Box::pin(stream) as Self::WatchStreamStatusStream
-        ))
     }
 }
 
