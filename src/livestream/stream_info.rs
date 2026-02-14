@@ -7,6 +7,7 @@ use crate::settings::Settings;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StreamInfo {
     live_id: String,
+    host: String,
     port: u16,
 
     passphrase: String,
@@ -16,11 +17,18 @@ pub struct StreamInfo {
 }
 
 impl StreamInfo {
-    pub fn new(live_id: String, port: u16, passphrase: String, settings: &Settings) -> Self {
+    pub fn new(
+        live_id: String,
+        host: String,
+        port: u16,
+        passphrase: String,
+        settings: &Settings,
+    ) -> Self {
         let cache_dir = PathBuf::from(&settings.cache_dir).join(&live_id);
         let segment_duration = settings.segment_time;
         Self {
             live_id,
+            host,
             port,
             passphrase,
             cache_dir,
@@ -30,6 +38,10 @@ impl StreamInfo {
 
     pub fn live_id(&self) -> &str {
         &self.live_id
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
     }
 
     pub fn port(&self) -> u16 {

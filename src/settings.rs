@@ -6,6 +6,8 @@ use std::{fs, path::Path};
 /// Application settings loaded from settings.json
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Settings {
+    /// Host for SRT listeners (e.g., "srt.example.local")
+    pub srt_host: String,
     /// Port range for SRT listeners (format: "start-end", e.g., "4000-5000")
     pub srt_ports: String,
     /// Segment duration in seconds for HLS/TS output
@@ -27,6 +29,10 @@ impl Settings {
         let data = fs::read_to_string(path)?;
         let mut settings: Settings = serde_json::from_str(&data)
             .with_context(|| format!("Failed to parse settings from {}", path.display()))?;
+
+        if let Ok(srt_host) = std::env::var("SRT_HOST") {
+            settings.srt_host = srt_host;
+        }
 
         if let Ok(srt_ports) = std::env::var("SRT_PORTS") {
             settings.srt_ports = srt_ports;

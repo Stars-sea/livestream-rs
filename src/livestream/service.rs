@@ -100,6 +100,7 @@ impl LiveStreamService {
 
         let info = StreamInfo::new(
             live_id.to_string(),
+            self.settings.srt_host.clone(),
             port,
             passphrase.to_string(),
             &self.settings,
@@ -275,6 +276,7 @@ impl Into<StartPullStreamResponse> for StreamInfo {
     fn into(self) -> StartPullStreamResponse {
         StartPullStreamResponse {
             live_id: self.live_id().to_string(),
+            host: self.host().to_string(),
             port: self.port() as u32,
             passphrase: self.passphrase().to_string(),
         }
@@ -284,6 +286,7 @@ impl Into<StartPullStreamResponse> for StreamInfo {
 impl Into<GetStreamInfoResponse> for StreamInfo {
     fn into(self) -> GetStreamInfoResponse {
         GetStreamInfoResponse {
+            host: self.host().to_string(),
             port: self.port() as u32,
             passphrase: self.passphrase().to_string(),
         }

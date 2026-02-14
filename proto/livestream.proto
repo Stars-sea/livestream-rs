@@ -21,8 +21,9 @@ message StartPullStreamRequest {
 
 message StartPullStreamResponse {
   string live_id = 1;
-  uint32 port = 2;
-  string passphrase = 3;
+  string host = 2;
+  uint32 port = 3;
+  string passphrase = 4;
 }
 
 message StopPullStreamRequest {
@@ -46,5 +47,6 @@ message GetStreamInfoRequest {
 
 message GetStreamInfoResponse {
   uint32 port = 1;
-  string passphrase = 2;
+  string host = 2;
+  string passphrase = 3;
 }
