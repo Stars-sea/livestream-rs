@@ -41,11 +41,9 @@ async fn main() -> Result<()> {
     let grpc_addr = format!("0.0.0.0:{}", grpc_port);
     info!("Server will listen on {}", grpc_addr);
 
-    let livestream_clone = Arc::clone(&livestream);
-
     Server::builder()
-        .add_service(LivestreamServer::new(livestream))
-        .serve_with_shutdown(grpc_addr.parse()?, shutdown_signal(livestream_clone))
+        .add_service(LivestreamServer::new(livestream.clone()))
+        .serve_with_shutdown(grpc_addr.parse()?, shutdown_signal(livestream))
         .await?;
 
     info!("Server shutdown complete");
