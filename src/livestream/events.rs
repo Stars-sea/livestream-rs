@@ -2,8 +2,8 @@
 
 use crate::core::output::TsOutputContext;
 use std::path::{Path, PathBuf};
-use tokio::sync::{broadcast, mpsc};
-use tokio_stream::wrappers::{BroadcastStream, UnboundedReceiverStream};
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
 
 #[derive(Clone, Debug)]
 pub struct OnSegmentComplete {
@@ -12,14 +12,14 @@ pub struct OnSegmentComplete {
     path: PathBuf,
 }
 
-pub type SegmentCompleteRx = mpsc::UnboundedReceiver<OnSegmentComplete>;
-pub type SegmentCompleteTx = mpsc::UnboundedSender<OnSegmentComplete>;
+pub type SegmentCompleteRx = broadcast::Receiver<OnSegmentComplete>;
+pub type SegmentCompleteTx = broadcast::Sender<OnSegmentComplete>;
 
-pub type SegmentCompleteStream = UnboundedReceiverStream<OnSegmentComplete>;
+pub type SegmentCompleteStream = BroadcastStream<OnSegmentComplete>;
 
 impl OnSegmentComplete {
-    pub fn channel() -> (SegmentCompleteTx, SegmentCompleteRx) {
-        mpsc::unbounded_channel()
+    pub fn channel(capacity: usize) -> (SegmentCompleteTx, SegmentCompleteRx) {
+        broadcast::channel(capacity)
     }
 
     pub fn new(live_id: &str, segment_id: String, path: PathBuf) -> Self {

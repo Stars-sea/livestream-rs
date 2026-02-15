@@ -1,7 +1,7 @@
 //! MinIO/S3 client for uploading stream segments.
 
 use anyhow::Result;
-use log::{debug, info, warn};
+use log::debug;
 use minio::s3::Client;
 use minio::s3::builders::ObjectContent;
 use minio::s3::creds::StaticProvider;
@@ -9,10 +9,6 @@ use minio::s3::http::BaseUrl;
 use minio::s3::types::S3Api;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::fs;
-use tokio_stream::StreamExt;
-
-use crate::livestream::events::SegmentCompleteStream;
 
 /// Client for interacting with MinIO or S3-compatible storage.
 #[derive(Debug, Clone)]
@@ -71,33 +67,4 @@ impl MinioClient {
         debug!("File {} uploaded", filename);
         Ok(())
     }
-}
-
-pub async fn minio_uploader(
-    mut stream: SegmentCompleteStream,
-    minio: MinioClient,
-) -> anyhow::Result<()> {
-    while let Some(complete_info) = stream.next().await {
-        let path = complete_info.path();
-        info!("Uploading file {}", path.display());
-
-        let storage_key = format!("{}/{}", complete_info.live_id(), complete_info.segment_id());
-        let upload_resp = minio
-            .upload_file(
-                storage_key.as_str(),
-                fs::canonicalize(&path).await?.as_path(),
-            )
-            .await;
-
-        if let Err(e) = upload_resp {
-            warn!("Upload failed for {}: {:?}", path.display(), e);
-            continue;
-        }
-
-        debug!("Remove file {}", path.display());
-        if fs::remove_file(&path).await.is_err() {
-            warn!("Failed to remove file {}", path.display());
-        }
-    }
-    Ok(())
 }

@@ -6,10 +6,8 @@ use log::{info, warn};
 use tokio::signal;
 use tonic::transport::Server;
 
-use crate::livestream::events::{OnSegmentComplete, SegmentCompleteStream, SegmentCompleteTx};
-use crate::livestream::service::{LiveStreamService, LivestreamServer};
-use crate::services::minio::MinioClient;
-use crate::services::redis::RedisClient;
+use crate::livestream::{LiveStreamService, LivestreamServer};
+use crate::services::{MinioClient, RedisClient};
 
 mod core;
 mod livestream;
@@ -27,15 +25,17 @@ async fn main() -> Result<()> {
 
     let settings = settings::Settings::load()?;
 
+    let minio_client = MinioClient::create(
+        &env_var("MINIO_URI")?,
+        &env_var("MINIO_ACCESSKEY")?,
+        &env_var("MINIO_SECRETKEY")?,
+        &env_var("MINIO_BUCKET")?,
+    )
+    .await?;
+
     let redis_client = RedisClient::create(&env_var("REDIS_URI")?).await?;
 
-    let segment_complete_tx = spawn_minio_uploader().await?;
-
-    let livestream = Arc::new(LiveStreamService::new(
-        redis_client,
-        segment_complete_tx,
-        settings,
-    ));
+    let livestream = Arc::new(LiveStreamService::new(minio_client, redis_client, settings));
 
     let grpc_port = env_var("GRPC_PORT")?;
     let grpc_addr = format!("0.0.0.0:{}", grpc_port);
@@ -52,24 +52,6 @@ async fn main() -> Result<()> {
 
 fn env_var(key: &str) -> Result<String> {
     var(key).map_err(|_| anyhow::anyhow!("{} environment variable not set", key))
-}
-
-async fn spawn_minio_uploader() -> Result<SegmentCompleteTx> {
-    let minio_client = MinioClient::create(
-        &env_var("MINIO_URI")?,
-        &env_var("MINIO_ACCESSKEY")?,
-        &env_var("MINIO_SECRETKEY")?,
-        &env_var("MINIO_BUCKET")?,
-    )
-    .await?;
-
-    let (tx, rx) = OnSegmentComplete::channel();
-    tokio::spawn(services::minio::minio_uploader(
-        SegmentCompleteStream::new(rx),
-        minio_client,
-    ));
-
-    Ok(tx)
 }
 
 /// Handles graceful shutdown on SIGINT (Ctrl+C) or SIGTERM
