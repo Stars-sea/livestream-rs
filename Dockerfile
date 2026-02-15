@@ -21,8 +21,12 @@ RUN mkdir -p ~/.cargo && \
     echo "replace-with = 'tuna'" >> ~/.cargo/config.toml && \
     echo "[source.tuna]" >> ~/.cargo/config.toml && \
     echo "registry = 'sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml && \
-    echo "[registries.mirror]" >> ~/.cargo/config.toml && \
-    echo "index = 'sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml
+    echo "[registries.tuna]" >> ~/.cargo/config.toml && \
+    echo "index = 'sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml && \
+    echo "[source.ustc]" >> ~/.cargo/config.toml && \
+    echo "registry = 'sparse+https://mirrors.ustc.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml && \
+    echo "[registries.ustc]" >> ~/.cargo/config.toml && \
+    echo "index = 'sparse+https://mirrors.ustc.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml
 
 WORKDIR /app
 COPY . ./
