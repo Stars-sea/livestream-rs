@@ -151,9 +151,10 @@ impl LiveStreamService {
             self.stream_connected_tx.clone(),
             self.stream_terminate_tx.clone(),
             self.segment_complete_tx.clone(),
-            self.stop_stream_tx.subscribe(),
-            &stream_info,
-        );
+            self.stop_stream_tx.clone(),
+            stream_info.clone(),
+        )
+        .await;
 
         self.redis_client.remove_stream_info(&live_id).await?;
 

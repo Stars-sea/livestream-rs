@@ -61,6 +61,9 @@ impl StreamInfo {
     }
 
     pub fn listener_url(&self) -> String {
-        format!("srt://:{}?mode=listener", self.port)
+        format!(
+            "srt://:{}?mode=listener&passphrase={}&srt_streamid={}",
+            self.port, self.passphrase, self.live_id
+        )
     }
 }
