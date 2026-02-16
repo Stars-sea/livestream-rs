@@ -44,8 +44,20 @@ services:
   redis-service:
     image: redis:alpine
     container_name: redis-service
-    # ports:
-    #   - "6379:6379"
+    ports:
+      - "6379:6379"
+    networks:
+      - devcontainer-net
+
+  redis-insight:
+    image: redis/redisinsight:2.70
+    container_name: redisinsight
+    ports:
+      - "5540:5540"
+    environment:
+      - REDISINSIGHT_ACCEPT_LICENSE=true
+    depends_on:
+      - redis-service
     networks:
       - devcontainer-net
 
