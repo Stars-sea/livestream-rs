@@ -190,7 +190,7 @@ impl Livestream for Arc<LiveStreamService> {
     async fn start_pull_stream(
         &self,
         request: Request<StartPullStreamRequest>,
-    ) -> Result<Response<StartPullStreamResponse>, Status> {
+    ) -> Result<Response<StreamInfoResponse>, Status> {
         let request = request.into_inner();
 
         // Validate input
@@ -213,7 +213,7 @@ impl Livestream for Arc<LiveStreamService> {
         let cloned_info = stream_info.clone();
         tokio::spawn(async move { cloned_self.start_stream_impl(cloned_info).await });
 
-        let resp: StartPullStreamResponse = stream_info.into();
+        let resp: StreamInfoResponse = stream_info.into();
         Ok(Response::new(resp))
     }
 
@@ -252,7 +252,7 @@ impl Livestream for Arc<LiveStreamService> {
     async fn get_stream_info(
         &self,
         request: Request<GetStreamInfoRequest>,
-    ) -> Result<Response<GetStreamInfoResponse>, Status> {
+    ) -> Result<Response<StreamInfoResponse>, Status> {
         let live_id = request.into_inner().live_id;
 
         // Validate input
@@ -261,7 +261,7 @@ impl Livestream for Arc<LiveStreamService> {
         }
 
         if let Some(info) = self.get_stream_info_impl(live_id).await {
-            let resp: GetStreamInfoResponse = info.into();
+            let resp: StreamInfoResponse = info.into();
             Ok(Response::new(resp))
         } else {
             Err(Status::not_found("Stream not found"))
@@ -269,20 +269,10 @@ impl Livestream for Arc<LiveStreamService> {
     }
 }
 
-impl Into<StartPullStreamResponse> for StreamInfo {
-    fn into(self) -> StartPullStreamResponse {
-        StartPullStreamResponse {
+impl Into<StreamInfoResponse> for StreamInfo {
+    fn into(self) -> StreamInfoResponse {
+        StreamInfoResponse {
             live_id: self.live_id().to_string(),
-            host: self.host().to_string(),
-            port: self.port() as u32,
-            passphrase: self.passphrase().to_string(),
-        }
-    }
-}
-
-impl Into<GetStreamInfoResponse> for StreamInfo {
-    fn into(self) -> GetStreamInfoResponse {
-        GetStreamInfoResponse {
             host: self.host().to_string(),
             port: self.port() as u32,
             passphrase: self.passphrase().to_string(),

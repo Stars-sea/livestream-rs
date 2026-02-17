@@ -5,13 +5,13 @@ option csharp_namespace = "LiveService.Protos";
 package livestream;
 
 service Livestream {
-  rpc StartPullStream (StartPullStreamRequest) returns (StartPullStreamResponse);
+  rpc StartPullStream (StartPullStreamRequest) returns (StreamInfoResponse);
 
   rpc StopPullStream (StopPullStreamRequest) returns (StopPullStreamResponse);
 
   rpc ListActiveStreams (ListActiveStreamsRequest) returns (ListActiveStreamsResponse);
 
-  rpc GetStreamInfo (GetStreamInfoRequest) returns (GetStreamInfoResponse);
+  rpc GetStreamInfo (GetStreamInfoRequest) returns (StreamInfoResponse);
 }
 
 message StartPullStreamRequest {
@@ -19,7 +19,7 @@ message StartPullStreamRequest {
   string passphrase = 2;
 }
 
-message StartPullStreamResponse {
+message StreamInfoResponse {
   string live_id = 1;
   string host = 2;
   uint32 port = 3;
@@ -43,10 +43,4 @@ message ListActiveStreamsResponse {
 
 message GetStreamInfoRequest {
   string live_id = 1;
-}
-
-message GetStreamInfoResponse {
-  uint32 port = 1;
-  string host = 2;
-  string passphrase = 3;
 }
