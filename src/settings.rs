@@ -40,7 +40,7 @@ impl Settings {
             settings.srt_ports = srt_ports;
         }
 
-        if let Ok(grpc_callback) = std::env::var("GRPC_CALLBACK") {
+        if let Ok(grpc_callback) = std::env::var("LIVE_SVC_GRPC") {
             settings.grpc_callback = grpc_callback;
         }
 
