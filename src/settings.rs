@@ -10,6 +10,8 @@ pub struct Settings {
     pub srt_host: String,
     /// Port range for SRT listeners (format: "start-end", e.g., "4000-5000")
     pub srt_ports: String,
+    /// gRPC callback URL for stream events (e.g., "http://localhost:50051")
+    pub grpc_callback: String,
     /// Segment duration in seconds for HLS/TS output
     pub segment_time: i32,
     /// Directory for temporary cache files
@@ -36,6 +38,10 @@ impl Settings {
 
         if let Ok(srt_ports) = std::env::var("SRT_PORTS") {
             settings.srt_ports = srt_ports;
+        }
+
+        if let Ok(grpc_callback) = std::env::var("GRPC_CALLBACK") {
+            settings.grpc_callback = grpc_callback;
         }
 
         if let Ok(segment_time_str) = std::env::var("SEGMENT_TIME") {

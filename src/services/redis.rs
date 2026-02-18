@@ -61,13 +61,6 @@ impl RedisClient {
         }
         Ok(())
     }
-
-    pub async fn publish_stream_event(&self, live_id: &str, event: &str) -> Result<()> {
-        let mut conn = self.conn.clone();
-        let channel = format!("livestream:events:{live_id}");
-        conn.publish(channel, event).await?;
-        Ok(())
-    }
 }
 
 impl ToRedisArgs for StreamInfo {

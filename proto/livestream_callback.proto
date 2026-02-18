@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+option csharp_namespace = "LiveService.Protos";
+
+package livestream;
+
+service LivestreamCallback {
+  rpc NotifyLivestreamConnected (NotifyConnectedRequest) returns (NotifyResponse);
+
+  rpc NotifyLivestreamTerminate (NotifyTerminateRequest) returns (NotifyResponse);
+}
+
+message NotifyConnectedRequest {
+  string live_id = 1;
+}
+
+message NotifyTerminateRequest {
+  string live_id = 1;
+  optional string error_message = 2;
+}
+
+message NotifyResponse {
+}

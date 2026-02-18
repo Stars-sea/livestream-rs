@@ -62,11 +62,11 @@ impl LiveStreamService {
         ));
         tokio::spawn(handlers::stream_connected_handler(
             stream_connected_rx,
-            redis_client.clone(),
+            settings.grpc_callback.clone(),
         ));
         tokio::spawn(handlers::stream_terminate_handler(
             stream_terminate_rx,
-            redis_client.clone(),
+            settings.grpc_callback.clone(),
         ));
 
         let port_allocator = {

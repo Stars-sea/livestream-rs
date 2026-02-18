@@ -1,6 +1,7 @@
 {
   "srt_host": "srt.example.local",
   "srt_ports": "4000-4100",
+  "grpc_callback": "http://localhost:50051",
   "cache_dir": "./cache",
   "segment_time": 10
 }
