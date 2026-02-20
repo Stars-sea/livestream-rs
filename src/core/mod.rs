@@ -11,9 +11,16 @@ use log::Level;
 
 pub mod context;
 pub mod input;
-pub mod output;
 pub mod packet;
 mod stream;
+
+mod flv_output;
+mod ts_output;
+
+pub mod output {
+    pub use super::flv_output::*;
+    pub use super::ts_output::*;
+}
 
 /// Sets the FFmpeg logging level based on Rust log levels.
 #[allow(dead_code)]

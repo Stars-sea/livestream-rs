@@ -1,6 +1,7 @@
 //! FFmpeg packet wrapper for safe packet operations.
 
-use crate::core::context::{Context, ffmpeg_error};
+use super::context::{Context, ffmpeg_error};
+
 use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
 use log::debug;

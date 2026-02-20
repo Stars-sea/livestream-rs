@@ -1,14 +1,14 @@
 //! SRT input context wrapper for FFmpeg.
 
-use super::context::{Context, ffmpeg_error};
+use super::context::{Context, InputContext, ffmpeg_error};
+
 use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
+
 use std::ffi::c_void;
 use std::ptr::null_mut;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Wrapper for FFmpeg input context configured for SRT streams.
 ///
@@ -18,12 +18,6 @@ use std::sync::{
 #[derive(Debug)]
 pub struct SrtInputContext {
     ctx: *mut AVFormatContext,
-}
-
-impl Context for SrtInputContext {
-    fn get_ctx(&self) -> *mut AVFormatContext {
-        self.ctx
-    }
 }
 
 impl SrtInputContext {
@@ -76,6 +70,14 @@ impl Drop for SrtInputContext {
         self.ctx = null_mut();
     }
 }
+
+impl Context for SrtInputContext {
+    fn get_ctx(&self) -> *mut AVFormatContext {
+        self.ctx
+    }
+}
+
+impl InputContext for SrtInputContext {}
 
 extern "C" fn interrupt_callback(opaque: *mut c_void) -> i32 {
     if opaque.is_null() {

@@ -1,13 +1,14 @@
 //! MPEG-TS output context wrapper for FFmpeg.
 
-use crate::core::context::{Context, ffmpeg_error};
-use crate::core::input::SrtInputContext;
+use super::context::{Context, OutputContext, ffmpeg_error};
+use super::input::SrtInputContext;
+
 use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
+
 use std::ffi::{CString, c_int};
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
-use std::str::FromStr;
 
 /// Wrapper for FFmpeg output context configured for MPEG-TS files.
 ///
@@ -20,60 +21,9 @@ pub struct TsOutputContext {
 }
 
 impl TsOutputContext {
-    /// Converts a PathBuf to a C string for FFmpeg.
-    fn path_to_cstring(path: &PathBuf) -> Result<CString> {
-        Ok(CString::new(path.as_path().display().to_string())?)
-    }
-
-    fn alloc_output_ctx(path: &PathBuf) -> Result<*mut AVFormatContext> {
-        let mut ctx: *mut AVFormatContext = null_mut();
-        let c_path = Self::path_to_cstring(path)?;
-
-        let ret = unsafe {
-            avformat_alloc_output_context2(
-                &mut ctx,
-                null_mut(),
-                CString::from_str("mpegts")?.as_ptr(),
-                c_path.as_ptr(),
-            )
-        };
-        if ret < 0 {
-            Err(anyhow!(
-                "Failed allocate output context: {}",
-                ffmpeg_error(ret)
-            ))
-        } else {
-            Ok(ctx)
-        }
-    }
-
-    fn copy_parameters(ctx_ptr: *mut AVFormatContext, input_ctx: &SrtInputContext) -> Result<()> {
-        for i in 0..input_ctx.nb_streams() {
-            let in_stream = input_ctx.stream(i).unwrap();
-            let out_stream = unsafe { avformat_new_stream(ctx_ptr, null_mut()) };
-            if out_stream.is_null() {
-                unsafe { avformat_free_context(ctx_ptr) };
-                return Err(anyhow!("Failed to allocate output stream"));
-            }
-
-            let ret = unsafe {
-                avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params())
-            };
-            if ret < 0 {
-                unsafe { avformat_free_context(ctx_ptr) };
-                return Err(anyhow!(
-                    "Failed to copy streams parameters: {}",
-                    ffmpeg_error(ret)
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
     fn open_file(path: &PathBuf, flags: c_int) -> Result<*mut AVIOContext> {
         let mut pb: *mut AVIOContext = null_mut();
-        let c_path = Self::path_to_cstring(&path)?;
+        let c_path = CString::new(path.as_path().display().to_string())?;
 
         let ret = unsafe { avio_open(&mut pb, c_path.as_ptr(), flags) };
         if ret < 0 {
@@ -83,25 +33,13 @@ impl TsOutputContext {
         }
     }
 
-    fn write_header(ctx_ptr: *mut AVFormatContext) -> Result<()> {
-        let ret = unsafe { avformat_write_header(ctx_ptr, null_mut()) };
-        if ret < 0 {
-            unsafe {
-                avio_closep(&mut (*ctx_ptr).pb);
-                avformat_free_context(ctx_ptr);
-            }
-            Err(anyhow!("Failed to write header: {}", ffmpeg_error(ret)))
-        } else {
-            Ok(())
-        }
-    }
-
     pub fn create(path: &PathBuf, input_ctx: &SrtInputContext) -> Result<Self> {
         // Alloc output AVFormatContext
-        let output_ctx = Self::alloc_output_ctx(&path)?;
+        let url = path.as_path().display().to_string();
+        let output_ctx = Self::alloc_output_ctx("mpegts", &url)?;
 
         // Copy parameters of streams
-        if let Err(e) = Self::copy_parameters(output_ctx, &input_ctx) {
+        if let Err(e) = Self::copy_parameters(output_ctx, input_ctx) {
             unsafe { avformat_free_context(output_ctx) };
             return Err(e);
         }
@@ -163,12 +101,6 @@ impl TsOutputContext {
     }
 }
 
-impl Context for TsOutputContext {
-    fn get_ctx(&self) -> *mut AVFormatContext {
-        self.ctx
-    }
-}
-
 impl Drop for TsOutputContext {
     fn drop(&mut self) {
         if self.ctx.is_null() {
@@ -181,3 +113,11 @@ impl Drop for TsOutputContext {
         self.ctx = null_mut();
     }
 }
+
+impl Context for TsOutputContext {
+    fn get_ctx(&self) -> *mut AVFormatContext {
+        self.ctx
+    }
+}
+
+impl OutputContext for TsOutputContext {}
