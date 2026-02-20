@@ -22,8 +22,9 @@ message StartPullStreamRequest {
 message StreamInfoResponse {
   string live_id = 1;
   string host = 2;
-  uint32 port = 3;
-  string passphrase = 4;
+  uint32 srt_port = 3;
+  string rtmp_url = 4;
+  string passphrase = 5;
 }
 
 message StopPullStreamRequest {

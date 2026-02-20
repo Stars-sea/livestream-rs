@@ -273,7 +273,8 @@ impl Into<StreamInfoResponse> for StreamInfo {
         StreamInfoResponse {
             live_id: self.live_id().to_string(),
             host: self.host().to_string(),
-            port: self.srt_port() as u32,
+            srt_port: self.srt_port() as u32,
+            rtmp_url: self.rtmp_url().to_string(),
             passphrase: self.passphrase().to_string(),
         }
     }

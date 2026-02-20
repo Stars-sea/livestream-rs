@@ -45,6 +45,7 @@ impl StreamInfo {
         self.srt_port
     }
 
+    #[allow(dead_code)]
     pub fn rtmp_port(&self) -> u16 {
         self.rtmp_port
     }
