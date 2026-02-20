@@ -1,20 +1,18 @@
 //! Core SRT stream pulling and segmentation logic.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::events::*;
 use super::stream_info::StreamInfo;
 
-use crate::core::context::Context;
+use crate::core::context::{Context, OutputContext};
 use crate::core::input::SrtInputContext;
-use crate::core::output::TsOutputContext;
+use crate::core::output::{FlvOutputContext, TsOutputContext};
 use crate::core::packet::Packet;
 
 use anyhow::{Result, anyhow};
-use log::{debug, info, warn};
+use log::{info, warn};
 
 /// Determines if a new segment should be created based on packet and duration.
 fn should_segment(
@@ -51,18 +49,18 @@ fn pull_srt_loop_impl(
 
     let input_ctx = SrtInputContext::open(&info.listener_url(), stop_signal)?;
 
+    let flv_output = FlvOutputContext::create(info.rtmp_url(), &input_ctx)?;
+
     let mut segment_id: u64 = 1;
-    let mut output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
+    let mut ts_output = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
 
     let mut last_start_pts = 0;
     let mut stream_started_notified = false;
 
     while !stop_rx.try_recv().is_ok_and(|id| id.live_id() == live_id) {
         let packet = Packet::alloc()?;
-        let bytes_read = packet.read_safely(&input_ctx);
-
-        if bytes_read == 0 {
-            debug!("Stream ended for {}", live_id);
+        if packet.read_safely(&input_ctx) == 0 {
+            info!("Stream ended for {}", live_id);
             break;
         }
 
@@ -75,25 +73,29 @@ fn pull_srt_loop_impl(
         }
 
         if should_segment(&packet, &input_ctx, segment_duration, &mut last_start_pts) {
-            output_ctx.release_and_close()?;
+            ts_output.write_trailer()?;
 
             if let Err(e) =
-                segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &output_ctx))
+                segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &ts_output))
             {
                 warn!("Failed to send segment complete event: {}", e);
             }
 
             segment_id += 1;
-            output_ctx = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
+            ts_output = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
         }
 
-        packet.rescale_ts_for_ctx(&input_ctx, &output_ctx);
-        packet.write(&output_ctx)?;
+        packet.rescale_ts_for_ctx(&input_ctx, &flv_output);
+        packet.write(&flv_output)?;
+
+        packet.rescale_ts_for_ctx(&input_ctx, &ts_output);
+        packet.write(&ts_output)?;
     }
 
-    output_ctx.release_and_close()?;
+    flv_output.write_trailer()?;
+    ts_output.write_trailer()?;
 
-    if let Err(e) = segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &output_ctx)) {
+    if let Err(e) = segment_complete_tx.send(OnSegmentComplete::from_ctx(&live_id, &ts_output)) {
         warn!("Failed to send final segment complete event: {}", e);
     }
 

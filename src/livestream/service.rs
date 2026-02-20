@@ -113,7 +113,7 @@ impl LiveStreamService {
 
     async fn release_stream_resources(&self, info: StreamInfo) -> Result<()> {
         // Release allocated port
-        self.port_allocator.release_port(info.port()).await;
+        self.port_allocator.release_port(info.srt_port()).await;
 
         // Remove empty cache directory
         let read_dir = fs::read_dir(info.cache_dir()).await?;
@@ -142,8 +142,8 @@ impl LiveStreamService {
             .await?;
 
         info!(
-            "Ready to pull stream at port {} (LiveId: {live_id})",
-            stream_info.port()
+            "Ready to pull stream at srt port: {} (LiveId: {live_id})",
+            stream_info.srt_port()
         );
 
         let result = pull_srt_loop(
@@ -273,7 +273,7 @@ impl Into<StreamInfoResponse> for StreamInfo {
         StreamInfoResponse {
             live_id: self.live_id().to_string(),
             host: self.host().to_string(),
-            port: self.port() as u32,
+            port: self.srt_port() as u32,
             passphrase: self.passphrase().to_string(),
         }
     }

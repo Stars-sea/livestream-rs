@@ -8,7 +8,8 @@ use crate::settings::Settings;
 pub struct StreamInfo {
     live_id: String,
     host: String,
-    port: u16,
+    srt_port: u16,
+    rtmp_port: u16,
 
     passphrase: String,
 
@@ -24,7 +25,8 @@ impl StreamInfo {
         Self {
             live_id,
             host,
-            port,
+            srt_port: port,
+            rtmp_port: settings.rtmp_port,
             passphrase,
             cache_dir,
             segment_duration,
@@ -39,8 +41,12 @@ impl StreamInfo {
         &self.host
     }
 
-    pub fn port(&self) -> u16 {
-        self.port
+    pub fn srt_port(&self) -> u16 {
+        self.srt_port
+    }
+
+    pub fn rtmp_port(&self) -> u16 {
+        self.rtmp_port
     }
 
     pub fn passphrase(&self) -> &str {
@@ -58,11 +64,14 @@ impl StreamInfo {
     pub fn listener_url(&self) -> String {
         format!(
             "srt://:{}?mode=listener&passphrase={}&srt_streamid={}",
-            self.port, self.passphrase, self.live_id
+            self.srt_port, self.passphrase, self.live_id
         )
     }
 
     pub fn rtmp_url(&self) -> String {
-        format!("rtmp://{}:{}/lives/{}", self.host, self.port, self.live_id)
+        format!(
+            "rtmp://{}:{}/lives/{}",
+            self.host, self.rtmp_port, self.live_id
+        )
     }
 }

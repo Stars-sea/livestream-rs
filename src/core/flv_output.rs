@@ -1,10 +1,11 @@
 use crate::core::context::{Context, InputContext, OutputContext};
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use ffmpeg_sys_next::*;
 
 use std::ptr::null_mut;
 
+/// Wrapper for FFmpeg output context configured for FLV streaming to RTMP servers.
 pub struct FlvOutputContext {
     ctx: *mut AVFormatContext,
     rtmp_url: String,
@@ -25,6 +26,10 @@ impl FlvOutputContext {
         }
 
         Ok(Self { ctx, rtmp_url })
+    }
+
+    pub fn rtmp_url(&self) -> &str {
+        &self.rtmp_url
     }
 }
 

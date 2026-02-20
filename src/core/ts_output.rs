@@ -11,10 +11,6 @@ use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 
 /// Wrapper for FFmpeg output context configured for MPEG-TS files.
-///
-/// # Safety
-/// Manages the lifecycle of AVFormatContext and AVIOContext through RAII.
-/// Resources are properly released in `release_and_close()` and `Drop`.
 pub struct TsOutputContext {
     ctx: *mut AVFormatContext,
     path: PathBuf,
@@ -73,23 +69,6 @@ impl TsOutputContext {
         let filename = format!("segment_{:04}.ts", segment_id);
         let path = PathBuf::from(tmp_dir.as_ref()).join(&filename);
         Self::create(&path, &input_ctx)
-    }
-
-    pub fn release_and_close(&mut self) -> Result<()> {
-        if self.ctx.is_null() {
-            return Ok(());
-        }
-
-        let ret = self.write_trailer();
-
-        unsafe {
-            avio_closep(&mut (*self.ctx).pb);
-            avformat_free_context(self.ctx);
-        }
-
-        self.ctx = null_mut();
-
-        ret
     }
 
     pub fn path(&self) -> &PathBuf {
