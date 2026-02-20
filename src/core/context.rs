@@ -46,9 +46,9 @@ pub(crate) trait Context: Drop {
     }
 }
 
-pub(crate) trait InputContext: Context {}
+pub trait InputContext: Context {}
 
-pub(crate) trait OutputContext: Context {
+pub(super) trait OutputContext: Context {
     /// Copies stream parameters from an input context to this output context.
     fn copy_parameters(ctx_ptr: *mut AVFormatContext, input_ctx: &impl InputContext) -> Result<()> {
         for i in 0..input_ctx.nb_streams() {

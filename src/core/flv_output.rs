@@ -38,6 +38,8 @@ impl Drop for FlvOutputContext {
         if self.ctx.is_null() {
             return;
         }
+
+        self.write_trailer().ok();
         unsafe {
             avformat_free_context(self.ctx);
         }

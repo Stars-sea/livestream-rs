@@ -81,6 +81,8 @@ impl Drop for TsOutputContext {
         if self.ctx.is_null() {
             return;
         }
+
+        self.write_trailer().ok();
         unsafe {
             avio_closep(&mut (*self.ctx).pb);
             avformat_free_context(self.ctx);
