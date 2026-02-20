@@ -66,6 +66,9 @@ impl SrtInputContext {
 
 impl Drop for SrtInputContext {
     fn drop(&mut self) {
+        if self.ctx.is_null() {
+            return;
+        }
         unsafe { avformat_close_input(&mut self.ctx) };
         self.ctx = null_mut();
     }

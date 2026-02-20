@@ -11,6 +11,7 @@ use std::ptr::null_mut;
 ///
 /// # Safety
 /// Implementors must ensure the context pointer is valid and properly managed.
+#[allow(drop_bounds)]
 pub(crate) trait Context: Drop {
     /// Returns the underlying AVFormatContext pointer.
     ///
@@ -106,6 +107,15 @@ pub(crate) trait OutputContext: Context {
                 avformat_free_context(ctx);
             }
             Err(anyhow!("Failed to write header: {}", ffmpeg_error(ret)))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn write_trailer(&self) -> Result<()> {
+        let ret = unsafe { av_write_trailer(self.get_ctx()) };
+        if ret < 0 {
+            Err(anyhow!("Failed to write trailer: {}", ffmpeg_error(ret)))
         } else {
             Ok(())
         }

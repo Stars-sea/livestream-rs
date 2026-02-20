@@ -17,13 +17,8 @@ pub struct StreamInfo {
 }
 
 impl StreamInfo {
-    pub fn new(
-        live_id: String,
-        host: String,
-        port: u16,
-        passphrase: String,
-        settings: &Settings,
-    ) -> Self {
+    pub fn new(live_id: String, port: u16, passphrase: String, settings: &Settings) -> Self {
+        let host = settings.host.clone();
         let cache_dir = PathBuf::from(&settings.cache_dir).join(&live_id);
         let segment_duration = settings.segment_time;
         Self {
@@ -65,5 +60,9 @@ impl StreamInfo {
             "srt://:{}?mode=listener&passphrase={}&srt_streamid={}",
             self.port, self.passphrase, self.live_id
         )
+    }
+
+    pub fn rtmp_url(&self) -> String {
+        format!("rtmp://{}:{}/lives/{}", self.host, self.port, self.live_id)
     }
 }

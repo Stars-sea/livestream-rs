@@ -98,7 +98,6 @@ impl LiveStreamService {
 
         let info = StreamInfo::new(
             live_id.to_string(),
-            self.settings.srt_host.clone(),
             port,
             passphrase.to_string(),
             &self.settings,

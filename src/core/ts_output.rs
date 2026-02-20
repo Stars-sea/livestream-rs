@@ -80,7 +80,7 @@ impl TsOutputContext {
             return Ok(());
         }
 
-        let ret = unsafe { av_write_trailer(self.ctx) };
+        let ret = self.write_trailer();
 
         unsafe {
             avio_closep(&mut (*self.ctx).pb);
@@ -89,11 +89,7 @@ impl TsOutputContext {
 
         self.ctx = null_mut();
 
-        if ret < 0 {
-            Err(anyhow!("Failed to write trailer: {}", ffmpeg_error(ret)))
-        } else {
-            Ok(())
-        }
+        ret
     }
 
     pub fn path(&self) -> &PathBuf {
