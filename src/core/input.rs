@@ -11,10 +11,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Wrapper for FFmpeg input context configured for SRT streams.
-///
-/// # Safety
-/// Manages the lifecycle of AVFormatContext through RAII.
-/// The context is opened in `open()` and closed in `Drop`.
 #[derive(Debug)]
 pub struct SrtInputContext {
     ctx: *mut AVFormatContext,

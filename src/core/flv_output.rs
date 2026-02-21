@@ -1,3 +1,5 @@
+//! FLV output context for streaming to RTMP servers.
+
 use crate::core::context::{Context, InputContext, OutputContext};
 
 use anyhow::Result;
