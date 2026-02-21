@@ -8,16 +8,15 @@ use super::port_allocator::PortAllocator;
 use super::pull_stream::pull_srt_loop;
 use super::stream_info::StreamInfo;
 
+use crate::services::MemoryCache;
 use crate::services::MinioClient;
 use crate::settings::Settings;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
 use log::{info, warn};
 use tokio::fs;
-use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::{Request, Response, Status};
@@ -32,7 +31,7 @@ const CHANNEL_SIZE: usize = 16;
 pub struct LiveStreamService {
     settings: Settings,
 
-    stream_info_cache: RwLock<HashMap<String, StreamInfo>>,
+    stream_info_cache: MemoryCache<StreamInfo>,
 
     port_allocator: PortAllocator,
 
@@ -79,7 +78,7 @@ impl LiveStreamService {
 
         Self {
             settings,
-            stream_info_cache: RwLock::new(HashMap::new()),
+            stream_info_cache: MemoryCache::new(),
             port_allocator,
             stop_stream_tx,
             segment_complete_tx,
@@ -139,9 +138,8 @@ impl LiveStreamService {
         let live_id = stream_info.live_id().to_string();
 
         self.stream_info_cache
-            .write()
-            .await
-            .insert(live_id.clone(), stream_info.clone());
+            .set(live_id.clone(), stream_info.clone())
+            .await?;
 
         info!(
             "Ready to pull stream at srt port: {} (LiveId: {live_id})",
@@ -157,7 +155,7 @@ impl LiveStreamService {
         )
         .await;
 
-        self.stream_info_cache.write().await.remove(&live_id);
+        self.stream_info_cache.remove(&live_id).await;
 
         if let Err(e) = self.release_stream_resources(stream_info).await {
             warn!("Failed to release resources for stream {live_id}: {e}");
@@ -172,18 +170,12 @@ impl LiveStreamService {
     }
 
     pub async fn list_active_streams_impl(&self) -> Result<Vec<String>> {
-        Ok(self
-            .stream_info_cache
-            .read()
-            .await
-            .keys()
-            .cloned()
-            .collect::<Vec<String>>())
+        Ok(self.stream_info_cache.keys().await)
     }
 
     pub async fn get_stream_info_impl(&self, live_id: String) -> Option<StreamInfo> {
-        match self.stream_info_cache.read().await.get(&live_id) {
-            Some(info) => Some(info.clone()),
+        match self.stream_info_cache.get(&live_id).await {
+            Some(info) => Some(info),
             None => {
                 warn!("Failed to get stream info for live_id: {live_id}");
                 None
