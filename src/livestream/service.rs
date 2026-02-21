@@ -199,6 +199,13 @@ impl Livestream for Arc<LiveStreamService> {
         if request.passphrase.is_empty() {
             return Err(Status::invalid_argument("passphrase cannot be empty"));
         }
+        regex::Regex::new(r"^[a-zA-Z0-9]{10,79}$")
+            .unwrap()
+            .is_match(&request.passphrase)
+            .then_some(())
+            .ok_or_else(|| {
+                Status::invalid_argument("passphrase must be 10-79 alphanumeric characters")
+            })?;
 
         let stream_info = match self
             .make_stream_info(&request.live_id, &request.passphrase)
