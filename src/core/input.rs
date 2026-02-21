@@ -47,13 +47,14 @@ impl SrtInputContext {
         let c_url = std::ffi::CString::new(path)?;
         let ret = unsafe { avformat_open_input(&mut ctx, c_url.as_ptr(), null_mut(), null_mut()) };
         if ret < 0 {
-            return Err(anyhow!(ffmpeg_error(ret)));
+            unsafe { avformat_close_input(&mut ctx) };
+            anyhow::bail!("Failed to open input: {}", ffmpeg_error(ret));
         }
 
         let ret = unsafe { avformat_find_stream_info(ctx, null_mut()) };
         if ret < 0 {
             unsafe { avformat_close_input(&mut ctx) };
-            return Err(anyhow!(ffmpeg_error(ret)));
+            anyhow::bail!("Failed to find stream info: {}", ffmpeg_error(ret));
         }
 
         Ok(Self { ctx })

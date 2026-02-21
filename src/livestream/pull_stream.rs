@@ -8,7 +8,7 @@ use super::stream_info::StreamInfo;
 
 use crate::core::context::Context;
 use crate::core::input::SrtInputContext;
-use crate::core::output::{FlvOutputContext, TsOutputContext};
+use crate::core::output::{HlsOutputContext, RtmpOutputContext};
 use crate::core::packet::Packet;
 
 use anyhow::{Result, anyhow};
@@ -49,10 +49,10 @@ fn pull_srt_loop_impl(
 
     let input_ctx = SrtInputContext::open(&info.listener_url(), stop_signal)?;
 
-    let flv_output = FlvOutputContext::create(info.rtmp_url(), &input_ctx)?;
+    let rtmp_output = RtmpOutputContext::create(info.rtmp_url(), &input_ctx)?;
 
     let mut segment_id: u64 = 1;
-    let mut ts_output = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
+    let mut hls_output = HlsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
 
     let mut last_start_pts = 0;
     let mut stream_started_notified = false;
@@ -75,23 +75,23 @@ fn pull_srt_loop_impl(
         }
 
         if should_segment(&packet, &input_ctx, segment_duration, &mut last_start_pts) {
-            on_segment_complete(&segment_complete_tx, live_id, &ts_output);
+            on_segment_complete(&segment_complete_tx, live_id, &hls_output);
 
             segment_id += 1;
-            ts_output = TsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
+            hls_output = HlsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
         }
 
-        packet.rescale_ts_for_ctx(&input_ctx, &flv_output);
-        if let Err(e) = packet.write(&flv_output) {
+        packet.rescale_ts_for_ctx(&input_ctx, &rtmp_output);
+        if let Err(e) = packet.write(&rtmp_output) {
             warn!("Failed to write packet to FLV output: {}", e);
-            on_segment_complete(&segment_complete_tx, live_id, &ts_output);
+            on_segment_complete(&segment_complete_tx, live_id, &hls_output);
             return Err(anyhow!("Failed to write packet to FLV output: {}", e));
         }
 
-        cloned_packet.rescale_ts_for_ctx(&input_ctx, &ts_output);
-        if let Err(e) = cloned_packet.write(&ts_output) {
+        cloned_packet.rescale_ts_for_ctx(&input_ctx, &hls_output);
+        if let Err(e) = cloned_packet.write(&hls_output) {
             warn!("Failed to write packet to TS output: {}", e);
-            on_segment_complete(&segment_complete_tx, live_id, &ts_output);
+            on_segment_complete(&segment_complete_tx, live_id, &hls_output);
             return Err(anyhow!("Failed to write packet to TS output: {}", e));
         }
     }
@@ -99,15 +99,15 @@ fn pull_srt_loop_impl(
     fn on_segment_complete(
         segment_complete_tx: &SegmentCompleteTx,
         live_id: &str,
-        ts_output: &TsOutputContext,
+        hls_output: &HlsOutputContext,
     ) {
-        let event = OnSegmentComplete::from_ctx(live_id, ts_output);
+        let event = OnSegmentComplete::from_ctx(live_id, hls_output);
         if let Err(e) = segment_complete_tx.send(event) {
             warn!("Failed to send final segment complete event: {}", e);
         }
     }
 
-    on_segment_complete(&segment_complete_tx, live_id, &ts_output);
+    on_segment_complete(&segment_complete_tx, live_id, &hls_output);
 
     Ok(())
 }

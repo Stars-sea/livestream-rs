@@ -14,12 +14,12 @@ pub mod input;
 pub mod packet;
 mod stream;
 
-mod flv_output;
-mod ts_output;
+mod hls_output;
+mod rtmp_output;
 
 pub mod output {
-    pub use super::flv_output::*;
-    pub use super::ts_output::*;
+    pub use super::hls_output::*;
+    pub use super::rtmp_output::*;
 }
 
 /// Sets the FFmpeg logging level based on Rust log levels.

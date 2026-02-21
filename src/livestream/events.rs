@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::core::output::TsOutputContext;
+use crate::core::output::HlsOutputContext;
 use std::path::{Path, PathBuf};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
@@ -30,7 +30,7 @@ impl OnSegmentComplete {
         }
     }
 
-    pub fn from_ctx(live_id: &str, ctx: &TsOutputContext) -> Self {
+    pub fn from_ctx(live_id: &str, ctx: &HlsOutputContext) -> Self {
         let path = ctx.path().clone();
         OnSegmentComplete::new(
             live_id,

@@ -1,56 +1,49 @@
 //! MPEG-TS output context wrapper for FFmpeg.
 
-use super::context::{Context, OutputContext, ffmpeg_error};
+use super::context::{Context, OutputContext};
 use super::input::SrtInputContext;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use ffmpeg_sys_next::*;
+use log::warn;
 
-use std::ffi::{CString, c_int};
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 
 /// Wrapper for FFmpeg output context configured for MPEG-TS files.
-pub struct TsOutputContext {
+pub struct HlsOutputContext {
     ctx: *mut AVFormatContext,
     path: PathBuf,
 }
 
-impl TsOutputContext {
-    fn open_file(path: &PathBuf, flags: c_int) -> Result<*mut AVIOContext> {
-        let mut pb: *mut AVIOContext = null_mut();
-        let c_path = CString::new(path.as_path().display().to_string())?;
-
-        let ret = unsafe { avio_open(&mut pb, c_path.as_ptr(), flags) };
-        if ret < 0 {
-            Err(anyhow!("Failed to open output file: {}", ffmpeg_error(ret)))
-        } else {
-            Ok(pb)
-        }
-    }
-
+impl HlsOutputContext {
     pub fn create(path: &PathBuf, input_ctx: &SrtInputContext) -> Result<Self> {
         // Alloc output AVFormatContext
         let url = path.as_path().display().to_string();
         let output_ctx = Self::alloc_output_ctx("mpegts", &url)?;
 
         // Copy parameters of streams
-        if let Err(e) = Self::copy_parameters(output_ctx, input_ctx) {
+        if let Err(e) = Self::copy_streams(output_ctx, input_ctx) {
+            warn!("Failed to copy streams to MPEG-TS output context: {e}");
             unsafe { avformat_free_context(output_ctx) };
             return Err(e);
         }
 
-        // Open file
-        match Self::open_file(&path, AVIO_FLAG_WRITE) {
-            Ok(pb) => unsafe { (*output_ctx).pb = pb },
-            Err(e) => {
-                unsafe { avformat_free_context(output_ctx) };
-                return Err(e);
+        if unsafe { (*output_ctx).pb.is_null() } {
+            // Open file
+            match Self::open_io(path.as_path().display().to_string(), AVIO_FLAG_WRITE) {
+                Ok(pb) => unsafe { (*output_ctx).pb = pb },
+                Err(e) => {
+                    warn!("Failed to open output file for MPEG-TS context: {e}");
+                    unsafe { avformat_free_context(output_ctx) };
+                    return Err(e);
+                }
             }
         }
 
         // Write header
         if let Err(e) = Self::write_header(output_ctx) {
+            warn!("Failed to write header for MPEG-TS output context: {e}");
             unsafe { avformat_free_context(output_ctx) };
             return Err(e);
         }
@@ -76,7 +69,7 @@ impl TsOutputContext {
     }
 }
 
-impl Drop for TsOutputContext {
+impl Drop for HlsOutputContext {
     fn drop(&mut self) {
         if self.ctx.is_null() {
             return;
@@ -91,10 +84,10 @@ impl Drop for TsOutputContext {
     }
 }
 
-impl Context for TsOutputContext {
+impl Context for HlsOutputContext {
     fn get_ctx(&self) -> *mut AVFormatContext {
         self.ctx
     }
 }
 
-impl OutputContext for TsOutputContext {}
+impl OutputContext for HlsOutputContext {}

@@ -1,7 +1,7 @@
 //! Context trait and utilities for FFmpeg format contexts.
 
 use crate::core::stream::Stream;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use ffmpeg_sys_next::*;
 
 use std::ffi::{CStr, CString, c_int};
@@ -50,24 +50,19 @@ pub trait InputContext: Context {}
 
 pub trait OutputContext: Context {
     /// Copies stream parameters from an input context to this output context.
-    fn copy_parameters(ctx_ptr: *mut AVFormatContext, input_ctx: &impl InputContext) -> Result<()> {
+    fn copy_streams(ctx_ptr: *mut AVFormatContext, input_ctx: &impl InputContext) -> Result<()> {
         for i in 0..input_ctx.nb_streams() {
             let in_stream = input_ctx.stream(i).unwrap();
             let out_stream = unsafe { avformat_new_stream(ctx_ptr, null_mut()) };
             if out_stream.is_null() {
-                unsafe { avformat_free_context(ctx_ptr) };
-                return Err(anyhow!("Failed to allocate output stream"));
+                anyhow::bail!("Failed to allocate output stream");
             }
 
             let ret = unsafe {
                 avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params())
             };
             if ret < 0 {
-                unsafe { avformat_free_context(ctx_ptr) };
-                return Err(anyhow!(
-                    "Failed to copy streams parameters: {}",
-                    ffmpeg_error(ret)
-                ));
+                anyhow::bail!("Failed to copy streams parameters: {}", ffmpeg_error(ret));
             }
         }
 
@@ -89,12 +84,25 @@ pub trait OutputContext: Context {
             )
         };
         if ret < 0 {
-            Err(anyhow!(
-                "Failed allocate output context: {}",
-                ffmpeg_error(ret)
-            ))
+            anyhow::bail!("Failed allocate output context: {}", ffmpeg_error(ret));
         } else {
             Ok(ctx)
+        }
+    }
+
+    fn open_io(path: String, flags: c_int) -> Result<*mut AVIOContext> {
+        let mut pb: *mut AVIOContext = null_mut();
+        let c_path = CString::new(path.clone())?;
+
+        let ret = unsafe { avio_open(&mut pb, c_path.as_ptr(), flags) };
+        if ret < 0 {
+            anyhow::bail!(
+                "Failed to open I/O context for path '{}': {}",
+                path,
+                ffmpeg_error(ret)
+            );
+        } else {
+            Ok(pb)
         }
     }
 
@@ -102,11 +110,7 @@ pub trait OutputContext: Context {
     fn write_header(ctx: *mut AVFormatContext) -> Result<()> {
         let ret = unsafe { avformat_write_header(ctx, null_mut()) };
         if ret < 0 {
-            unsafe {
-                avio_closep(&mut (*ctx).pb);
-                avformat_free_context(ctx);
-            }
-            Err(anyhow!("Failed to write header: {}", ffmpeg_error(ret)))
+            anyhow::bail!("Failed to write header: {}", ffmpeg_error(ret));
         } else {
             Ok(())
         }
@@ -115,7 +119,7 @@ pub trait OutputContext: Context {
     fn write_trailer(&self) -> Result<()> {
         let ret = unsafe { av_write_trailer(self.get_ctx()) };
         if ret < 0 {
-            Err(anyhow!("Failed to write trailer: {}", ffmpeg_error(ret)))
+            anyhow::bail!("Failed to write trailer: {}", ffmpeg_error(ret));
         } else {
             Ok(())
         }
