@@ -6,7 +6,7 @@ use anyhow::Result;
 use ffmpeg_sys_next::*;
 use log::warn;
 
-use std::{ffi::CString, ptr::null_mut};
+use std::ptr::null_mut;
 
 /// Wrapper for FFmpeg output context configured for FLV streaming to RTMP servers.
 pub struct RtmpOutputContext {
@@ -17,26 +17,6 @@ pub struct RtmpOutputContext {
 impl RtmpOutputContext {
     pub fn create(rtmp_url: String, input_ctx: &impl InputContext) -> Result<Self> {
         let ctx = Self::alloc_output_ctx("flv", &rtmp_url)?;
-
-        unsafe {
-            let ret = av_opt_set(
-                (*ctx).priv_data,
-                CString::new("listen")?.as_ptr(),
-                CString::new("1")?.as_ptr(),
-                0,
-            );
-            if ret < 0 {
-                warn!(
-                    "Failed to set 'listen' option for RTMP output context: {}",
-                    ffmpeg_error(ret)
-                );
-                avformat_free_context(ctx);
-                anyhow::bail!(
-                    "Failed to set 'listen' option for RTMP output context: {}",
-                    ffmpeg_error(ret)
-                );
-            }
-        }
 
         if let Err(e) = Self::copy_streams(ctx, input_ctx) {
             warn!("Failed to copy streams to FLV output context: {e}");

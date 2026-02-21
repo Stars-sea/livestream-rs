@@ -47,9 +47,9 @@ fn pull_srt_loop_impl(
     let cache_dir = info.cache_dir();
     let segment_duration = info.segment_duration() as f64;
 
-    let input_ctx = SrtInputContext::open(&info.listener_url(), stop_signal)?;
+    let input_ctx = SrtInputContext::open(&info.srt_listener_url(), stop_signal)?;
 
-    let rtmp_output = RtmpOutputContext::create(info.rtmp_url(), &input_ctx)?;
+    let rtmp_output = RtmpOutputContext::create(info.rtmp_listener_url(), &input_ctx)?;
 
     let mut segment_id: u64 = 1;
     let mut hls_output = HlsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;

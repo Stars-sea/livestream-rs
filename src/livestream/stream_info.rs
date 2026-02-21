@@ -62,14 +62,21 @@ impl StreamInfo {
         self.segment_duration
     }
 
-    pub fn listener_url(&self) -> String {
+    pub fn srt_listener_url(&self) -> String {
         format!(
             "srt://:{}?mode=listener&passphrase={}&srt_streamid={}",
             self.srt_port, self.passphrase, self.live_id
         )
     }
 
-    pub fn rtmp_url(&self) -> String {
+    pub fn rtmp_listener_url(&self) -> String {
+        format!(
+            "rtmp://0.0.0.0:{}/lives/{}?listen=1",
+            self.rtmp_port, self.live_id
+        )
+    }
+
+    pub fn rtmp_pull_url(&self) -> String {
         format!(
             "rtmp://{}:{}/lives/{}",
             self.host, self.rtmp_port, self.live_id
