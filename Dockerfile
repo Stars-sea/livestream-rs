@@ -53,13 +53,12 @@ COPY --from=builder /app/target/release/livestream-rs ./
 COPY --from=builder /app/settings.json ./
 
 ENV GRPC_PORT=50051
-ENV REDIS_URI=redis://localhost:6379
 ENV MINIO_URI=http://localhost:9000
 ENV MINIO_ACCESSKEY=minioadmin
 ENV MINIO_SECRETKEY=miniokey
 ENV MINIO_BUCKET=videos
 ENV RUST_LOG=info
-ENV SRT_HOST=srt.example.local
+ENV HOST=srt.example.local
 ENV SRT_PORTS=4000-4100
 ENV SEGMENT_TIME=10
 

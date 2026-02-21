@@ -4,7 +4,6 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      REDIS_URI: redis://redis-service
       MINIO_URI: http://minio-service:9000
       MINIO_ACCESSKEY: admin
       MINIO_SECRETKEY: 123456MinIO
@@ -40,26 +39,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  redis-service:
-    image: redis:alpine
-    container_name: redis-service
-    ports:
-      - "6379:6379"
-    networks:
-      - devcontainer-net
-
-  redis-insight:
-    image: redis/redisinsight:2.70
-    container_name: redisinsight
-    ports:
-      - "5540:5540"
-    environment:
-      - REDISINSIGHT_ACCEPT_LICENSE=true
-    depends_on:
-      - redis-service
-    networks:
-      - devcontainer-net
 
 volumes:
   minio-data:

@@ -7,7 +7,7 @@ use tokio::signal;
 use tonic::transport::Server;
 
 use crate::livestream::{LiveStreamService, LivestreamServer};
-use crate::services::{MinioClient, RedisClient};
+use crate::services::MinioClient;
 
 mod core;
 mod livestream;
@@ -33,9 +33,7 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    let redis_client = RedisClient::create(&env_var("REDIS_URI")?).await?;
-
-    let livestream = Arc::new(LiveStreamService::new(minio_client, redis_client, settings));
+    let livestream = Arc::new(LiveStreamService::new(minio_client, settings));
 
     let grpc_port = env_var("GRPC_PORT")?;
     let grpc_addr = format!("0.0.0.0:{}", grpc_port);

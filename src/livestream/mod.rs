@@ -10,5 +10,3 @@ mod grpc {
 }
 
 pub use service::{LiveStreamService, LivestreamServer};
-
-pub use stream_info::StreamInfo;
