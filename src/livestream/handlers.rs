@@ -27,9 +27,9 @@ pub(super) async fn stream_message_handler(
                 segment_id,
                 path,
             } => {
-                segment_complete_handler(live_id, segment_id, path, &minio)
-                    .await
-                    .ok();
+                if let Err(e) = segment_complete_handler(live_id, segment_id, path, &minio).await {
+                    warn!("Failed to handle segment complete event: {}", e);
+                }
             }
             StreamMessage::StreamStarted { live_id } => {
                 stream_started_handler(live_id, &grpc_callback).await;
@@ -76,6 +76,13 @@ async fn stream_stopped_handler(
         }
     } else {
         warn!("Failed to connect to gRPC callback at {}", grpc_callback);
+    }
+
+    // Clean up any remaining files in the cache directory
+    if fs::try_exists(&path).await.unwrap_or(false) {
+        if let Err(e) = fs::remove_dir_all(&path).await {
+            warn!("Failed to remove cache directory {}: {}", path.display(), e);
+        }
     }
 }
 

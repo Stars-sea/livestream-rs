@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use super::events::*;
 use super::stream_info::StreamInfo;
@@ -49,6 +50,7 @@ fn pull_srt_loop_impl(
 
     let input_ctx = SrtInputContext::open(&info.srt_listener_url(), stop_signal)?;
 
+    // TODO: FIXME
     let rtmp_output = RtmpOutputContext::create(info.rtmp_listener_url(), &input_ctx)?;
 
     let mut segment_id: u64 = 1;
@@ -99,6 +101,8 @@ fn pull_srt_loop_impl(
         }
     }
 
+    on_segment_complete(&stream_msg_tx, live_id, &hls_output);
+
     fn on_segment_complete(
         stream_msg_tx: &broadcast::Sender<StreamMessage>,
         live_id: &str,
@@ -110,8 +114,6 @@ fn pull_srt_loop_impl(
         }
     }
 
-    on_segment_complete(&stream_msg_tx, live_id, &hls_output);
-
     Ok(())
 }
 
@@ -121,7 +123,6 @@ pub(super) async fn pull_srt_loop(
     control_tx: broadcast::Sender<StreamControlMessage>,
     info: StreamInfo,
 ) -> Result<()> {
-    let mut stream_msg_rx = stream_msg_tx.subscribe();
     let stop_signal = Arc::new(AtomicBool::new(false));
 
     let cloned_info = info.clone();
@@ -139,28 +140,20 @@ pub(super) async fn pull_srt_loop(
 
     let mut control_rx = control_tx.subscribe();
 
-    loop {
-        tokio::select! {
-            control_msg = control_rx.recv() => {
-                if let Ok(msg) = control_msg && msg.is_stop_stream() && msg.live_id() == info.live_id() {
-                    info!("Received stop signal for stream {}", info.live_id());
-                    // handle.abort(); // `spawn_blocking` cannot be aborted
-                    stop_signal.store(true, Ordering::Relaxed);
-                    break;
-                }
-            }
-
-            connected_msg = stream_msg_rx.recv() => {
-                if let Ok(msg) = connected_msg && msg.live_id() == info.live_id() {
-                    info!("Stream {} is available", info.live_id());
-                    break;
-                }
-            }
+    while !handle.is_finished() {
+        if let Ok(msg) = control_rx.try_recv()
+            && msg.is_stop_stream()
+            && msg.live_id() == info.live_id()
+        {
+            info!("Received stop signal for stream {}", info.live_id());
+            // handle.abort(); // `spawn_blocking` cannot be aborted
+            stop_signal.store(true, Ordering::Relaxed);
+            break;
         }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
-    let result = handle.await;
-    let error = match result {
+    let error = match handle.await {
         Ok(Ok(())) => None,
         Ok(Err(e)) => Some(e.to_string()),
         Err(e) if e.is_cancelled() => Some("Stream pulling task was cancelled".to_string()),
