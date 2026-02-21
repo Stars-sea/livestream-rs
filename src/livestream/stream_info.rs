@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -54,8 +54,8 @@ impl StreamInfo {
         &self.passphrase
     }
 
-    pub fn cache_dir(&self) -> &Path {
-        self.cache_dir.as_path()
+    pub fn cache_dir(&self) -> &PathBuf {
+        &self.cache_dir
     }
 
     pub fn segment_duration(&self) -> i32 {

@@ -13,6 +13,7 @@ use crate::core::packet::Packet;
 
 use anyhow::{Result, anyhow};
 use log::{info, warn};
+use tokio::sync::broadcast;
 
 /// Determines if a new segment should be created based on packet and duration.
 fn should_segment(
@@ -37,9 +38,8 @@ fn should_segment(
 
 /// Main loop for pulling SRT stream, segmenting, and writing to disk.
 fn pull_srt_loop_impl(
-    connected_tx: StreamConnectedTx,
-    segment_complete_tx: SegmentCompleteTx,
-    mut stop_rx: StopStreamRx,
+    stream_msg_tx: broadcast::Sender<StreamMessage>,
+    mut control_rx: broadcast::Receiver<StreamControlMessage>,
     stop_signal: Arc<AtomicBool>,
     info: StreamInfo,
 ) -> Result<()> {
@@ -57,7 +57,10 @@ fn pull_srt_loop_impl(
     let mut last_start_pts = 0;
     let mut stream_started_notified = false;
 
-    while !stop_rx.try_recv().is_ok_and(|id| id.live_id() == live_id) {
+    while !control_rx
+        .try_recv()
+        .is_ok_and(|msg| msg.is_stop_stream() && msg.live_id() == live_id)
+    {
         let packet = Packet::alloc()?;
         if packet.read_safely(&input_ctx) == 0 {
             info!("Stream ended for {}", live_id);
@@ -68,14 +71,14 @@ fn pull_srt_loop_impl(
 
         // Send stream started event on first successful packet read
         if !stream_started_notified {
-            if let Err(e) = connected_tx.send(OnStreamConnected::new(live_id)) {
+            if let Err(e) = stream_msg_tx.send(StreamMessage::stream_started(live_id)) {
                 warn!("Failed to send stream connected event: {}", e);
             }
             stream_started_notified = true;
         }
 
         if should_segment(&packet, &input_ctx, segment_duration, &mut last_start_pts) {
-            on_segment_complete(&segment_complete_tx, live_id, &hls_output);
+            on_segment_complete(&stream_msg_tx, live_id, &hls_output);
 
             segment_id += 1;
             hls_output = HlsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
@@ -84,64 +87,62 @@ fn pull_srt_loop_impl(
         packet.rescale_ts_for_ctx(&input_ctx, &rtmp_output);
         if let Err(e) = packet.write(&rtmp_output) {
             warn!("Failed to write packet to FLV output: {}", e);
-            on_segment_complete(&segment_complete_tx, live_id, &hls_output);
+            on_segment_complete(&stream_msg_tx, live_id, &hls_output);
             return Err(anyhow!("Failed to write packet to FLV output: {}", e));
         }
 
         cloned_packet.rescale_ts_for_ctx(&input_ctx, &hls_output);
         if let Err(e) = cloned_packet.write(&hls_output) {
             warn!("Failed to write packet to TS output: {}", e);
-            on_segment_complete(&segment_complete_tx, live_id, &hls_output);
+            on_segment_complete(&stream_msg_tx, live_id, &hls_output);
             return Err(anyhow!("Failed to write packet to TS output: {}", e));
         }
     }
 
     fn on_segment_complete(
-        segment_complete_tx: &SegmentCompleteTx,
+        stream_msg_tx: &broadcast::Sender<StreamMessage>,
         live_id: &str,
         hls_output: &HlsOutputContext,
     ) {
-        let event = OnSegmentComplete::from_ctx(live_id, hls_output);
-        if let Err(e) = segment_complete_tx.send(event) {
+        let event = StreamMessage::segment_complete(live_id, hls_output.path());
+        if let Err(e) = stream_msg_tx.send(event) {
             warn!("Failed to send final segment complete event: {}", e);
         }
     }
 
-    on_segment_complete(&segment_complete_tx, live_id, &hls_output);
+    on_segment_complete(&stream_msg_tx, live_id, &hls_output);
 
     Ok(())
 }
 
 /// Wrapper function that handles stream termination event.
 pub(super) async fn pull_srt_loop(
-    connected_tx: StreamConnectedTx,
-    terminate_tx: StreamTerminateTx,
-    segment_complete_tx: SegmentCompleteTx,
-    stop_stream_tx: StopStreamTx,
+    stream_msg_tx: broadcast::Sender<StreamMessage>,
+    control_tx: broadcast::Sender<StreamControlMessage>,
     info: StreamInfo,
 ) -> Result<()> {
-    let mut connected_rx = connected_tx.subscribe();
+    let mut stream_msg_rx = stream_msg_tx.subscribe();
     let stop_signal = Arc::new(AtomicBool::new(false));
 
     let cloned_info = info.clone();
     let cloned_stop_signal = stop_signal.clone();
-    let stop_rx = stop_stream_tx.subscribe();
+    let cloned_stream_msg_tx = stream_msg_tx.clone();
+    let control_rx = control_tx.subscribe();
     let handle = tokio::task::spawn_blocking(move || {
         pull_srt_loop_impl(
-            connected_tx,
-            segment_complete_tx,
-            stop_rx,
+            cloned_stream_msg_tx,
+            control_rx,
             cloned_stop_signal,
             cloned_info,
         )
     });
 
-    let mut stop_rx = stop_stream_tx.subscribe();
+    let mut control_rx = control_tx.subscribe();
 
     loop {
         tokio::select! {
-            stop_msg = stop_rx.recv() => {
-                if let Ok(stop_info) = stop_msg && stop_info.live_id() == info.live_id() {
+            control_msg = control_rx.recv() => {
+                if let Ok(msg) = control_msg && msg.is_stop_stream() && msg.live_id() == info.live_id() {
                     info!("Received stop signal for stream {}", info.live_id());
                     // handle.abort(); // `spawn_blocking` cannot be aborted
                     stop_signal.store(true, Ordering::Relaxed);
@@ -149,9 +150,9 @@ pub(super) async fn pull_srt_loop(
                 }
             }
 
-            connected_msg = connected_rx.recv() => {
-                if let Ok(connected_info) = connected_msg && connected_info.live_id() == info.live_id() {
-                    info!("Stream {} connected", info.live_id());
+            connected_msg = stream_msg_rx.recv() => {
+                if let Ok(msg) = connected_msg && msg.live_id() == info.live_id() {
+                    info!("Stream {} is available", info.live_id());
                     break;
                 }
             }
@@ -166,7 +167,7 @@ pub(super) async fn pull_srt_loop(
         Err(e) => Some(format!("Stream pulling task panicked: {:?}", e)),
     };
 
-    if let Err(e) = terminate_tx.send(OnStreamTerminate::new(
+    if let Err(e) = stream_msg_tx.send(StreamMessage::stream_stopped(
         info.live_id(),
         error,
         info.cache_dir(),

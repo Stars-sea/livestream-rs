@@ -17,6 +17,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use log::{info, warn};
 use tokio::fs;
+use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::{Request, Response, Status};
@@ -35,12 +36,8 @@ pub struct LiveStreamService {
 
     port_allocator: PortAllocator,
 
-    stop_stream_tx: StopStreamTx,
-
-    segment_complete_tx: SegmentCompleteTx,
-
-    stream_connected_tx: StreamConnectedTx,
-    stream_terminate_tx: StreamTerminateTx,
+    control_tx: broadcast::Sender<StreamControlMessage>,
+    stream_msg_tx: broadcast::Sender<StreamMessage>,
 }
 
 impl LiveStreamService {
@@ -50,23 +47,13 @@ impl LiveStreamService {
     /// * `minio_client` - Client for uploading segments to MinIO
     /// * `settings` - Application settings
     pub fn new(minio_client: MinioClient, settings: Settings) -> Self {
-        let (stop_stream_tx, _) = OnStopStream::channel(CHANNEL_SIZE);
+        let (control_tx, _) = broadcast::channel::<StreamControlMessage>(CHANNEL_SIZE);
+        let (stream_msg_tx, stream_msg_rx) = broadcast::channel::<StreamMessage>(CHANNEL_SIZE);
 
-        let (segment_complete_tx, segment_complete_rx) = OnSegmentComplete::channel(CHANNEL_SIZE);
-        let (stream_connected_tx, stream_connected_rx) = OnStreamConnected::channel(CHANNEL_SIZE);
-        let (stream_terminate_tx, stream_terminate_rx) = OnStreamTerminate::channel(CHANNEL_SIZE);
-
-        tokio::spawn(handlers::segment_complete_handler(
-            segment_complete_rx,
+        tokio::spawn(handlers::stream_message_handler(
+            stream_msg_rx,
+            settings.grpc_callback.clone(),
             minio_client,
-        ));
-        tokio::spawn(handlers::stream_connected_handler(
-            stream_connected_rx,
-            settings.grpc_callback.clone(),
-        ));
-        tokio::spawn(handlers::stream_terminate_handler(
-            stream_terminate_rx,
-            settings.grpc_callback.clone(),
         ));
 
         let port_allocator = {
@@ -80,10 +67,8 @@ impl LiveStreamService {
             settings,
             stream_info_cache: MemoryCache::new(),
             port_allocator,
-            stop_stream_tx,
-            segment_complete_tx,
-            stream_connected_tx,
-            stream_terminate_tx,
+            control_tx,
+            stream_msg_tx,
         }
     }
 
@@ -147,10 +132,8 @@ impl LiveStreamService {
         );
 
         let result = pull_srt_loop(
-            self.stream_connected_tx.clone(),
-            self.stream_terminate_tx.clone(),
-            self.segment_complete_tx.clone(),
-            self.stop_stream_tx.clone(),
+            self.stream_msg_tx.clone(),
+            self.control_tx.clone(),
             stream_info.clone(),
         )
         .await;
@@ -165,7 +148,8 @@ impl LiveStreamService {
     }
 
     pub async fn stop_stream_impl(&self, live_id: &str) -> Result<()> {
-        self.stop_stream_tx.send(OnStopStream::new(live_id))?;
+        self.control_tx
+            .send(StreamControlMessage::stop_stream(live_id))?;
         Ok(())
     }
 
