@@ -9,12 +9,12 @@ use super::stream_info::StreamInfo;
 
 use crate::core::context::Context;
 use crate::core::input::SrtInputContext;
-use crate::core::output::{FlvOutputContext, HlsOutputContext};
+use crate::core::output::{FlvOutputContext, FlvPacket, HlsOutputContext};
 use crate::core::packet::Packet;
 
 use anyhow::{Result, anyhow};
 use log::{info, warn};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 /// Determines if a new segment should be created based on packet and duration.
 fn should_segment(
@@ -41,6 +41,7 @@ fn should_segment(
 fn pull_srt_loop_impl(
     stream_msg_tx: broadcast::Sender<StreamMessage>,
     mut control_rx: broadcast::Receiver<StreamControlMessage>,
+    flv_packet_tx: mpsc::Sender<FlvPacket>,
     stop_signal: Arc<AtomicBool>,
     info: StreamInfo,
 ) -> Result<()> {
@@ -50,8 +51,7 @@ fn pull_srt_loop_impl(
 
     let input_ctx = SrtInputContext::open(&info.srt_listener_url(), stop_signal)?;
 
-    // TODO: FIXME
-    let rtmp_output = FlvOutputContext::create(&input_ctx)?;
+    let rtmp_output = FlvOutputContext::create(live_id.to_string(), flv_packet_tx, &input_ctx)?;
 
     let mut segment_id: u64 = 1;
     let mut hls_output = HlsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;
@@ -121,6 +121,7 @@ fn pull_srt_loop_impl(
 pub(super) async fn pull_srt_loop(
     stream_msg_tx: broadcast::Sender<StreamMessage>,
     control_tx: broadcast::Sender<StreamControlMessage>,
+    flv_packet_tx: mpsc::Sender<FlvPacket>,
     info: StreamInfo,
 ) -> Result<()> {
     let stop_signal = Arc::new(AtomicBool::new(false));
@@ -133,6 +134,7 @@ pub(super) async fn pull_srt_loop(
         pull_srt_loop_impl(
             cloned_stream_msg_tx,
             control_rx,
+            flv_packet_tx,
             cloned_stop_signal,
             cloned_info,
         )

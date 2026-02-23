@@ -73,13 +73,14 @@ pub trait OutputContext: Context {
     fn alloc_output_ctx(format: &str, url: Option<&str>) -> Result<*mut AVFormatContext> {
         let mut ctx: *mut AVFormatContext = null_mut();
         let c_format = CString::new(format)?;
-        let c_filename = match url {
-            Some(url) => CString::new(url)?.as_ptr(),
-            None => null(),
-        };
+        let c_filename = url.map(|u| CString::new(u)).transpose()?;
 
         let ret = unsafe {
-            avformat_alloc_output_context2(&mut ctx, null_mut(), c_format.as_ptr(), c_filename)
+            let filename = match &c_filename {
+                Some(c) => c.as_ptr(),
+                None => null(),
+            };
+            avformat_alloc_output_context2(&mut ctx, null_mut(), c_format.as_ptr(), filename)
         };
         if ret < 0 {
             anyhow::bail!("Failed allocate output context: {}", ffmpeg_error(ret));
@@ -90,12 +91,15 @@ pub trait OutputContext: Context {
 
     fn open_io(_opaque: *mut c_void, path: Option<&str>, flags: c_int) -> Result<*mut AVIOContext> {
         let mut pb: *mut AVIOContext = null_mut();
-        let c_path = match path {
-            Some(path) => CString::new(path)?.as_ptr(),
-            None => null(),
-        };
+        let c_path = path.map(|p| CString::new(p)).transpose()?;
 
-        let ret = unsafe { avio_open(&mut pb, c_path, flags) };
+        let ret = unsafe {
+            let path = match &c_path {
+                Some(c) => c.as_ptr(),
+                None => null(),
+            };
+            avio_open(&mut pb, path, flags)
+        };
         if ret < 0 {
             anyhow::bail!("Failed to open I/O context: {}", ffmpeg_error(ret));
         } else {

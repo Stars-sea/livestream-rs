@@ -8,6 +8,7 @@ use super::port_allocator::PortAllocator;
 use super::pull_stream::pull_srt_loop;
 use super::stream_info::StreamInfo;
 
+use crate::core::output::FlvPacket;
 use crate::services::MemoryCache;
 use crate::services::MinioClient;
 use crate::settings::Settings;
@@ -18,6 +19,7 @@ use anyhow::Result;
 use log::{info, warn};
 use tokio::fs;
 use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::{Request, Response, Status};
@@ -38,6 +40,7 @@ pub struct LiveStreamService {
 
     control_tx: broadcast::Sender<StreamControlMessage>,
     stream_msg_tx: broadcast::Sender<StreamMessage>,
+    flv_packet_tx: mpsc::Sender<FlvPacket>,
 }
 
 impl LiveStreamService {
@@ -46,7 +49,11 @@ impl LiveStreamService {
     /// # Arguments
     /// * `minio_client` - Client for uploading segments to MinIO
     /// * `settings` - Application settings
-    pub fn new(minio_client: MinioClient, settings: Settings) -> Self {
+    pub fn new(
+        minio_client: MinioClient,
+        flv_packet_tx: mpsc::Sender<FlvPacket>,
+        settings: Settings,
+    ) -> Self {
         let (control_tx, _) = broadcast::channel::<StreamControlMessage>(CHANNEL_SIZE);
         let (stream_msg_tx, stream_msg_rx) = broadcast::channel::<StreamMessage>(CHANNEL_SIZE);
 
@@ -69,6 +76,7 @@ impl LiveStreamService {
             port_allocator,
             control_tx,
             stream_msg_tx,
+            flv_packet_tx,
         }
     }
 
@@ -134,6 +142,7 @@ impl LiveStreamService {
         let result = pull_srt_loop(
             self.stream_msg_tx.clone(),
             self.control_tx.clone(),
+            self.flv_packet_tx.clone(),
             stream_info.clone(),
         )
         .await;

@@ -6,11 +6,12 @@ use log::{info, warn};
 use tokio::signal;
 use tonic::transport::Server;
 
-use crate::livestream::{LiveStreamService, LivestreamServer};
+use crate::core::output::FlvPacket;
+use crate::pull_stream::{LiveStreamService, LivestreamServer};
 use crate::services::MinioClient;
 
 mod core;
-mod livestream;
+mod pull_stream;
 mod services;
 mod settings;
 
@@ -33,7 +34,13 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    let livestream = Arc::new(LiveStreamService::new(minio_client, settings));
+    let (flv_packet_tx, flv_packet_rx) = mpsc::channel::<FlvPacket>(16);
+
+    let livestream = Arc::new(LiveStreamService::new(
+        minio_client,
+        flv_packet_tx,
+        settings,
+    ));
 
     let grpc_port = env_var("GRPC_PORT")?;
     let grpc_addr = format!("0.0.0.0:{}", grpc_port);
