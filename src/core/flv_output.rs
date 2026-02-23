@@ -11,9 +11,10 @@ use std::ffi::{c_int, c_void};
 use std::ptr::null_mut;
 use std::sync::Arc;
 
+#[derive(Debug, Clone)]
 pub struct FlvPacket {
-    live_id: String,
-    data: Vec<u8>,
+    pub live_id: String,
+    pub data: Vec<u8>,
 }
 
 /// Wrapper for FFmpeg output context configured for FLV streaming to RTMP servers.

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use log::{info, warn};
 use tokio::signal;
+use tokio::sync::mpsc;
 use tonic::transport::Server;
 
 use crate::core::output::FlvPacket;
@@ -12,6 +13,7 @@ use crate::services::MinioClient;
 
 mod core;
 mod pull_stream;
+mod rtmp_server;
 mod services;
 mod settings;
 
@@ -24,6 +26,13 @@ async fn main() -> Result<()> {
     core::set_log_quiet();
     core::init();
 
+    // Start RTMP server
+    let (flv_packet_tx, flv_packet_rx) = mpsc::channel::<FlvPacket>(16);
+    let rtmp_port = env_var("RTMP_PORT")?.parse()?;
+    let rtmp_server = rtmp_server::RtmpServer::new(rtmp_port, flv_packet_rx);
+    tokio::spawn(async move { rtmp_server.run().await });
+
+    // Start GRPC & SRT pull stream server
     let settings = settings::Settings::load()?;
 
     let minio_client = MinioClient::create(
@@ -33,8 +42,6 @@ async fn main() -> Result<()> {
         &env_var("MINIO_BUCKET")?,
     )
     .await?;
-
-    let (flv_packet_tx, flv_packet_rx) = mpsc::channel::<FlvPacket>(16);
 
     let livestream = Arc::new(LiveStreamService::new(
         minio_client,
