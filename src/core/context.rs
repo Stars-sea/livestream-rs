@@ -4,8 +4,8 @@ use crate::core::stream::Stream;
 use anyhow::Result;
 use ffmpeg_sys_next::*;
 
-use std::ffi::{CStr, CString, c_int};
-use std::ptr::null_mut;
+use std::ffi::{CStr, CString, c_int, c_void};
+use std::ptr::{null, null_mut};
 
 /// Trait for accessing AVFormatContext functionality.
 ///
@@ -70,18 +70,16 @@ pub trait OutputContext: Context {
     }
 
     /// Allocates an output context for the specified format and URL.
-    fn alloc_output_ctx(format: &str, url: &str) -> Result<*mut AVFormatContext> {
+    fn alloc_output_ctx(format: &str, url: Option<&str>) -> Result<*mut AVFormatContext> {
         let mut ctx: *mut AVFormatContext = null_mut();
         let c_format = CString::new(format)?;
-        let c_filename = CString::new(url)?;
+        let c_filename = match url {
+            Some(url) => CString::new(url)?.as_ptr(),
+            None => null(),
+        };
 
         let ret = unsafe {
-            avformat_alloc_output_context2(
-                &mut ctx,
-                null_mut(),
-                c_format.as_ptr(),
-                c_filename.as_ptr(),
-            )
+            avformat_alloc_output_context2(&mut ctx, null_mut(), c_format.as_ptr(), c_filename)
         };
         if ret < 0 {
             anyhow::bail!("Failed allocate output context: {}", ffmpeg_error(ret));
@@ -90,17 +88,16 @@ pub trait OutputContext: Context {
         }
     }
 
-    fn open_io(path: String, flags: c_int) -> Result<*mut AVIOContext> {
+    fn open_io(_opaque: *mut c_void, path: Option<&str>, flags: c_int) -> Result<*mut AVIOContext> {
         let mut pb: *mut AVIOContext = null_mut();
-        let c_path = CString::new(path.clone())?;
+        let c_path = match path {
+            Some(path) => CString::new(path)?.as_ptr(),
+            None => null(),
+        };
 
-        let ret = unsafe { avio_open(&mut pb, c_path.as_ptr(), flags) };
+        let ret = unsafe { avio_open(&mut pb, c_path, flags) };
         if ret < 0 {
-            anyhow::bail!(
-                "Failed to open I/O context for path '{}': {}",
-                path,
-                ffmpeg_error(ret)
-            );
+            anyhow::bail!("Failed to open I/O context: {}", ffmpeg_error(ret));
         } else {
             Ok(pb)
         }

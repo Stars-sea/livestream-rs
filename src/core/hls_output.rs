@@ -20,7 +20,7 @@ impl HlsOutputContext {
     pub fn create(path: &PathBuf, input_ctx: &SrtInputContext) -> Result<Self> {
         // Alloc output AVFormatContext
         let url = path.as_path().display().to_string();
-        let output_ctx = Self::alloc_output_ctx("mpegts", &url)?;
+        let output_ctx = Self::alloc_output_ctx("mpegts", Some(&url))?;
 
         // Copy parameters of streams
         if let Err(e) = Self::copy_streams(output_ctx, input_ctx) {
@@ -31,7 +31,7 @@ impl HlsOutputContext {
 
         if unsafe { (*output_ctx).pb.is_null() } {
             // Open file
-            match Self::open_io(path.as_path().display().to_string(), AVIO_FLAG_WRITE) {
+            match Self::open_io(null_mut(), Some(&url), AVIO_FLAG_WRITE) {
                 Ok(pb) => unsafe { (*output_ctx).pb = pb },
                 Err(e) => {
                     warn!("Failed to open output file for MPEG-TS context: {e}");

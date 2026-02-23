@@ -9,7 +9,7 @@ use super::stream_info::StreamInfo;
 
 use crate::core::context::Context;
 use crate::core::input::SrtInputContext;
-use crate::core::output::{HlsOutputContext, RtmpOutputContext};
+use crate::core::output::{FlvOutputContext, HlsOutputContext};
 use crate::core::packet::Packet;
 
 use anyhow::{Result, anyhow};
@@ -51,7 +51,7 @@ fn pull_srt_loop_impl(
     let input_ctx = SrtInputContext::open(&info.srt_listener_url(), stop_signal)?;
 
     // TODO: FIXME
-    let rtmp_output = RtmpOutputContext::create(info.rtmp_listener_url(), &input_ctx)?;
+    let rtmp_output = FlvOutputContext::create(&input_ctx)?;
 
     let mut segment_id: u64 = 1;
     let mut hls_output = HlsOutputContext::create_segment(&cache_dir, &input_ctx, segment_id)?;

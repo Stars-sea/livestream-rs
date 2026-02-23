@@ -5,7 +5,7 @@ use super::context::{Context, InputContext, ffmpeg_error};
 use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
 
-use std::ffi::c_void;
+use std::ffi::{c_int, c_void};
 use std::ptr::null_mut;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,10 +24,10 @@ impl SrtInputContext {
         }
 
         unsafe {
-            let callback_opaque = &*stop_signal as *const AtomicBool as *mut c_void;
+            let stop_signal_ptr = Arc::into_raw(stop_signal) as *mut c_void;
             (*ctx).interrupt_callback = AVIOInterruptCB {
                 callback: Some(interrupt_callback),
-                opaque: callback_opaque,
+                opaque: stop_signal_ptr,
             };
         }
 
@@ -66,7 +66,11 @@ impl Drop for SrtInputContext {
         if self.ctx.is_null() {
             return;
         }
-        unsafe { avformat_close_input(&mut self.ctx) };
+        unsafe {
+            let _ = Arc::from_raw((*self.ctx).interrupt_callback.opaque as *const AtomicBool);
+            avio_context_free(&mut (*self.ctx).pb);
+            avformat_close_input(&mut self.ctx)
+        };
         self.ctx = null_mut();
     }
 }
@@ -79,7 +83,7 @@ impl Context for SrtInputContext {
 
 impl InputContext for SrtInputContext {}
 
-extern "C" fn interrupt_callback(opaque: *mut c_void) -> i32 {
+extern "C" fn interrupt_callback(opaque: *mut c_void) -> c_int {
     if opaque.is_null() {
         return 0;
     }
