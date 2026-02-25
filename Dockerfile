@@ -52,14 +52,18 @@ WORKDIR /app
 COPY --from=builder /app/target/release/livestream-rs ./
 COPY --from=builder /app/settings.json ./
 
+ENV HOST=srt.example.local
+
 ENV GRPC_PORT=50051
+ENV RTMP_PORT=1935
+ENV SRT_PORTS=4000-4100
+
 ENV MINIO_URI=http://localhost:9000
 ENV MINIO_ACCESSKEY=minioadmin
 ENV MINIO_SECRETKEY=miniokey
 ENV MINIO_BUCKET=videos
+
 ENV RUST_LOG=info
-ENV HOST=srt.example.local
-ENV SRT_PORTS=4000-4100
 ENV SEGMENT_TIME=10
 
 RUN mkdir ./cache

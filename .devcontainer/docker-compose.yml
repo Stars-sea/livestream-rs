@@ -10,6 +10,7 @@ services:
       MINIO_BUCKET: videos
       RUST_LOG: info
       GRPC_PORT: 50051
+      RTMP_PORT: 1935
     ports:
       - "50051:50051"
       - "4000-4100:4000-4100/udp"

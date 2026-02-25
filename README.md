@@ -45,27 +45,32 @@ docker build -t livestream-rs .
 
 | 变量名 / Variable | 描述 / Description | 默认值 / Default |
 |-------------------|-------------------|------------------|
+| `HOST` | 服务主机名 / Service hostname | `srt.example.local` |
 | `GRPC_PORT` | gRPC 服务端口 / gRPC server port | `50051` |
-| `REDIS_URI` | Redis URI | `redis://localhost:6379` |
+| `RTMP_PORT` | RTMP 服务端口 / RTMP server port | `1935` |
+| `SRT_PORTS` | SRT 监听端口范围 / SRT listening port range | `4000-4100` |
 | `MINIO_URI` | MinIO URI | `http://localhost:9000` |
 | `MINIO_ACCESSKEY` | MinIO 访问密钥 / MinIO access key | `minioadmin` |
 | `MINIO_SECRETKEY` | MinIO 密钥 / MinIO secret key | `miniokey` |
 | `MINIO_BUCKET` | MinIO 存储桶 / MinIO bucket | `videos` |
 | `RUST_LOG` | 日志级别 / Log level | `info` |
-| `SRT_PORTS` | SRT 监听端口范围 / SRT listening port range | `4000-4100` |
 | `SEGMENT_TIME` | 分段时长 / Segment duration | `10` (sec) |
 
 ### settings.json
 
 ```json
 {
+  "host": "live.example.local",
   "srt_ports": "4000-4100",
+  "grpc_callback": "",
   "cache_dir": "./cache",
   "segment_time": 10
 }
 ```
 
+- `host`: 服务主机名 / Service hostname
 - `srt_ports`: SRT 监听端口范围 / SRT listening port range
+- `grpc_callback`: gRPC 回调地址 / gRPC callback address
 - `cache_dir`: 临时缓存目录 / Temporary cache directory
 - `segment_time`: 分段时长（秒）/ Segment duration (seconds)
 
@@ -73,14 +78,15 @@ docker build -t livestream-rs .
 
 ```bash
 # Set environment variables
+export HOST=srt.example.local
 export GRPC_PORT=50051
-export REDIS_URI=redis://localhost:6379
+export RTMP_PORT=1935
+export SRT_PORTS=4000-4100
 export MINIO_URI=http://localhost:9000
 export MINIO_ACCESSKEY=minioadmin
 export MINIO_SECRETKEY=miniokey
 export MINIO_BUCKET=videos
 export RUST_LOG=info
-export SRT_PORTS=4000-4100
 export SEGMENT_TIME=10
 
 # Run
@@ -95,20 +101,6 @@ export SEGMENT_TIME=10
 - `StopPullStream`: 停止拉取流 / Stop pulling stream
 - `ListActiveStreams`: 列出活动流 / List active streams
 - `GetStreamInfo`: 获取流信息 / Get stream information
-- `WatchStreamStatus`: 监控流状态 / Watch stream status
-
-## 开发 / Development
-
-```bash
-# Format code
-cargo fmt
-
-# Run lints
-cargo clippy
-
-# Run tests (when available)
-cargo test
-```
 
 ## 许可证 / License
 
