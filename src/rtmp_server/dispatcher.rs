@@ -28,7 +28,7 @@ impl StreamState {
 #[derive(Clone)]
 pub(super) struct StreamDispatcher {
     // Map: Stream Key -> StreamState
-    pub streams: MemoryCache<StreamState>,
+    streams: MemoryCache<StreamState>,
 }
 
 impl StreamDispatcher {
@@ -38,8 +38,14 @@ impl StreamDispatcher {
         }
     }
 
-    pub async fn stream(&self, stream_key: &str) -> Option<StreamState> {
-        self.streams.get(stream_key).await
+    pub async fn stream(&self, stream_key: &str) -> StreamState {
+        self.streams
+            .get_or_insert_with(stream_key.to_string(), || StreamState::new())
+            .await
+    }
+
+    pub async fn remove_stream(&self, stream_key: &str) {
+        self.streams.remove(stream_key).await;
     }
 
     /// Returns a receiver for the specified stream key, along with cached headers.
@@ -47,11 +53,7 @@ impl StreamDispatcher {
         &self,
         stream_key: &str,
     ) -> (broadcast::Receiver<Arc<FlvTag>>, StreamState) {
-        let state = self
-            .streams
-            .get_or_insert_with(stream_key.to_string(), || StreamState::new())
-            .await;
-
+        let state = self.stream(stream_key).await;
         (state.sender.subscribe(), state)
     }
 }

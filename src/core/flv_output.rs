@@ -12,9 +12,18 @@ use std::ptr::null_mut;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
-pub struct FlvPacket {
-    pub live_id: String,
-    pub data: Vec<u8>,
+pub enum FlvPacket {
+    Data { live_id: String, data: Vec<u8> },
+    EndOfStream { live_id: String },
+}
+
+impl FlvPacket {
+    pub fn live_id(&self) -> &str {
+        match self {
+            FlvPacket::Data { live_id, .. } => live_id,
+            FlvPacket::EndOfStream { live_id } => live_id,
+        }
+    }
 }
 
 /// Wrapper for FFmpeg output context configured for FLV streaming to RTMP servers.
@@ -142,7 +151,29 @@ impl OutputContext for FlvOutputContext {
     }
 }
 
-struct FlvAvioOpaque {
+impl FlvOutputContext {
+    pub fn get_flv_packet_sender(&self) -> Option<mpsc::Sender<FlvPacket>> {
+        if self.ctx.is_null() {
+            return None;
+        }
+
+        unsafe {
+            if (*self.ctx).pb.is_null() {
+                return None;
+            }
+
+            let opaque_ptr = (*(*self.ctx).pb).opaque as *const FlvAvioOpaque;
+            if opaque_ptr.is_null() {
+                return None;
+            }
+
+            let opaque = &*opaque_ptr;
+            Some(opaque.flv_packet_tx.clone())
+        }
+    }
+}
+
+pub struct FlvAvioOpaque {
     live_id: String,
     flv_packet_tx: mpsc::Sender<FlvPacket>,
 }
@@ -160,7 +191,7 @@ extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int)
     let data_vec = data_slice.to_vec();
 
     // Attempt to send the data to the async channel. If the receiver has been dropped, return EOF.
-    match opaque_ref.flv_packet_tx.blocking_send(FlvPacket {
+    match opaque_ref.flv_packet_tx.blocking_send(FlvPacket::Data {
         live_id: opaque_ref.live_id.clone(),
         data: data_vec,
     }) {

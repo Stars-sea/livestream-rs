@@ -66,6 +66,12 @@ fn pull_srt_loop_impl(
         let packet = Packet::alloc()?;
         if packet.read_safely(&input_ctx) == 0 {
             info!("Stream ended for {}", live_id);
+            if let Some(tx) = rtmp_output.get_flv_packet_sender() {
+                tx.blocking_send(FlvPacket::EndOfStream {
+                    live_id: live_id.to_string(),
+                })
+                .ok();
+            }
             break;
         }
 
