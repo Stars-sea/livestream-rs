@@ -32,26 +32,28 @@ pub(super) async fn stream_message_handler(
                 }
             }
             StreamMessage::StreamStarted { live_id } => {
-                stream_started_handler(live_id, &grpc_callback).await;
+                if !grpc_callback.is_empty() {
+                    stream_started_handler(live_id, &grpc_callback).await;
+                }
             }
             StreamMessage::StreamStopped {
                 live_id,
                 error,
                 path,
             } => {
-                stream_stopped_handler(live_id, error, path, &grpc_callback).await;
+                if !grpc_callback.is_empty() {
+                    stream_stopped_handler(live_id, error, path, &grpc_callback).await;
+                }
             }
         }
     }
 }
 
 async fn stream_started_handler(live_id: String, grpc_callback: &String) {
-    info!("Received stream connected event: {:?}", live_id);
-
     if let Ok(mut client) = LivestreamCallbackClient::connect(grpc_callback.clone()).await {
-        let req = NotifyConnectedRequest { live_id };
-        if let Err(e) = client.notify_livestream_connected(req).await {
-            warn!("Failed to notify stream connected: {}", e);
+        let req = NotifyStartedRequest { live_id };
+        if let Err(e) = client.notify_stream_started(req).await {
+            warn!("Failed to notify stream started: {}", e);
         }
     } else {
         warn!("Failed to connect to gRPC callback at {}", grpc_callback);
@@ -64,15 +66,13 @@ async fn stream_stopped_handler(
     path: PathBuf,
     grpc_callback: &String,
 ) {
-    info!("Received stream terminate event: {:?}", live_id);
-
     if let Ok(mut client) = LivestreamCallbackClient::connect(grpc_callback.clone()).await {
-        let req = NotifyTerminateRequest {
+        let req = NotifyStoppedRequest {
             live_id,
             error_message,
         };
-        if let Err(e) = client.notify_livestream_terminate(req).await {
-            warn!("Failed to notify stream terminated: {}", e);
+        if let Err(e) = client.notify_stream_stopped(req).await {
+            warn!("Failed to notify stream stopped: {}", e);
         }
     } else {
         warn!("Failed to connect to gRPC callback at {}", grpc_callback);
