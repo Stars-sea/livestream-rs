@@ -6,8 +6,8 @@ use log::{error, info};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
+use super::connection::RtmpConnection;
 use super::dispatcher::StreamDispatcher;
-use super::handlers::connection_handler;
 
 use crate::core::flv_parser::{FlvDemuxer, FlvTag};
 use crate::core::output::FlvPacket;
@@ -15,13 +15,15 @@ use crate::core::output::FlvPacket;
 #[derive(Debug)]
 pub struct RtmpServer {
     rtmp_port: u16,
+    rtmp_app: String,
     flv_packet_rx: Option<mpsc::Receiver<FlvPacket>>,
 }
 
 impl RtmpServer {
-    pub fn new(rtmp_port: u16, flv_packet_rx: mpsc::Receiver<FlvPacket>) -> Self {
+    pub fn new(rtmp_port: u16, rtmp_app: String, flv_packet_rx: mpsc::Receiver<FlvPacket>) -> Self {
         Self {
             rtmp_port,
+            rtmp_app,
             flv_packet_rx: Some(flv_packet_rx),
         }
     }
@@ -41,11 +43,14 @@ impl RtmpServer {
             let (socket, addr) = listener.accept().await?;
             info!("New RTMP connection from {}", addr);
 
-            let dispatcher = dispatcher.clone();
+            let mut connection =
+                RtmpConnection::new(socket, dispatcher.clone(), self.rtmp_app.clone());
             tokio::spawn(async move {
-                if let Err(e) = connection_handler(socket, dispatcher).await {
+                if let Err(e) = connection.run().await {
                     error!("RTMP connection error {}: {}", addr, e);
                 }
+
+                info!("RTMP connection closed: {}", addr);
             });
         }
     }
