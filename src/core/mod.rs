@@ -12,6 +12,7 @@ use log::Level;
 pub mod context;
 pub mod input;
 pub mod packet;
+pub mod flv_parser;
 mod stream;
 
 mod flv_output;

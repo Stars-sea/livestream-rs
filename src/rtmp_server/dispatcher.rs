@@ -1,21 +1,22 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::broadcast;
 
+use crate::core::flv_parser::FlvTag;
 use crate::core::output::FlvPacket;
-use crate::rtmp_server::flv_parser::FlvTag;
+use crate::services::MemoryCache;
 
 /// Manages RTMP streams and broadcasts FLV tags to subscribers.
 #[derive(Clone)]
 pub(super) struct StreamDispatcher {
     // Map: Stream Key -> Broadcast Sender
-    streams: Arc<RwLock<HashMap<String, broadcast::Sender<Arc<FlvTag>>>>>,
+    streams: MemoryCache<broadcast::Sender<Arc<FlvTag>>>,
 }
 
 impl StreamDispatcher {
     pub fn new() -> Self {
         Self {
-            streams: Arc::new(RwLock::new(HashMap::new())),
+            streams: MemoryCache::new(),
         }
     }
 
@@ -31,25 +32,18 @@ impl StreamDispatcher {
     }
 
     pub async fn stream(&self, stream_key: &str) -> Option<broadcast::Sender<Arc<FlvTag>>> {
-        let map = self.streams.read().await;
-        map.get(stream_key).cloned()
+        self.streams.get(stream_key).await
     }
 
     /// Returns a receiver for the specified stream key.
     pub async fn subscribe(&self, stream_key: &str) -> broadcast::Receiver<Arc<FlvTag>> {
-        let map = self.streams.read().await;
-        if let Some(sender) = map.get(stream_key) {
+        if let Some(sender) = self.stream(stream_key).await {
             return sender.subscribe();
         }
-        drop(map);
 
-        let mut map = self.streams.write().await;
-        // Check again in case another thread created it
-        map.entry(stream_key.to_string())
-            .or_insert_with(|| {
-                let (tx, _) = broadcast::channel(100);
-                tx
-            })
+        self.streams
+            .get_or_insert_with(stream_key.to_string(), || broadcast::channel(16).0)
+            .await
             .subscribe()
     }
 }

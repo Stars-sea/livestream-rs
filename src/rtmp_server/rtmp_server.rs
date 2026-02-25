@@ -13,7 +13,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc};
 
 use super::dispatcher::StreamDispatcher;
-use super::flv_parser::{FlvDemuxer, FlvTag};
+use crate::core::flv_parser::{FlvDemuxer, FlvTag};
 use crate::core::output::FlvPacket;
 
 #[derive(Debug)]

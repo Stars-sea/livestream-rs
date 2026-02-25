@@ -19,11 +19,24 @@ impl<T> MemoryCache<T> {
         self.cache.read().await.keys().cloned().collect()
     }
 
+    pub async fn contains_key(&self, key: &str) -> bool {
+        self.cache.read().await.contains_key(key)
+    }
+
     pub async fn get(&self, key: &str) -> Option<T>
     where
         T: Clone,
     {
         self.cache.read().await.get(key).cloned()
+    }
+
+    pub async fn get_or_insert_with<F>(&self, key: String, default: F) -> T
+    where
+        T: Clone,
+        F: FnOnce() -> T,
+    {
+        let mut cache = self.cache.write().await;
+        cache.entry(key).or_insert_with(default).clone()
     }
 
     pub async fn set(&self, key: String, value: T) -> Result<()> {
