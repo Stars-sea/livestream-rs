@@ -41,7 +41,7 @@ fn should_segment(
 fn pull_srt_loop_impl(
     stream_msg_tx: broadcast::Sender<StreamMessage>,
     mut control_rx: broadcast::Receiver<StreamControlMessage>,
-    flv_packet_tx: mpsc::Sender<FlvPacket>,
+    flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     stop_signal: Arc<AtomicBool>,
     info: StreamInfo,
 ) -> Result<()> {
@@ -67,7 +67,7 @@ fn pull_srt_loop_impl(
         if packet.read_safely(&input_ctx) == 0 {
             info!("Stream ended for {}", live_id);
             if let Some(tx) = rtmp_output.get_flv_packet_sender() {
-                tx.blocking_send(FlvPacket::EndOfStream {
+                tx.send(FlvPacket::EndOfStream {
                     live_id: live_id.to_string(),
                 })
                 .ok();
@@ -127,7 +127,7 @@ fn pull_srt_loop_impl(
 pub(super) async fn pull_srt_loop(
     stream_msg_tx: broadcast::Sender<StreamMessage>,
     control_tx: broadcast::Sender<StreamControlMessage>,
-    flv_packet_tx: mpsc::Sender<FlvPacket>,
+    flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     info: StreamInfo,
 ) -> Result<()> {
     let stop_signal = Arc::new(AtomicBool::new(false));

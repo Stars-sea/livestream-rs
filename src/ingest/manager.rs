@@ -27,11 +27,11 @@ pub struct StreamManager {
     port_allocator: PortAllocator,
     control_tx: broadcast::Sender<StreamControlMessage>,
     stream_msg_tx: broadcast::Sender<StreamMessage>,
-    flv_packet_tx: mpsc::Sender<FlvPacket>,
+    flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
 }
 
 impl StreamManager {
-    pub fn new(minio_client: MinioClient, flv_packet_tx: mpsc::Sender<FlvPacket>) -> Self {
+    pub fn new(minio_client: MinioClient, flv_packet_tx: mpsc::UnboundedSender<FlvPacket>) -> Self {
         let settings = Settings::load().expect("Failed to load settings");
 
         let (control_tx, _) = broadcast::channel::<StreamControlMessage>(CHANNEL_SIZE);

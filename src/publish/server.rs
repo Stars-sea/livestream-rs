@@ -14,37 +14,30 @@ use crate::core::output::FlvPacket;
 
 #[derive(Debug)]
 pub struct RtmpServer {
-    rtmp_port: u16,
-    rtmp_app: String,
-    flv_packet_rx: Option<mpsc::Receiver<FlvPacket>>,
+    port: u16,
+    appname: String,
 }
 
 impl RtmpServer {
-    pub fn new(rtmp_port: u16, rtmp_app: String, flv_packet_rx: mpsc::Receiver<FlvPacket>) -> Self {
-        Self {
-            rtmp_port,
-            rtmp_app,
-            flv_packet_rx: Some(flv_packet_rx),
-        }
+    pub fn new(port: u16, appname: String) -> Self {
+        Self { port, appname }
     }
 
-    pub async fn run(mut self) -> Result<()> {
-        let listener = TcpListener::bind(format!("0.0.0.0:{}", self.rtmp_port)).await?;
-        info!("RTMP Server listening on 0.0.0.0:{}", self.rtmp_port);
+    pub async fn start(&self, flv_packet_rx: mpsc::UnboundedReceiver<FlvPacket>) -> Result<()> {
+        let listener = TcpListener::bind(format!("0.0.0.0:{}", self.port)).await?;
+        info!("RTMP Server listening on 0.0.0.0:{}", self.port);
 
         let dispatcher = StreamDispatcher::new();
 
         // Background Task: Receive packets from source, demux, and dispatch
-        let flv_rx = self.flv_packet_rx.take().unwrap();
-
-        tokio::spawn(process_flv_packets(flv_rx, dispatcher.clone()));
+        tokio::spawn(process_flv_packets(flv_packet_rx, dispatcher.clone()));
 
         loop {
             let (socket, addr) = listener.accept().await?;
             info!("New RTMP connection from {}", addr);
 
             let mut connection =
-                RtmpConnection::new(socket, dispatcher.clone(), self.rtmp_app.clone());
+                RtmpConnection::new(socket, dispatcher.clone(), self.appname.clone());
             tokio::spawn(async move {
                 if let Err(e) = connection.run().await {
                     error!("RTMP connection error {}: {}", addr, e);
@@ -56,7 +49,10 @@ impl RtmpServer {
     }
 }
 
-async fn process_flv_packets(mut flv_rx: mpsc::Receiver<FlvPacket>, dispatcher: StreamDispatcher) {
+async fn process_flv_packets(
+    mut flv_rx: mpsc::UnboundedReceiver<FlvPacket>,
+    dispatcher: StreamDispatcher,
+) {
     let mut demuxers: HashMap<String, FlvDemuxer> = HashMap::new();
 
     while let Some(packet) = flv_rx.recv().await {

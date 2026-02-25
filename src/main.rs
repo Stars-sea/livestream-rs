@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use log::info;
+use tokio::sync::mpsc;
 
 use crate::ingest::{LivestreamService, StreamManager};
 use crate::services::{GrpcServerFactory, MinioClientFactory};
 
 mod core;
 mod ingest;
-mod rtmp_server;
+mod publish;
 mod services;
 
 #[tokio::main]
@@ -21,15 +22,16 @@ async fn main() -> Result<()> {
     core::init();
 
     // Start RTMP server
-    let mut rtmp_factory = services::RtmpServerFactory::default();
-    let rtmp_server = rtmp_factory.create();
-    let flv_packet_tx = rtmp_factory.get_flv_packet_sender();
-    tokio::spawn(async move { rtmp_server.run().await });
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let server = services::RtmpServerFactory::default().create();
+        server.start(rx).await
+    });
 
     let minio_client = MinioClientFactory::default().create().await?;
 
     // Start GRPC & SRT pull stream server
-    let stream_manager = Arc::new(StreamManager::new(minio_client, flv_packet_tx));
+    let stream_manager = Arc::new(StreamManager::new(minio_client, tx));
     let livestream = Arc::new(LivestreamService::new(stream_manager.clone()));
 
     GrpcServerFactory::default()

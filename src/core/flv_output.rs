@@ -34,7 +34,7 @@ pub struct FlvOutputContext {
 impl FlvOutputContext {
     pub fn create(
         live_id: String,
-        flv_packet_tx: mpsc::Sender<FlvPacket>,
+        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
         input_ctx: &impl InputContext,
     ) -> Result<Self> {
         let ctx = Self::alloc_output_ctx("flv", None)?;
@@ -152,7 +152,7 @@ impl OutputContext for FlvOutputContext {
 }
 
 impl FlvOutputContext {
-    pub fn get_flv_packet_sender(&self) -> Option<mpsc::Sender<FlvPacket>> {
+    pub fn get_flv_packet_sender(&self) -> Option<mpsc::UnboundedSender<FlvPacket>> {
         if self.ctx.is_null() {
             return None;
         }
@@ -175,7 +175,7 @@ impl FlvOutputContext {
 
 pub struct FlvAvioOpaque {
     live_id: String,
-    flv_packet_tx: mpsc::Sender<FlvPacket>,
+    flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
 }
 
 extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int) -> c_int {
@@ -191,7 +191,7 @@ extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int)
     let data_vec = data_slice.to_vec();
 
     // Attempt to send the data to the async channel. If the receiver has been dropped, return EOF.
-    match opaque_ref.flv_packet_tx.blocking_send(FlvPacket::Data {
+    match opaque_ref.flv_packet_tx.send(FlvPacket::Data {
         live_id: opaque_ref.live_id.clone(),
         data: data_vec,
     }) {

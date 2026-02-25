@@ -17,7 +17,7 @@ use crate::core::flv_parser::FlvTag;
 pub(super) struct RtmpConnection {
     socket: TcpStream,
     dispatcher: StreamDispatcher,
-    rtmp_app: String,
+    appname: String,
     session: Option<ServerSession>,
     active_stream_rx: Option<broadcast::Receiver<Arc<FlvTag>>>,
     current_stream_id: u32,
@@ -26,11 +26,11 @@ pub(super) struct RtmpConnection {
 }
 
 impl RtmpConnection {
-    pub fn new(socket: TcpStream, dispatcher: StreamDispatcher, rtmp_app: String) -> Self {
+    pub fn new(socket: TcpStream, dispatcher: StreamDispatcher, appname: String) -> Self {
         Self {
             socket,
             dispatcher,
-            rtmp_app,
+            appname,
             session: None,
             active_stream_rx: None,
             current_stream_id: 0,
@@ -137,7 +137,7 @@ impl RtmpConnection {
                 info!("Connection requested: {}", app_name);
                 let session = self.session.as_mut().unwrap();
 
-                let res = if self.rtmp_app == app_name {
+                let res = if self.appname == app_name {
                     session.accept_request(request_id)?
                 } else {
                     session.reject_request(request_id, "AppNotFound", "Application not found")?
@@ -155,7 +155,7 @@ impl RtmpConnection {
 
                 let session = self.session.as_mut().unwrap();
 
-                let res = if self.rtmp_app == app_name {
+                let res = if self.appname == app_name {
                     self.current_stream_id = stream_id;
 
                     let (rx, state) = self.dispatcher.subscribe(&stream_key).await;
