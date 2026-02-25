@@ -1,16 +1,34 @@
 use std::sync::Arc;
 
-use tokio::sync::broadcast;
+use tokio::sync::{RwLock, broadcast};
 
 use crate::core::flv_parser::FlvTag;
-use crate::core::output::FlvPacket;
 use crate::services::MemoryCache;
+
+#[derive(Clone)]
+pub(super) struct StreamState {
+    pub sender: broadcast::Sender<Arc<FlvTag>>,
+    pub video_seq_header: Arc<RwLock<Option<Arc<FlvTag>>>>,
+    pub audio_seq_header: Arc<RwLock<Option<Arc<FlvTag>>>>,
+    pub metadata: Arc<RwLock<Option<Arc<FlvTag>>>>,
+}
+
+impl StreamState {
+    pub fn new() -> Self {
+        Self {
+            sender: broadcast::channel(100).0,
+            video_seq_header: Arc::new(RwLock::new(None)),
+            audio_seq_header: Arc::new(RwLock::new(None)),
+            metadata: Arc::new(RwLock::new(None)),
+        }
+    }
+}
 
 /// Manages RTMP streams and broadcasts FLV tags to subscribers.
 #[derive(Clone)]
 pub(super) struct StreamDispatcher {
-    // Map: Stream Key -> Broadcast Sender
-    streams: MemoryCache<broadcast::Sender<Arc<FlvTag>>>,
+    // Map: Stream Key -> StreamState
+    pub streams: MemoryCache<StreamState>,
 }
 
 impl StreamDispatcher {
@@ -20,30 +38,20 @@ impl StreamDispatcher {
         }
     }
 
-    /// Publishes a packet to the appropriate stream channel.
-    pub async fn publish(&self, packet: FlvPacket) {
-        let _live_id = packet.live_id;
-        // We need a way to maintain state (demuxer) for each stream.
-        // But here we are stateless per packet if we just distribute.
-        // Wait, the previous implementation had a demuxer loop.
-        // We'll keep the demuxer logic in the background task loop in `run`,
-        // or we need a more complex Dispatcher.
-        // For simplicity in this struct, we just expose the get_subscriber method.
-    }
-
-    pub async fn stream(&self, stream_key: &str) -> Option<broadcast::Sender<Arc<FlvTag>>> {
+    pub async fn stream(&self, stream_key: &str) -> Option<StreamState> {
         self.streams.get(stream_key).await
     }
 
-    /// Returns a receiver for the specified stream key.
-    pub async fn subscribe(&self, stream_key: &str) -> broadcast::Receiver<Arc<FlvTag>> {
-        if let Some(sender) = self.stream(stream_key).await {
-            return sender.subscribe();
-        }
+    /// Returns a receiver for the specified stream key, along with cached headers.
+    pub async fn subscribe(
+        &self,
+        stream_key: &str,
+    ) -> (broadcast::Receiver<Arc<FlvTag>>, StreamState) {
+        let state = self
+            .streams
+            .get_or_insert_with(stream_key.to_string(), || StreamState::new())
+            .await;
 
-        self.streams
-            .get_or_insert_with(stream_key.to_string(), || broadcast::channel(16).0)
-            .await
-            .subscribe()
+        (state.sender.subscribe(), state)
     }
 }

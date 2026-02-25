@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc};
 
-use super::dispatcher::StreamDispatcher;
+use super::dispatcher::{StreamDispatcher, StreamState};
 use crate::core::flv_parser::{FlvDemuxer, FlvTag};
 use crate::core::output::FlvPacket;
 
@@ -37,30 +37,9 @@ impl RtmpServer {
         let dispatcher = StreamDispatcher::new();
 
         // Background Task: Receive packets from source, demux, and dispatch
-        let dispatcher_clone = dispatcher.clone();
-        let mut flv_rx = self.flv_packet_rx.take().unwrap();
+        let flv_rx = self.flv_packet_rx.take().unwrap();
 
-        tokio::spawn(async move {
-            let mut demuxers: HashMap<String, FlvDemuxer> = HashMap::new();
-
-            while let Some(packet) = flv_rx.recv().await {
-                let live_id = packet.live_id.clone();
-                let demuxer = demuxers
-                    .entry(live_id.clone())
-                    .or_insert_with(FlvDemuxer::new);
-
-                demuxer.push_data(&packet.data);
-
-                while let Some(tag) = demuxer.next_tag() {
-                    if let Some(tx) = dispatcher_clone.stream(&live_id).await {
-                        // Ignore error if no subscribers
-                        let _ = tx.send(Arc::new(tag));
-                    }
-                    // If stream exists in demuxer but no one is subscribed in dispatcher,
-                    // we currently drop the tags. This is fine for live streaming.
-                }
-            }
-        });
+        tokio::spawn(process_flv_packets(flv_rx, dispatcher.clone()));
 
         loop {
             let (socket, addr) = listener.accept().await?;
@@ -76,6 +55,50 @@ impl RtmpServer {
     }
 }
 
+async fn process_flv_packets(mut flv_rx: mpsc::Receiver<FlvPacket>, dispatcher: StreamDispatcher) {
+    let mut demuxers: HashMap<String, FlvDemuxer> = HashMap::new();
+
+    while let Some(packet) = flv_rx.recv().await {
+        let live_id = packet.live_id.clone();
+        let demuxer = demuxers
+            .entry(live_id.clone())
+            .or_insert_with(FlvDemuxer::new);
+
+        demuxer.push_data(&packet.data);
+
+        while let Some(tag) = demuxer.next_tag() {
+            let tag = Arc::new(tag);
+
+            // Cache sequence headers
+            let state = dispatcher
+                .streams
+                .get_or_insert_with(live_id.clone(), || StreamState::new())
+                .await;
+
+            match tag.as_ref() {
+                FlvTag::Video { payload, .. } => {
+                    if payload.len() > 1 && payload[1] == 0 {
+                        // AVCPacketType == 0 (Sequence Header)
+                        *state.video_seq_header.write().await = Some(tag.clone());
+                    }
+                }
+                FlvTag::Audio { payload, .. } => {
+                    if payload.len() > 1 && payload[1] == 0 {
+                        // AACPacketType == 0 (Sequence Header)
+                        *state.audio_seq_header.write().await = Some(tag.clone());
+                    }
+                }
+                FlvTag::ScriptData { .. } => {
+                    *state.metadata.write().await = Some(tag.clone());
+                }
+            }
+
+            // Ignore error if no subscribers
+            let _ = state.sender.send(tag);
+        }
+    }
+}
+
 async fn connection_handler(mut socket: TcpStream, dispatcher: StreamDispatcher) -> Result<()> {
     // Handshake
     if !perform_handshake(&mut socket).await? {
@@ -87,6 +110,8 @@ async fn connection_handler(mut socket: TcpStream, dispatcher: StreamDispatcher)
     let (mut session, mut results) = ServerSession::new(config)?;
     let mut active_stream_rx: Option<broadcast::Receiver<Arc<FlvTag>>> = None;
     let mut current_stream_id: u32 = 0;
+    let mut stream_state: Option<StreamState> = None;
+    let mut sent_headers = false;
 
     // Initial response
     write_response(&mut socket, results).await?;
@@ -105,7 +130,7 @@ async fn connection_handler(mut socket: TcpStream, dispatcher: StreamDispatcher)
                     match result {
                         ServerSessionResult::OutboundResponse(packet) => socket.write_all(&packet.bytes).await?,
                         ServerSessionResult::RaisedEvent(event) => {
-                            handle_event(event, &mut socket, &mut session, &dispatcher, &mut active_stream_rx, &mut current_stream_id).await?;
+                            handle_event(event, &mut socket, &mut session, &dispatcher, &mut active_stream_rx, &mut current_stream_id, &mut stream_state).await?;
                         },
                         _ => {} // Ignore unhandleable for now
                     }
@@ -113,24 +138,56 @@ async fn connection_handler(mut socket: TcpStream, dispatcher: StreamDispatcher)
             }
 
             // Write to Socket (from Broadcast)
-            Ok(tag) = async {
-                if let Some(rx) = &mut active_stream_rx {
-                    rx.recv().await.map_err(|_| anyhow::anyhow!("skipped"))
-                } else {
-                    std::future::pending().await
+            Ok(tag) = recv_next_tag(&mut active_stream_rx) => {
+                // Send cached headers first if not sent yet
+                if !sent_headers {
+                    send_cached_headers(&mut socket, &mut session, current_stream_id, &stream_state).await?;
+                    sent_headers = true;
                 }
-            } => {
-                let packet = match tag.as_ref() {
-                    FlvTag::Audio { timestamp, payload } =>
-                        session.send_audio_data(current_stream_id, payload.clone().into(), RtmpTimestamp::new(*timestamp), false)?,
-                    FlvTag::Video { timestamp, payload, is_keyframe } =>
-                        session.send_video_data(current_stream_id, payload.clone().into(), RtmpTimestamp::new(*timestamp), !*is_keyframe)?,
-                    _ => continue,
-                };
-                socket.write_all(&packet.bytes).await?;
+
+                send_tag_to_socket(&mut socket, &mut session, current_stream_id, &tag).await?;
             }
         }
     }
+
+    async fn recv_next_tag(
+        rx: &mut Option<broadcast::Receiver<Arc<FlvTag>>>,
+    ) -> Result<Arc<FlvTag>> {
+        match rx {
+            Some(rx) => rx.recv().await.map_err(|e| e.into()),
+            None => std::future::pending().await,
+        }
+    }
+
+    Ok(())
+}
+
+async fn send_tag_to_socket(
+    socket: &mut TcpStream,
+    session: &mut ServerSession,
+    stream_id: u32,
+    tag: &FlvTag,
+) -> Result<()> {
+    let packet = match tag {
+        FlvTag::Audio { timestamp, payload } => session.send_audio_data(
+            stream_id,
+            payload.clone().into(),
+            RtmpTimestamp::new(*timestamp),
+            false,
+        )?,
+        FlvTag::Video {
+            timestamp,
+            payload,
+            is_keyframe,
+        } => session.send_video_data(
+            stream_id,
+            payload.clone().into(),
+            RtmpTimestamp::new(*timestamp),
+            !*is_keyframe,
+        )?,
+        FlvTag::ScriptData { .. } => return Ok(()),
+    };
+    socket.write_all(&packet.bytes).await?;
     Ok(())
 }
 
@@ -166,6 +223,7 @@ async fn handle_event(
     dispatcher: &StreamDispatcher,
     active_stream_rx: &mut Option<broadcast::Receiver<Arc<FlvTag>>>,
     current_stream_id: &mut u32,
+    stream_state: &mut Option<StreamState>,
 ) -> Result<()> {
     match event {
         ServerSessionEvent::ConnectionRequested {
@@ -184,13 +242,17 @@ async fn handle_event(
         } => {
             info!("Play requested: {} (ID: {})", stream_key, stream_id);
             *current_stream_id = stream_id;
-            *active_stream_rx = Some(dispatcher.subscribe(&stream_key).await);
+
+            let (rx, state) = dispatcher.subscribe(&stream_key).await;
+            *active_stream_rx = Some(rx);
+            *stream_state = Some(state);
 
             let res = session.accept_request(request_id)?;
             write_response(socket, res).await?;
         }
         ServerSessionEvent::PlayStreamFinished { .. } => {
             *active_stream_rx = None;
+            *stream_state = None;
         }
         _ => {}
     }
@@ -201,6 +263,23 @@ async fn write_response(socket: &mut TcpStream, results: Vec<ServerSessionResult
     for result in results {
         if let ServerSessionResult::OutboundResponse(packet) = result {
             socket.write_all(&packet.bytes).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn send_cached_headers(
+    socket: &mut TcpStream,
+    session: &mut ServerSession,
+    current_stream_id: u32,
+    stream_state: &Option<StreamState>,
+) -> Result<()> {
+    if let Some(state) = stream_state {
+        if let Some(v_seq) = state.video_seq_header.read().await.as_ref() {
+            send_tag_to_socket(socket, session, current_stream_id, v_seq).await?;
+        }
+        if let Some(a_seq) = state.audio_seq_header.read().await.as_ref() {
+            send_tag_to_socket(socket, session, current_stream_id, a_seq).await?;
         }
     }
     Ok(())
