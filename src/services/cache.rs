@@ -8,7 +8,10 @@ pub struct MemoryCache<T> {
     cache: Arc<RwLock<HashMap<String, T>>>,
 }
 
-impl<T> MemoryCache<T> {
+impl<T> MemoryCache<T>
+where
+    T: Clone,
+{
     pub fn new() -> Self {
         Self {
             cache: Arc::new(RwLock::new(HashMap::new())),
@@ -23,16 +26,12 @@ impl<T> MemoryCache<T> {
         self.cache.read().await.contains_key(key)
     }
 
-    pub async fn get(&self, key: &str) -> Option<T>
-    where
-        T: Clone,
-    {
+    pub async fn get(&self, key: &str) -> Option<T> {
         self.cache.read().await.get(key).cloned()
     }
 
     pub async fn get_or_insert_with<F>(&self, key: String, default: F) -> T
     where
-        T: Clone,
         F: FnOnce() -> T,
     {
         let mut cache = self.cache.write().await;
@@ -49,5 +48,14 @@ impl<T> MemoryCache<T> {
 
     pub async fn remove(&self, key: &str) {
         self.cache.write().await.remove(key);
+    }
+}
+
+impl<T> Default for MemoryCache<T>
+where
+    T: Clone,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }

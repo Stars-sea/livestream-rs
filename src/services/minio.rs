@@ -10,6 +10,8 @@ use minio::s3::types::S3Api;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::services::env_var;
+
 /// Client for interacting with MinIO or S3-compatible storage.
 #[derive(Debug, Clone)]
 pub struct MinioClient {
@@ -19,37 +21,6 @@ pub struct MinioClient {
 }
 
 impl MinioClient {
-    /// Creates a new MinIO client and ensures the bucket exists.
-    ///
-    /// # Arguments
-    /// * `endpoint` - MinIO server endpoint URL
-    /// * `access_key` - Access key for authentication
-    /// * `secret_key` - Secret key for authentication
-    /// * `bucket` - Bucket name to use
-    ///
-    /// # Errors
-    /// Returns an error if connection fails or bucket cannot be created.
-    pub async fn create(
-        endpoint: &str,
-        access_key: &str,
-        secret_key: &str,
-        bucket: &str,
-    ) -> Result<Self> {
-        let base_url = endpoint.parse::<BaseUrl>()?;
-        let static_provider = StaticProvider::new(access_key.into(), secret_key.into(), None);
-
-        let client = Client::new(base_url, Some(Box::new(static_provider)), None, None)?;
-
-        let exists_resp = client.bucket_exists(bucket).send().await;
-        if exists_resp.is_err() || !exists_resp?.exists {
-            client.create_bucket(bucket).send().await?;
-        }
-        Ok(Self {
-            bucket: bucket.into(),
-            client: client.into(),
-        })
-    }
-
     /// Uploads a file to MinIO storage.
     ///
     /// # Arguments
@@ -66,5 +37,50 @@ impl MinioClient {
 
         debug!("File {} uploaded", filename);
         Ok(())
+    }
+}
+
+pub struct MinioClientFactory {
+    endpoint: String,
+    access_key: String,
+    secret_key: String,
+    bucket: String,
+}
+
+impl MinioClientFactory {
+    pub fn new(endpoint: String, access_key: String, secret_key: String, bucket: String) -> Self {
+        Self {
+            endpoint,
+            access_key,
+            secret_key,
+            bucket,
+        }
+    }
+
+    pub async fn create(&self) -> Result<MinioClient> {
+        let base_url = self.endpoint.parse::<BaseUrl>()?;
+        let static_provider = StaticProvider::new(&self.access_key, &self.secret_key, None);
+
+        let client = Client::new(base_url, Some(Box::new(static_provider)), None, None)?;
+
+        let exists_resp = client.bucket_exists(self.bucket.as_str()).send().await;
+        if exists_resp.is_err() || !exists_resp?.exists {
+            client.create_bucket(self.bucket.as_str()).send().await?;
+        }
+        Ok(MinioClient {
+            bucket: self.bucket.clone(),
+            client: client.into(),
+        })
+    }
+}
+
+impl Default for MinioClientFactory {
+    fn default() -> Self {
+        Self::new(
+            env_var("MINIO_URI").unwrap(),
+            env_var("MINIO_ACCESSKEY").unwrap(),
+            env_var("MINIO_SECRETKEY").unwrap(),
+            env_var("MINIO_BUCKET").unwrap(),
+        )
     }
 }

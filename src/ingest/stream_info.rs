@@ -2,14 +2,13 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::settings::Settings;
+use super::settings::Settings;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StreamInfo {
     live_id: String,
     host: String,
     srt_port: u16,
-    rtmp_port: u16,
 
     passphrase: String,
 
@@ -26,7 +25,6 @@ impl StreamInfo {
             live_id,
             host,
             srt_port: port,
-            rtmp_port: settings.rtmp_port,
             passphrase,
             cache_dir,
             segment_duration,
@@ -45,11 +43,6 @@ impl StreamInfo {
         self.srt_port
     }
 
-    #[allow(dead_code)]
-    pub fn rtmp_port(&self) -> u16 {
-        self.rtmp_port
-    }
-
     pub fn passphrase(&self) -> &str {
         &self.passphrase
     }
@@ -66,20 +59,6 @@ impl StreamInfo {
         format!(
             "srt://:{}?mode=listener&passphrase={}&srt_streamid={}",
             self.srt_port, self.passphrase, self.live_id
-        )
-    }
-
-    pub fn rtmp_listener_url(&self) -> String {
-        format!(
-            "rtmp://0.0.0.0:{}/lives/{}?listen=1",
-            self.rtmp_port, self.live_id
-        )
-    }
-
-    pub fn rtmp_pull_url(&self) -> String {
-        format!(
-            "rtmp://{}:{}/lives/{}",
-            self.host, self.rtmp_port, self.live_id
         )
     }
 }

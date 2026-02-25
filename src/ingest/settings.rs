@@ -12,8 +12,6 @@ pub struct Settings {
 
     /// Port range for SRT listeners (format: "start-end", e.g., "4000-5000")
     pub srt_ports: String,
-    /// Port for RTMP streaming output (e.g., 1935)
-    pub rtmp_port: u16,
 
     /// gRPC callback URL for stream events (e.g., "http://localhost:50051")
     pub grpc_callback: String,
@@ -43,17 +41,6 @@ impl Settings {
 
         if let Ok(srt_ports) = std::env::var("SRT_PORTS") {
             settings.srt_ports = srt_ports;
-        }
-
-        if let Ok(rtmp_port) = std::env::var("RTMP_PORT") {
-            if let Ok(port) = rtmp_port.parse::<u16>() {
-                settings.rtmp_port = port;
-            } else {
-                warn!(
-                    "Invalid RTMP_PORT environment variable '{}', using default {}",
-                    rtmp_port, settings.rtmp_port
-                );
-            }
         }
 
         if let Ok(grpc_callback) = std::env::var("LIVE_SVC_GRPC") {
