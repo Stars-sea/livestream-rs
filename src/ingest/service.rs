@@ -56,9 +56,9 @@ impl Livestream for Arc<LivestreamService> {
             Err(e) => return Err(Status::resource_exhausted(e.to_string())),
         };
 
-        let cloned_manager = Arc::clone(&self.manager);
-        let cloned_info = stream_info.clone();
-        tokio::spawn(async move { cloned_manager.start_stream(cloned_info).await });
+        if let Err(e) = self.manager.start_stream(stream_info.clone()).await {
+            return Err(Status::internal(e.to_string()));
+        }
 
         let resp: StreamInfoResponse = stream_info.into();
         Ok(Response::new(resp))

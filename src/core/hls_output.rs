@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 
 /// Wrapper for FFmpeg output context configured for MPEG-TS files.
+#[derive(Debug)]
 pub struct HlsOutputContext {
     ctx: *mut AVFormatContext,
     path: PathBuf,

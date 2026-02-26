@@ -27,6 +27,7 @@ impl FlvPacket {
 }
 
 /// Wrapper for FFmpeg output context configured for FLV streaming to RTMP servers.
+#[derive(Debug)]
 pub struct FlvOutputContext {
     ctx: *mut AVFormatContext,
 }

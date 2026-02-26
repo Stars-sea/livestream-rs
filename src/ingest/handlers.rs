@@ -1,24 +1,46 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use log::{debug, info, warn};
 use tokio::fs;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use super::events::*;
 use super::grpc::livestream_callback_client::LivestreamCallbackClient;
 use super::grpc::*;
+use crate::ingest::puller::StreamPullerFactory;
 use crate::services::MinioClient;
 
+pub(super) async fn stream_control_message_handler(
+    mut rx: mpsc::UnboundedReceiver<StreamControlMessage>,
+    factory: Arc<StreamPullerFactory>,
+) {
+    while let Some(msg) = rx.recv().await {
+        match msg {
+            StreamControlMessage::StopStream { live_id } => {
+                info!("Received stop signal for stream: {}", live_id);
+                if let Some(stop_signal) = factory.get_signal(&live_id).await {
+                    stop_signal.store(true, Ordering::Relaxed);
+                } else {
+                    warn!("No active stop signal found for live_id: {}", live_id);
+                }
+            }
+        }
+    }
+}
+
 pub(super) async fn stream_message_handler(
-    rx: broadcast::Receiver<StreamMessage>,
+    rx: mpsc::UnboundedReceiver<StreamMessage>,
     grpc_callback: String,
     minio: MinioClient,
+    factory: Arc<StreamPullerFactory>,
 ) {
-    let mut stream = BroadcastStream::new(rx);
+    let mut stream = UnboundedReceiverStream::new(rx);
 
-    while let Some(Ok(msg)) = stream.next().await {
+    while let Some(msg) = stream.next().await {
         info!("Received stream message event: {:?}", msg);
 
         match msg {
@@ -41,6 +63,8 @@ pub(super) async fn stream_message_handler(
                 error,
                 path,
             } => {
+                factory.remove_signal(&live_id).await;
+
                 if !grpc_callback.is_empty() {
                     stream_stopped_handler(live_id, error, path, &grpc_callback).await;
                 }

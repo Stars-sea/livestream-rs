@@ -2,7 +2,7 @@ mod events;
 mod handlers;
 mod manager;
 mod port_allocator;
-mod pull_stream;
+mod puller;
 mod service;
 mod settings;
 mod stream_info;
