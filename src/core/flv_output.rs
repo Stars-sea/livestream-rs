@@ -1,6 +1,6 @@
 //! FLV output context for streaming to RTMP servers.
 
-use crate::core::context::{Context, InputContext, OutputContext, ffmpeg_error};
+use super::context::{Context, InputContext, OutputContext, ffmpeg_error};
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
@@ -11,9 +11,11 @@ use std::ffi::{c_int, c_void};
 use std::ptr::null_mut;
 use std::sync::Arc;
 
+use bytes::Bytes;
+
 #[derive(Debug, Clone)]
 pub enum FlvPacket {
-    Data { live_id: String, data: Vec<u8> },
+    Data { live_id: String, data: Bytes },
     EndOfStream { live_id: String },
 }
 
@@ -187,14 +189,14 @@ extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int)
     // Do not use the Arc here since we only need to read from it and it will be dropped when the context is dropped
     let opaque_ref = unsafe { &*(opaque as *const FlvAvioOpaque) };
 
-    // Convert the raw buffer to a Rust slice and then to a Vec<u8> for sending through the channel
+    // Convert the raw buffer to a Rust slice and then to a Bytes for sending through the channel
     let data_slice = unsafe { std::slice::from_raw_parts(buf, buf_size as usize) };
-    let data_vec = data_slice.to_vec();
+    let data = Bytes::copy_from_slice(data_slice);
 
     // Attempt to send the data to the async channel. If the receiver has been dropped, return EOF.
     match opaque_ref.flv_packet_tx.send(FlvPacket::Data {
         live_id: opaque_ref.live_id.clone(),
-        data: data_vec,
+        data,
     }) {
         Ok(_) => buf_size,
         Err(_) => AVERROR_EOF,

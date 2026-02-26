@@ -23,7 +23,7 @@ pub struct StreamManager {
     settings: Settings,
 
     puller_factory: Arc<StreamPullerFactory>,
-    stream_info_cache: MemoryCache<StreamInfo>,
+    stream_info_cache: MemoryCache<Arc<StreamInfo>>,
     port_allocator: PortAllocator,
 
     control_tx: mpsc::UnboundedSender<StreamControlMessage>,
@@ -67,7 +67,11 @@ impl StreamManager {
         }
     }
 
-    pub async fn make_stream_info(&self, live_id: &str, passphrase: &str) -> Result<StreamInfo> {
+    pub async fn make_stream_info(
+        &self,
+        live_id: &str,
+        passphrase: &str,
+    ) -> Result<Arc<StreamInfo>> {
         let port = self
             .port_allocator
             .allocate_safe_port()
@@ -76,12 +80,12 @@ impl StreamManager {
                 "No available ports to allocate for SRT stream"
             ))?;
 
-        let info = StreamInfo::new(
+        let info = Arc::new(StreamInfo::new(
             live_id.to_string(),
             port,
             passphrase.to_string(),
             &self.settings,
-        );
+        )?);
 
         if let Err(e) = fs::create_dir_all(info.cache_dir()).await {
             self.port_allocator.release_port(port).await;
@@ -91,7 +95,7 @@ impl StreamManager {
         Ok(info)
     }
 
-    pub async fn release_stream_resources(&self, info: StreamInfo) -> Result<()> {
+    pub async fn release_stream_resources(&self, info: Arc<StreamInfo>) -> Result<()> {
         // Release allocated port
         self.port_allocator.release_port(info.srt_port()).await;
 
@@ -116,7 +120,7 @@ impl StreamManager {
         Ok(())
     }
 
-    pub async fn start_stream(&self, stream_info: StreamInfo) -> Result<()> {
+    pub async fn start_stream(&self, stream_info: Arc<StreamInfo>) -> Result<()> {
         let live_id = stream_info.live_id().to_string();
 
         self.stream_info_cache
@@ -135,16 +139,14 @@ impl StreamManager {
             stream_info.srt_port()
         );
 
-        tokio::task::spawn_blocking(move || {
-            match factory.create_blocking(cloned_info) {
-                Ok(mut puller) => {
-                    if let Err(e) = puller.start() {
-                        error!("Stream puller error: {e}");
-                    }
+        tokio::task::spawn_blocking(move || match factory.create_blocking(cloned_info) {
+            Ok(mut puller) => {
+                if let Err(e) = puller.start() {
+                    error!("Stream puller error: {e}");
                 }
-                Err(e) => {
-                    error!("Failed to create stream puller: {e}");
-                }
+            }
+            Err(e) => {
+                error!("Failed to create stream puller: {e}");
             }
         });
 
@@ -167,7 +169,7 @@ impl StreamManager {
         Ok(self.stream_info_cache.keys().await)
     }
 
-    pub async fn get_stream_info(&self, live_id: &str) -> Option<StreamInfo> {
+    pub async fn get_stream_info(&self, live_id: &str) -> Option<Arc<StreamInfo>> {
         match self.stream_info_cache.get(live_id).await {
             Some(info) => Some(info),
             None => {

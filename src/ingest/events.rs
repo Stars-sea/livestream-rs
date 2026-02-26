@@ -33,7 +33,6 @@ pub enum StreamMessage {
     StreamStopped {
         live_id: String,
         error: Option<String>,
-        path: PathBuf,
     },
 }
 
@@ -53,11 +52,10 @@ impl StreamMessage {
         }
     }
 
-    pub fn stream_stopped(live_id: &str, error: Option<String>, path: &PathBuf) -> Self {
+    pub fn stream_stopped(live_id: &str, error: Option<String>) -> Self {
         StreamMessage::StreamStopped {
             live_id: live_id.to_string(),
             error,
-            path: path.clone(),
         }
     }
 }

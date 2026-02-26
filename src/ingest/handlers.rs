@@ -58,15 +58,11 @@ pub(super) async fn stream_message_handler(
                     stream_started_handler(live_id, &grpc_callback).await;
                 }
             }
-            StreamMessage::StreamStopped {
-                live_id,
-                error,
-                path,
-            } => {
+            StreamMessage::StreamStopped { live_id, error } => {
                 factory.remove_signal(&live_id).await;
 
                 if !grpc_callback.is_empty() {
-                    stream_stopped_handler(live_id, error, path, &grpc_callback).await;
+                    stream_stopped_handler(live_id, error, &grpc_callback).await;
                 }
             }
         }
@@ -87,7 +83,6 @@ async fn stream_started_handler(live_id: String, grpc_callback: &String) {
 async fn stream_stopped_handler(
     live_id: String,
     error_message: Option<String>,
-    path: PathBuf,
     grpc_callback: &String,
 ) {
     if let Ok(mut client) = LivestreamCallbackClient::connect(grpc_callback.clone()).await {
@@ -100,13 +95,6 @@ async fn stream_stopped_handler(
         }
     } else {
         warn!("Failed to connect to gRPC callback at {}", grpc_callback);
-    }
-
-    // Clean up any remaining files in the cache directory
-    if fs::try_exists(&path).await.unwrap_or(false) {
-        if let Err(e) = fs::remove_dir_all(&path).await {
-            warn!("Failed to remove cache directory {}: {}", path.display(), e);
-        }
     }
 }
 

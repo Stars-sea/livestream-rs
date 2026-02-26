@@ -10,8 +10,6 @@ ffmpeg-sys-next = { version = "8.0.1", default-features = false, features = ["av
 log = "0.4.29"
 minio = "0.3.0"
 prost = "0.14.3"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
 tokio = { version = "1.49.0", features = ["full"] }
 tonic = "0.14.5"
 tonic-prost = "0.14.5"
@@ -19,6 +17,7 @@ tokio-stream = { version = "0.1.18", features = ["sync", "fs"] }
 regex = "1.12.3"
 rml_rtmp = "0.8.0"
 bytes = "1.11.1"
+tempfile = "3.26.0"
 
 [build-dependencies]
 tonic-prost-build = "0.14.5"

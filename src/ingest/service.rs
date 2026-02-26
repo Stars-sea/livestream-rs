@@ -117,7 +117,7 @@ impl Livestream for Arc<LivestreamService> {
     }
 }
 
-impl Into<StreamInfoResponse> for StreamInfo {
+impl Into<StreamInfoResponse> for Arc<StreamInfo> {
     fn into(self) -> StreamInfoResponse {
         StreamInfoResponse {
             live_id: self.live_id().to_string(),

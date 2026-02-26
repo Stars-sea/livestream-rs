@@ -85,6 +85,4 @@ ENV MINIO_BUCKET=videos
 ENV RUST_LOG=info
 ENV SEGMENT_TIME=10
 
-RUN mkdir ./cache
-
 ENTRYPOINT ["./livestream-rs"]

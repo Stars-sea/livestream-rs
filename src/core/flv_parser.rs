@@ -1,19 +1,19 @@
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 
 #[derive(Clone, Debug)]
 pub enum FlvTag {
     Audio {
         timestamp: u32,
-        payload: Vec<u8>,
+        payload: Bytes,
     },
     Video {
         timestamp: u32,
-        payload: Vec<u8>,
+        payload: Bytes,
         is_keyframe: bool,
     },
     ScriptData {
         timestamp: u32,
-        payload: Vec<u8>,
+        payload: Bytes,
     },
 }
 
@@ -67,17 +67,21 @@ impl FlvDemuxer {
                 return None; // Not enough data for a complete tag, wait for more data
             }
 
-            // Get the payload data
-            let payload = self.buffer[11..11 + data_size].to_vec();
+            // Advance over header
+            self.buffer.advance(11);
 
-            // Advance the buffer to the next tag (skip current tag and its previous tag size)
-            self.buffer.advance(total_tag_len);
+            // Get the payload data (Zero-copy)
+            let payload = self.buffer.split_to(data_size).freeze();
+
+            // Advance over PreviousTagSize
+            self.buffer.advance(4);
 
             match tag_type {
                 8 => return Some(FlvTag::Audio { timestamp, payload }),
                 9 => {
-                    let is_keyframe = if payload.len() > 0 {
-                        (payload[0] >> 4) == 1 || (payload[0] >> 4) == 4
+                    let is_keyframe = if !payload.is_empty() {
+                        let frame_type = payload[0] >> 4;
+                        frame_type == 1 || frame_type == 4
                     } else {
                         false
                     };

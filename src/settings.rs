@@ -18,8 +18,6 @@ pub struct Settings {
     pub grpc_callback: String,
     /// Segment duration in seconds for HLS/TS output
     pub segment_time: i32,
-    /// Directory for temporary cache files
-    pub cache_dir: String,
 
     /// RTMP Server Port
     pub rtmp_port: u16,
@@ -40,20 +38,17 @@ impl Settings {
     /// Loads settings from environment variables.
     pub fn from_env() -> Result<Self> {
         let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let srt_ports = env::var("SRT_PORTS").unwrap_or_else(|_| "30000-30010".to_string());
+        let srt_ports = env::var("SRT_PORTS").unwrap_or_else(|_| "4000-4100".to_string());
         let grpc_port = env::var("GRPC_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(50051);
-        let grpc_callback =
-            env::var("LIVE_SVC_GRPC").unwrap_or_else(|_| "http://localhost:50051".to_string());
+        let grpc_callback = env::var("LIVE_SVC_GRPC").unwrap_or_else(|_| "".to_string());
 
         let segment_time = env::var("SEGMENT_TIME")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(2); // Default 2s
-
-        let cache_dir = env::var("CACHE_DIR").unwrap_or_else(|_| "./cache".to_string());
 
         let rtmp_port = env::var("RTMP_PORT")
             .ok()
@@ -77,7 +72,6 @@ impl Settings {
             grpc_port,
             grpc_callback,
             segment_time,
-            cache_dir,
             rtmp_port,
             rtmp_app,
             minio_endpoint,

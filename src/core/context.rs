@@ -1,6 +1,7 @@
 //! Context trait and utilities for FFmpeg format contexts.
 
-use crate::core::stream::Stream;
+use super::stream::Stream;
+
 use anyhow::Result;
 use ffmpeg_sys_next::*;
 

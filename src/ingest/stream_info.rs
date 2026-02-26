@@ -1,10 +1,11 @@
-use std::path::PathBuf;
+use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use anyhow::Result;
+use tempfile::TempDir;
 
 use crate::Settings;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug)]
 pub struct StreamInfo {
     live_id: String,
     host: String,
@@ -12,23 +13,30 @@ pub struct StreamInfo {
 
     passphrase: String,
 
-    cache_dir: PathBuf,
+    cache_dir: TempDir,
     segment_duration: i32,
 }
 
 impl StreamInfo {
-    pub fn new(live_id: String, port: u16, passphrase: String, settings: &Settings) -> Self {
+    pub fn new(
+        live_id: String,
+        port: u16,
+        passphrase: String,
+        settings: &Settings,
+    ) -> Result<Self> {
         let host = settings.host.clone();
-        let cache_dir = PathBuf::from(&settings.cache_dir).join(&live_id);
         let segment_duration = settings.segment_time;
-        Self {
+
+        let cache_dir = tempfile::tempdir()?;
+
+        Ok(StreamInfo {
             live_id,
             host,
             srt_port: port,
             passphrase,
             cache_dir,
             segment_duration,
-        }
+        })
     }
 
     pub fn live_id(&self) -> &str {
@@ -47,8 +55,8 @@ impl StreamInfo {
         &self.passphrase
     }
 
-    pub fn cache_dir(&self) -> &PathBuf {
-        &self.cache_dir
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir.path()
     }
 
     pub fn segment_duration(&self) -> i32 {

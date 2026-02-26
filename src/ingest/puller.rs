@@ -39,7 +39,7 @@ impl StreamPullerFactory {
         !self.signal_cache.contains_key(stream_info.live_id()).await
     }
 
-    pub async fn create(&self, stream_info: StreamInfo) -> Result<StreamPuller> {
+    pub async fn create(&self, stream_info: Arc<StreamInfo>) -> Result<StreamPuller> {
         let live_id = stream_info.live_id().to_string();
         let stop_signal = Arc::new(AtomicBool::new(false));
         self.signal_cache.set(live_id, stop_signal.clone()).await?;
@@ -60,7 +60,7 @@ impl StreamPullerFactory {
         self.signal_cache.get(live_id).await
     }
 
-    pub fn create_blocking(&self, stream_info: StreamInfo) -> Result<StreamPuller> {
+    pub fn create_blocking(&self, stream_info: Arc<StreamInfo>) -> Result<StreamPuller> {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(self.create(stream_info))
     }
@@ -68,7 +68,7 @@ impl StreamPullerFactory {
 
 #[derive(Debug)]
 pub(super) struct StreamPuller {
-    stream_info: StreamInfo,
+    stream_info: Arc<StreamInfo>,
 
     stream_msg_tx: mpsc::UnboundedSender<StreamMessage>,
     flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
@@ -87,7 +87,7 @@ pub(super) struct StreamPuller {
 
 impl StreamPuller {
     pub fn new(
-        stream_info: StreamInfo,
+        stream_info: Arc<StreamInfo>,
         stream_msg_tx: mpsc::UnboundedSender<StreamMessage>,
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
         stop_signal: Arc<AtomicBool>,
@@ -159,8 +159,7 @@ impl StreamPuller {
     fn notify_stream_stopped(&self, error: Option<String>) {
         let live_id = self.stream_info.live_id();
 
-        let msg =
-            StreamMessage::stream_stopped(live_id, error.clone(), self.stream_info.cache_dir());
+        let msg = StreamMessage::stream_stopped(live_id, error.clone());
         if let Err(e) = self.stream_msg_tx.send(msg) {
             warn!("Failed to send stream terminate event: {}", e);
         }
