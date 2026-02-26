@@ -1,8 +1,10 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use log::{error, info, warn};
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 use super::events::{StreamControlMessage, StreamMessage};
 use super::handlers;
@@ -106,9 +108,7 @@ impl StreamManager {
     pub async fn start_stream(self: &Arc<Self>, stream_info: Arc<StreamInfo>) -> Result<()> {
         let live_id = stream_info.live_id().to_string();
 
-        let cloned_info = stream_info.clone();
-        let factory = self.puller_factory.clone();
-        if !factory.can_create(&stream_info).await {
+        if !self.puller_factory.can_create(&stream_info).await {
             warn!("Cannot create stream puller for live_id: {}", live_id);
             anyhow::bail!("Failed to create stream puller for live_id: {live_id}");
         }
@@ -118,11 +118,12 @@ impl StreamManager {
             stream_info.srt_port()
         );
 
+        let cloned_info = stream_info.clone();
         let arc_self = self.clone();
         tokio::task::spawn_blocking(move || {
             let handle = tokio::runtime::Handle::current();
 
-            match handle.block_on(factory.create(cloned_info.clone())) {
+            match handle.block_on(arc_self.puller_factory.create(cloned_info.clone())) {
                 Ok(mut puller) => {
                     if let Err(e) = puller.start() {
                         error!("Stream puller error: {e}");
@@ -133,7 +134,16 @@ impl StreamManager {
                 }
             }
 
-            handle.block_on(arc_self.release_stream_resources(cloned_info));
+            handle.block_on(async {
+                timeout(Duration::from_secs(3), async {
+                    while !cloned_info.is_cache_empty().unwrap_or(true) {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                })
+                .await
+                .ok();
+                arc_self.release_stream_resources(cloned_info).await
+            });
         });
 
         Ok(())

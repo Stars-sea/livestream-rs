@@ -13,6 +13,8 @@ pub struct StreamInfo {
 
     passphrase: String,
 
+    /// Temporary directory for storing segments before they are sent to the MinIO.
+    /// The directory will be automatically deleted when the StreamInfo is dropped
     cache_dir: TempDir,
     segment_duration: i32,
 }
@@ -57,6 +59,11 @@ impl StreamInfo {
 
     pub fn cache_dir(&self) -> &Path {
         &self.cache_dir.path()
+    }
+
+    pub fn is_cache_empty(&self) -> Result<bool> {
+        let mut entries = self.cache_dir.path().read_dir()?;
+        Ok(entries.next().is_none())
     }
 
     pub fn segment_duration(&self) -> i32 {

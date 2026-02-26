@@ -49,27 +49,24 @@ pub(super) async fn stream_message_handler(
                 segment_id,
                 path,
             } => {
-                if let Err(e) = segment_complete_handler(live_id, segment_id, path, &minio).await {
-                    warn!("Failed to handle segment complete event: {}", e);
-                }
+                segment_complete_handler(live_id, segment_id, path, &minio)
+                    .await
+                    .ok();
             }
             StreamMessage::StreamStarted { live_id } => {
-                if !grpc_callback.is_empty() {
-                    stream_started_handler(live_id, &grpc_callback).await;
-                }
+                stream_started_handler(live_id, &grpc_callback).await;
             }
             StreamMessage::StreamStopped { live_id, error } => {
-                factory.remove_signal(&live_id).await;
-
-                if !grpc_callback.is_empty() {
-                    stream_stopped_handler(live_id, error, &grpc_callback).await;
-                }
+                stream_stopped_handler(live_id, error, &grpc_callback, &factory).await;
             }
         }
     }
 }
 
 async fn stream_started_handler(live_id: String, grpc_callback: &String) {
+    if grpc_callback.is_empty() {
+        return;
+    }
     if let Ok(mut client) = LivestreamCallbackClient::connect(grpc_callback.clone()).await {
         let req = NotifyStartedRequest { live_id };
         if let Err(e) = client.notify_stream_started(req).await {
@@ -84,7 +81,13 @@ async fn stream_stopped_handler(
     live_id: String,
     error_message: Option<String>,
     grpc_callback: &String,
+    factory: &Arc<StreamPullerFactory>,
 ) {
+    factory.remove_signal(&live_id).await;
+
+    if grpc_callback.is_empty() {
+        return;
+    }
     if let Ok(mut client) = LivestreamCallbackClient::connect(grpc_callback.clone()).await {
         let req = NotifyStoppedRequest {
             live_id,
