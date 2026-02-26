@@ -136,14 +136,15 @@ impl StreamManager {
         );
 
         tokio::task::spawn_blocking(move || {
-            let puller = factory.create_blocking(cloned_info);
-            if let Err(e) = puller {
-                error!("Failed to create stream puller: {e}");
-                return;
-            }
-
-            if let Err(e) = puller.unwrap().start() {
-                error!("Stream puller error: {e}");
+            match factory.create_blocking(cloned_info) {
+                Ok(mut puller) => {
+                    if let Err(e) = puller.start() {
+                        error!("Stream puller error: {e}");
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to create stream puller: {e}");
+                }
             }
         });
 

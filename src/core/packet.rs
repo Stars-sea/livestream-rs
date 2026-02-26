@@ -52,12 +52,17 @@ impl Packet {
         unsafe { av_packet_rescale_ts(self.packet, original_time_base, target_time_base) }
     }
 
-    pub fn rescale_ts_for_ctx(&self, in_ctx: &impl Context, out_ctx: &impl Context) {
+    pub fn rescale_ts_for_ctx(&self, in_ctx: &impl Context, out_ctx: &impl Context) -> Result<()> {
         let stream_idx = self.stream_idx();
-        self.rescale_ts(
-            in_ctx.stream(stream_idx).unwrap().time_base(),
-            out_ctx.stream(stream_idx).unwrap().time_base(),
-        )
+        let in_stream = in_ctx
+            .stream(stream_idx)
+            .ok_or_else(|| anyhow::anyhow!("Input stream {} not found", stream_idx))?;
+        let out_stream = out_ctx
+            .stream(stream_idx)
+            .ok_or_else(|| anyhow::anyhow!("Output stream {} not found", stream_idx))?;
+
+        self.rescale_ts(in_stream.time_base(), out_stream.time_base());
+        Ok(())
     }
 
     pub fn write(&self, ctx: &impl Context) -> Result<()> {

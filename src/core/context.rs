@@ -52,7 +52,9 @@ pub trait OutputContext: Context {
     /// Copies stream parameters from an input context to this output context.
     fn copy_streams(ctx_ptr: *mut AVFormatContext, input_ctx: &impl InputContext) -> Result<()> {
         for i in 0..input_ctx.nb_streams() {
-            let in_stream = input_ctx.stream(i).unwrap();
+            let in_stream = input_ctx
+                .stream(i)
+                .ok_or_else(|| anyhow::anyhow!("Stream not found in input context"))?;
             let out_stream = unsafe { avformat_new_stream(ctx_ptr, null_mut()) };
             if out_stream.is_null() {
                 anyhow::bail!("Failed to allocate output stream");

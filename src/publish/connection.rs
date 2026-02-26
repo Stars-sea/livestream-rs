@@ -39,6 +39,12 @@ impl RtmpConnection {
         }
     }
 
+    fn session_mut(&mut self) -> Result<&mut ServerSession> {
+        self.session
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("RTMP Session not initialized"))
+    }
+
     pub async fn run(&mut self) -> Result<()> {
         // Handshake
         if !self.perform_handshake().await? {
@@ -111,8 +117,10 @@ impl RtmpConnection {
     }
 
     async fn handle_input(&mut self, data: &[u8]) -> Result<()> {
-        let session = self.session.as_mut().unwrap();
-        let results = session.handle_input(data)?;
+        let results = {
+            let session = self.session_mut()?;
+            session.handle_input(data)?
+        };
 
         for result in results {
             match result {
@@ -135,12 +143,11 @@ impl RtmpConnection {
                 request_id,
             } => {
                 info!("Connection requested: {}", app_name);
-                let session = self.session.as_mut().unwrap();
-
+                
                 let res = if self.appname == app_name {
-                    session.accept_request(request_id)?
+                    self.session_mut()?.accept_request(request_id)?
                 } else {
-                    session.reject_request(request_id, "AppNotFound", "Application not found")?
+                    self.session_mut()?.reject_request(request_id, "AppNotFound", "Application not found")?
                 };
                 self.write_response(res).await?;
             }
@@ -153,8 +160,6 @@ impl RtmpConnection {
             } => {
                 info!("Play requested: {} (ID: {})", stream_key, stream_id);
 
-                let session = self.session.as_mut().unwrap();
-
                 let res = if self.appname == app_name {
                     self.current_stream_id = stream_id;
 
@@ -162,9 +167,9 @@ impl RtmpConnection {
                     self.active_stream_rx = Some(rx);
                     self.stream_state = Some(state);
 
-                    session.accept_request(request_id)?
+                    self.session_mut()?.accept_request(request_id)?
                 } else {
-                    session.reject_request(request_id, "AppNotFound", "Application not found")?
+                    self.session_mut()?.reject_request(request_id, "AppNotFound", "Application not found")?
                 };
 
                 self.write_response(res).await?;
@@ -206,8 +211,8 @@ impl RtmpConnection {
     }
 
     async fn send_tag(&mut self, tag: &FlvTag) -> Result<()> {
-        let session = self.session.as_mut().unwrap();
         let stream_id = self.current_stream_id;
+        let session = self.session_mut()?;
 
         let packet = match tag {
             FlvTag::Audio { timestamp, payload } => session.send_audio_data(

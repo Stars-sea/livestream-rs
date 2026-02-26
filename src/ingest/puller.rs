@@ -107,28 +107,30 @@ impl StreamPuller {
         }
     }
 
-    fn srt_input(&self) -> &SrtInputContext {
+    fn srt_input(&self) -> Result<&SrtInputContext> {
         self.srt_input
             .as_ref()
-            .expect("SRT input context not initialized")
+            .ok_or_else(|| anyhow::anyhow!("SRT input context not initialized"))
     }
 
-    fn flv_output(&self) -> &FlvOutputContext {
+    fn flv_output(&self) -> Result<&FlvOutputContext> {
         self.flv_output
             .as_ref()
-            .expect("FLV output context not initialized")
+            .ok_or_else(|| anyhow::anyhow!("FLV output context not initialized"))
     }
 
-    fn hls_output(&self) -> &HlsOutputContext {
+    fn hls_output(&self) -> Result<&HlsOutputContext> {
         self.hls_output
             .as_ref()
-            .expect("HLS output context not initialized")
+            .ok_or_else(|| anyhow::anyhow!("HLS output context not initialized"))
     }
 
     /// Determines if a new segment should be created based on packet and duration.
     fn should_segment(&self, packet: &Packet) -> Option<i64> {
+        let input_ctx = self.srt_input.as_ref()?;
+
         let current_pts = packet.pts().unwrap_or(0);
-        let current_stream = self.srt_input().stream(packet.stream_idx()).unwrap();
+        let current_stream = input_ctx.stream(packet.stream_idx())?;
         if !current_stream.is_video_stream() || !packet.is_key_frame() {
             return None;
         }
@@ -178,8 +180,13 @@ impl StreamPuller {
     }
 
     fn notify_segment_complete(&self) {
+        let output_ctx = match self.hls_output() {
+            Ok(ctx) => ctx,
+            Err(_) => return,
+        };
+
         let live_id = self.stream_info.live_id();
-        let event = StreamMessage::segment_complete(live_id, self.hls_output().path());
+        let event = StreamMessage::segment_complete(live_id, output_ctx.path());
         if let Err(e) = self.stream_msg_tx.send(event) {
             warn!("Failed to send final segment complete event: {}", e);
         }
@@ -209,18 +216,18 @@ impl StreamPuller {
         self.flv_output = Some(FlvOutputContext::create(
             live_id.to_string(),
             self.flv_packet_tx.clone(),
-            self.srt_input(),
+            self.srt_input()?,
         )?);
 
         self.hls_output = Some(HlsOutputContext::create_segment(
             &cache_dir,
-            self.srt_input(),
+            self.srt_input()?,
             self.segment_id,
         )?);
 
         while !self.stop_signal.load(Ordering::Relaxed) {
             let packet = Packet::alloc()?;
-            if packet.read_safely(self.srt_input()) == 0 {
+            if packet.read_safely(self.srt_input()?) == 0 {
                 info!("Stream ended for {}", live_id);
                 self.notify_stream_stopped(None);
                 self.notified_stopped = true;
@@ -242,20 +249,20 @@ impl StreamPuller {
 
                 self.hls_output = Some(HlsOutputContext::create_segment(
                     &cache_dir,
-                    self.srt_input(),
+                    self.srt_input()?,
                     self.segment_id,
                 )?);
             }
 
-            packet.rescale_ts_for_ctx(self.srt_input(), self.flv_output());
-            if let Err(e) = packet.write(self.flv_output()) {
+            packet.rescale_ts_for_ctx(self.srt_input()?, self.flv_output()?)?;
+            if let Err(e) = packet.write(self.flv_output()?) {
                 warn!("Failed to write packet to FLV output: {}", e);
                 self.notify_segment_complete();
                 anyhow::bail!("Failed to write packet to FLV output: {}", e);
             }
 
-            cloned_packet.rescale_ts_for_ctx(self.srt_input(), self.hls_output());
-            if let Err(e) = cloned_packet.write(self.hls_output()) {
+            cloned_packet.rescale_ts_for_ctx(self.srt_input()?, self.hls_output()?)?;
+            if let Err(e) = cloned_packet.write(self.hls_output()?) {
                 warn!("Failed to write packet to TS output: {}", e);
                 self.notify_segment_complete();
                 anyhow::bail!("Failed to write packet to TS output: {}", e);
