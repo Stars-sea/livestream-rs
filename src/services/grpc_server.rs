@@ -6,7 +6,6 @@ use tokio::signal;
 use tonic::transport::Server;
 
 use crate::ingest::{LivestreamServer, LivestreamService, StreamManager};
-use crate::services::env_var;
 
 pub struct GrpcServerFactory {
     port: u16,
@@ -50,12 +49,6 @@ impl GrpcServerFactory {
             .await?;
 
         Ok(())
-    }
-}
-
-impl Default for GrpcServerFactory {
-    fn default() -> Self {
-        Self::new(env_var("GRPC_PORT").unwrap().parse().unwrap())
     }
 }
 

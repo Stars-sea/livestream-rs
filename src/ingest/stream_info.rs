@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::settings::Settings;
+use crate::Settings;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StreamInfo {

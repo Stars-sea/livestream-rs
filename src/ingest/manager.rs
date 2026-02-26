@@ -11,9 +11,9 @@ use super::events::{StreamControlMessage, StreamMessage};
 use super::handlers;
 use super::port_allocator::PortAllocator;
 use super::puller::StreamPullerFactory;
-use super::settings::Settings;
 use super::stream_info::StreamInfo;
 
+use crate::Settings;
 use crate::core::output::FlvPacket;
 use crate::services::MemoryCache;
 use crate::services::MinioClient;
@@ -30,9 +30,11 @@ pub struct StreamManager {
 }
 
 impl StreamManager {
-    pub fn new(minio_client: MinioClient, flv_packet_tx: mpsc::UnboundedSender<FlvPacket>) -> Self {
-        let settings = Settings::load().expect("Failed to load settings");
-
+    pub fn new(
+        settings: Settings,
+        minio_client: MinioClient,
+        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
+    ) -> Self {
         let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_channel::<StreamMessage>();
         let puller_factory = Arc::new(StreamPullerFactory::new(stream_msg_tx, flv_packet_tx));
 

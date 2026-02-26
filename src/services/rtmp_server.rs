@@ -1,5 +1,3 @@
-use super::env_var;
-
 use crate::publish::RtmpServer;
 
 pub struct RtmpServerFactory {
@@ -36,7 +34,5 @@ impl RtmpServerFactory {
 impl Default for RtmpServerFactory {
     fn default() -> Self {
         Self::new()
-            .with_port(env_var("RTMP_PORT").unwrap().parse().unwrap())
-            .with_appname(env_var("RTMP_APP").unwrap())
     }
 }

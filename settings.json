@@ -1,9 +1,0 @@
-{
-  "host": "live.example.local",
-
-  "srt_ports": "4000-4100",
-
-  "grpc_callback": "",
-  "cache_dir": "./cache",
-  "segment_time": 10
-}

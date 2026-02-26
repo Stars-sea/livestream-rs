@@ -10,8 +10,6 @@ use minio::s3::types::S3Api;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::services::env_var;
-
 /// Client for interacting with MinIO or S3-compatible storage.
 #[derive(Debug, Clone)]
 pub struct MinioClient {
@@ -71,16 +69,5 @@ impl MinioClientFactory {
             bucket: self.bucket.clone(),
             client: client.into(),
         })
-    }
-}
-
-impl Default for MinioClientFactory {
-    fn default() -> Self {
-        Self::new(
-            env_var("MINIO_URI").unwrap(),
-            env_var("MINIO_ACCESSKEY").unwrap(),
-            env_var("MINIO_SECRETKEY").unwrap(),
-            env_var("MINIO_BUCKET").unwrap(),
-        )
     }
 }

@@ -4,7 +4,6 @@ mod manager;
 mod port_allocator;
 mod puller;
 mod service;
-mod settings;
 mod stream_info;
 
 mod grpc {
