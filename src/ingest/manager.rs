@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use log::{error, info, warn};
-use tokio::fs;
 use tokio::sync::mpsc;
-use tokio_stream::StreamExt;
-use tokio_stream::wrappers::ReadDirStream;
 
 use super::events::{StreamControlMessage, StreamMessage};
 use super::handlers;
@@ -80,52 +77,34 @@ impl StreamManager {
                 "No available ports to allocate for SRT stream"
             ))?;
 
-        let info = Arc::new(StreamInfo::new(
+        let info = StreamInfo::new(
             live_id.to_string(),
             port,
             passphrase.to_string(),
             &self.settings,
-        )?);
+        );
 
-        if let Err(e) = fs::create_dir_all(info.cache_dir()).await {
+        if let Err(e) = info {
             self.port_allocator.release_port(port).await;
-            return Err(anyhow::anyhow!("Failed to create cache directory: {e}"));
+            anyhow::bail!("Failed to create stream info: {e}");
         }
+
+        let info = Arc::new(info?);
+        self.stream_info_cache
+            .set(live_id.to_string(), info.clone())
+            .await?;
 
         Ok(info)
     }
 
-    pub async fn release_stream_resources(&self, info: Arc<StreamInfo>) -> Result<()> {
-        // Release allocated port
+    async fn release_stream_resources(&self, info: Arc<StreamInfo>) {
         self.port_allocator.release_port(info.srt_port()).await;
 
-        // Remove empty cache directory
-        let read_dir = fs::read_dir(info.cache_dir()).await?;
-        let entries_stream = ReadDirStream::new(read_dir);
-
-        let is_not_empty = entries_stream
-            .filter_map(|entry| entry.ok())
-            .any(|entry| {
-                let filename = entry.file_name();
-                filename != "." && filename != ".."
-            })
-            .await;
-
-        if !is_not_empty {
-            if let Err(e) = fs::remove_dir_all(info.cache_dir()).await {
-                anyhow::bail!("Failed to remove cache directory: {e}");
-            }
-        }
-
-        Ok(())
+        self.stream_info_cache.remove(info.live_id()).await;
     }
 
-    pub async fn start_stream(&self, stream_info: Arc<StreamInfo>) -> Result<()> {
+    pub async fn start_stream(self: &Arc<Self>, stream_info: Arc<StreamInfo>) -> Result<()> {
         let live_id = stream_info.live_id().to_string();
-
-        self.stream_info_cache
-            .set(live_id.clone(), stream_info.clone())
-            .await?;
 
         let cloned_info = stream_info.clone();
         let factory = self.puller_factory.clone();
@@ -139,22 +118,23 @@ impl StreamManager {
             stream_info.srt_port()
         );
 
-        tokio::task::spawn_blocking(move || match factory.create_blocking(cloned_info) {
-            Ok(mut puller) => {
-                if let Err(e) = puller.start() {
-                    error!("Stream puller error: {e}");
+        let arc_self = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let handle = tokio::runtime::Handle::current();
+
+            match handle.block_on(factory.create(cloned_info.clone())) {
+                Ok(mut puller) => {
+                    if let Err(e) = puller.start() {
+                        error!("Stream puller error: {e}");
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to create stream puller: {e}");
                 }
             }
-            Err(e) => {
-                error!("Failed to create stream puller: {e}");
-            }
+
+            handle.block_on(arc_self.release_stream_resources(cloned_info));
         });
-
-        self.stream_info_cache.remove(&live_id).await;
-
-        if let Err(e) = self.release_stream_resources(stream_info).await {
-            warn!("Failed to release resources for stream {live_id}: {e}");
-        }
 
         Ok(())
     }

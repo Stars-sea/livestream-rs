@@ -59,11 +59,6 @@ impl StreamPullerFactory {
     pub async fn get_signal(&self, live_id: &str) -> Option<Arc<AtomicBool>> {
         self.signal_cache.get(live_id).await
     }
-
-    pub fn create_blocking(&self, stream_info: Arc<StreamInfo>) -> Result<StreamPuller> {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(self.create(stream_info))
-    }
 }
 
 #[derive(Debug)]
