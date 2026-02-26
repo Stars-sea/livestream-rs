@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use log::{error, info};
 use tokio::net::TcpListener;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc;
+use tracing::{error, info};
 
 use super::connection::RtmpConnection;
 use super::dispatcher::StreamDispatcher;
@@ -30,33 +31,61 @@ impl RtmpServer {
         }
     }
 
-    pub async fn start(&self, flv_packet_rx: mpsc::UnboundedReceiver<FlvPacket>) -> Result<()> {
+    pub async fn start(
+        &self,
+        flv_packet_rx: mpsc::UnboundedReceiver<FlvPacket>,
+        mut shutdown: broadcast::Receiver<()>,
+    ) -> Result<()> {
         let listener = TcpListener::bind(format!("0.0.0.0:{}", self.port)).await?;
         info!("RTMP Server listening on 0.0.0.0:{}", self.port);
 
         let dispatcher = StreamDispatcher::new();
 
         // Background Task: Receive packets from source, demux, and dispatch
-        tokio::spawn(process_flv_packets(flv_packet_rx, dispatcher.clone()));
+        // We need to pass shutdown signal here too ideally, or just drop rx when main server stops
+        let mut shutdown_clone = shutdown.resubscribe();
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = process_flv_packets(flv_packet_rx, dispatcher_clone) => {},
+                _ = shutdown_clone.recv() => {
+                    info!("FLV Packet processor shutting down");
+                }
+            }
+        });
 
         loop {
-            let (socket, addr) = listener.accept().await?;
-            info!("New RTMP connection from {}", addr);
-
-            let mut connection = RtmpConnection::new(
-                socket,
-                dispatcher.clone(),
-                self.appname.clone(),
-                self.ingest_manager.clone(),
-            );
-            tokio::spawn(async move {
-                if let Err(e) = connection.run().await {
-                    error!("RTMP connection error {}: {}", addr, e);
+            tokio::select! {
+                _ = shutdown.recv() => {
+                    info!("RTMP Server received shutdown signal");
+                    break;
                 }
+                accept_result = listener.accept() => {
+                    if let Err(e) = accept_result {
+                        error!("Failed to accept RTMP connection: {}", e);
+                        continue;
+                    }
 
-                info!("RTMP connection closed: {}", addr);
-            });
+                    let (socket, addr) = accept_result.unwrap();
+                    info!("New RTMP connection from {}", addr);
+
+                    let mut connection = RtmpConnection::new(
+                        socket,
+                        dispatcher.clone(),
+                        self.appname.clone(),
+                        self.ingest_manager.clone(),
+                    );
+                    tokio::spawn(async move {
+                        if let Err(e) = connection.run().await {
+                            error!("RTMP connection error {}: {}", addr, e);
+                        }
+
+                        info!("RTMP connection closed: {}", addr);
+                    });
+                }
+            }
         }
+        Ok(())
     }
 }
 

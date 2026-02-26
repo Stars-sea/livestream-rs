@@ -1,12 +1,13 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
-use log::{error, info, warn};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
+use tracing::{error, info, warn};
 
-use super::events::{StreamControlMessage, StreamMessage};
+use super::events::StreamMessage;
 use super::handlers;
 use super::port_allocator::PortAllocator;
 use super::puller::StreamPullerFactory;
@@ -24,8 +25,6 @@ pub struct StreamManager {
     puller_factory: Arc<StreamPullerFactory>,
     stream_info_cache: MemoryCache<Arc<StreamInfo>>,
     port_allocator: PortAllocator,
-
-    control_tx: mpsc::UnboundedSender<StreamControlMessage>,
 }
 
 impl StreamManager {
@@ -36,12 +35,6 @@ impl StreamManager {
     ) -> Self {
         let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_channel::<StreamMessage>();
         let puller_factory = Arc::new(StreamPullerFactory::new(stream_msg_tx, flv_packet_tx));
-
-        let (control_tx, control_rx) = mpsc::unbounded_channel::<StreamControlMessage>();
-        tokio::spawn(handlers::stream_control_message_handler(
-            control_rx,
-            puller_factory.clone(),
-        ));
 
         tokio::spawn(handlers::stream_message_handler(
             stream_msg_rx,
@@ -62,7 +55,6 @@ impl StreamManager {
             puller_factory,
             stream_info_cache: MemoryCache::new(),
             port_allocator,
-            control_tx,
         }
     }
 
@@ -150,13 +142,26 @@ impl StreamManager {
     }
 
     pub async fn stop_stream(&self, live_id: &str) -> Result<()> {
-        self.control_tx
-            .send(StreamControlMessage::stop_stream(live_id))?;
+        if let Some(signal) = self.puller_factory.get_signal(live_id).await {
+            signal.store(true, Ordering::SeqCst);
+        } else {
+            anyhow::bail!("No active stream found for live_id: {}", live_id);
+        }
         Ok(())
+    }
+
+    pub async fn shutdown(&self) {
+        for signal in self.puller_factory.get_signals().await {
+            signal.store(true, Ordering::SeqCst);
+        }
     }
 
     pub async fn list_active_streams(&self) -> Result<Vec<String>> {
         Ok(self.stream_info_cache.keys().await)
+    }
+
+    pub async fn is_streams_empty(&self) -> bool {
+        self.stream_info_cache.keys().await.is_empty()
     }
 
     pub async fn has_stream(&self, live_id: &str) -> bool {

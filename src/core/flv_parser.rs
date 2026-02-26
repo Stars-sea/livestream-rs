@@ -11,6 +11,7 @@ pub enum FlvTag {
         payload: Bytes,
         is_keyframe: bool,
     },
+    #[allow(dead_code)]
     ScriptData {
         timestamp: u32,
         payload: Bytes,

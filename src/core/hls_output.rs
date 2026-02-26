@@ -5,7 +5,7 @@ use super::input::SrtInputContext;
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
-use log::warn;
+use tracing::warn;
 
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;

@@ -4,8 +4,8 @@ use super::context::{Context, InputContext, OutputContext, ffmpeg_error};
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
-use log::warn;
 use tokio::sync::mpsc;
+use tracing::warn;
 
 use std::ffi::{c_int, c_void};
 use std::ptr::null_mut;

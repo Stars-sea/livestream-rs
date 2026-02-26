@@ -4,7 +4,7 @@ use super::context::{Context, ffmpeg_error};
 
 use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
-use log::debug;
+use tracing::debug;
 
 /// Wrapper for FFmpeg AVPacket with safe operations.
 ///
@@ -23,7 +23,7 @@ impl Packet {
     pub fn alloc() -> Result<Self> {
         let pkt = unsafe { av_packet_alloc() };
         if pkt.is_null() {
-            return Err(anyhow!("av_packet_alloc failed"));
+            anyhow::bail!("Failed to allocate AVPacket");
         }
         Ok(Self { packet: pkt })
     }

@@ -22,6 +22,10 @@ where
         self.cache.read().await.keys().cloned().collect()
     }
 
+    pub async fn values(&self) -> Vec<T> {
+        self.cache.read().await.values().cloned().collect()
+    }
+
     pub async fn contains_key(&self, key: &str) -> bool {
         self.cache.read().await.contains_key(key)
     }

@@ -8,9 +8,13 @@ use super::stream_info::StreamInfo;
 use std::sync::Arc;
 
 use anyhow::Result;
+use regex::Regex;
+use std::sync::OnceLock;
 use tonic::{Request, Response, Status};
 
 pub use super::grpc::livestream_server::LivestreamServer;
+
+static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// Service managing live stream operations via gRPC.
 #[derive(Debug)]
@@ -39,9 +43,11 @@ impl Livestream for LivestreamService {
         if request.passphrase.is_empty() {
             return Err(Status::invalid_argument("passphrase cannot be empty"));
         }
-        regex::Regex::new(r"^[a-zA-Z0-9]{10,79}$")
-            .unwrap()
-            .is_match(&request.passphrase)
+
+        let re = PASSPHRASE_REGEX
+            .get_or_init(|| Regex::new(r"^[a-zA-Z0-9]{10,79}$").expect("invalid regex pattern"));
+
+        re.is_match(&request.passphrase)
             .then_some(())
             .ok_or_else(|| {
                 Status::invalid_argument("passphrase must be 10-79 alphanumeric characters")

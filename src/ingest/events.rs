@@ -1,28 +1,10 @@
-use std::path::PathBuf;
-
-#[derive(Clone, Debug)]
-pub enum StreamControlMessage {
-    // StartStream {
-    //     live_id: String,
-    //     port: u16,
-    //     passphrase: String,
-    // },
-    StopStream { live_id: String },
-}
-
-impl StreamControlMessage {
-    pub fn stop_stream(live_id: &str) -> Self {
-        StreamControlMessage::StopStream {
-            live_id: live_id.to_string(),
-        }
-    }
-}
+use std::{fmt::Display, path::PathBuf};
 
 #[derive(Clone, Debug)]
 pub enum StreamMessage {
     SegmentComplete {
         live_id: String,
-        segment_id: String,
+        // segment_id: String,
         path: PathBuf,
     },
 
@@ -41,7 +23,7 @@ impl StreamMessage {
         let path = path.clone();
         StreamMessage::SegmentComplete {
             live_id: live_id.to_string(),
-            segment_id: path.file_name().unwrap().display().to_string(),
+            // segment_id: path.file_name().unwrap().display().to_string(),
             path,
         }
     }
@@ -56,6 +38,36 @@ impl StreamMessage {
         StreamMessage::StreamStopped {
             live_id: live_id.to_string(),
             error,
+        }
+    }
+}
+
+impl Display for StreamMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StreamMessage::SegmentComplete {
+                live_id,
+                // segment_id,
+                path,
+            } => {
+                write!(
+                    f,
+                    "SegmentComplete: live_id={}, path={}",
+                    live_id,
+                    path.display()
+                )
+            }
+            StreamMessage::StreamStarted { live_id } => {
+                write!(f, "StreamStarted: live_id={}", live_id)
+            }
+            StreamMessage::StreamStopped { live_id, error } => {
+                write!(
+                    f,
+                    "StreamStopped: live_id={}, error={}",
+                    live_id,
+                    error.as_ref().unwrap_or(&"None".to_string())
+                )
+            }
         }
     }
 }

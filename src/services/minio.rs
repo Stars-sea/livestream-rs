@@ -1,7 +1,6 @@
 //! MinIO/S3 client for uploading stream segments.
 
 use anyhow::Result;
-use log::debug;
 use minio::s3::Client;
 use minio::s3::builders::ObjectContent;
 use minio::s3::creds::StaticProvider;
@@ -9,6 +8,7 @@ use minio::s3::http::BaseUrl;
 use minio::s3::types::S3Api;
 use std::path::Path;
 use std::sync::Arc;
+use tracing::debug;
 
 /// Client for interacting with MinIO or S3-compatible storage.
 #[derive(Debug, Clone)]

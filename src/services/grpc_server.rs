@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use log::{info, warn};
 use tokio::signal;
 use tonic::transport::Server;
+use tracing::info;
 
 use crate::ingest::{LivestreamServer, LivestreamService, StreamManager};
 
@@ -80,15 +80,9 @@ async fn shutdown_signal(manager: Arc<StreamManager>) {
         },
     }
 
-    let active_streams = manager.list_active_streams().await.unwrap_or_else(|e| {
-        warn!("Failed to list active streams during shutdown: {}", e);
-        vec![]
-    });
+    manager.shutdown().await;
 
-    for live_id in active_streams {
-        info!("Cleaning up stream: {}", live_id);
-        manager.stop_stream(&live_id).await.unwrap_or_else(|e| {
-            warn!("Failed to stop stream {}: {}", live_id, e);
-        });
+    while !manager.is_streams_empty().await {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }

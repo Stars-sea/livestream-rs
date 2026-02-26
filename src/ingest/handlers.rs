@@ -1,36 +1,17 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
-use log::{debug, info, warn};
 use tokio::fs;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing::{info, warn};
 
 use super::events::*;
 use super::grpc::livestream_callback_client::LivestreamCallbackClient;
 use super::grpc::*;
 use crate::ingest::puller::StreamPullerFactory;
 use crate::services::MinioClient;
-
-pub(super) async fn stream_control_message_handler(
-    mut rx: mpsc::UnboundedReceiver<StreamControlMessage>,
-    factory: Arc<StreamPullerFactory>,
-) {
-    while let Some(msg) = rx.recv().await {
-        match msg {
-            StreamControlMessage::StopStream { live_id } => {
-                info!("Received stop signal for stream: {}", live_id);
-                if let Some(stop_signal) = factory.get_signal(&live_id).await {
-                    stop_signal.store(true, Ordering::Relaxed);
-                } else {
-                    warn!("No active stop signal found for live_id: {}", live_id);
-                }
-            }
-        }
-    }
-}
 
 pub(super) async fn stream_message_handler(
     rx: mpsc::UnboundedReceiver<StreamMessage>,
@@ -44,14 +25,8 @@ pub(super) async fn stream_message_handler(
         info!("Received stream message event: {:?}", msg);
 
         match msg {
-            StreamMessage::SegmentComplete {
-                live_id,
-                segment_id,
-                path,
-            } => {
-                segment_complete_handler(live_id, segment_id, path, &minio)
-                    .await
-                    .ok();
+            StreamMessage::SegmentComplete { live_id, path } => {
+                segment_complete_handler(live_id, path, &minio).await.ok();
             }
             StreamMessage::StreamStarted { live_id } => {
                 stream_started_handler(live_id, &grpc_callback).await;
@@ -103,13 +78,14 @@ async fn stream_stopped_handler(
 
 async fn segment_complete_handler(
     live_id: String,
-    segment_id: String,
     path: PathBuf,
     minio: &MinioClient,
 ) -> anyhow::Result<()> {
-    info!("Uploading file {}", path.display());
+    let filename = path
+        .file_name()
+        .ok_or(anyhow::anyhow!("Failed to get file name"))?;
+    let storage_key = format!("{}/{}", live_id, filename.to_string_lossy());
 
-    let storage_key = format!("{}/{}", live_id, segment_id);
     let upload_resp = minio
         .upload_file(
             storage_key.as_str(),
@@ -122,7 +98,6 @@ async fn segment_complete_handler(
         anyhow::bail!("Failed to upload file {}: {:?}", path.display(), e);
     }
 
-    debug!("Remove file {}", path.display());
     if fs::remove_file(&path).await.is_err() {
         warn!("Failed to remove file {}", path.display());
     }

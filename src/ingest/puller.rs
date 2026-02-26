@@ -13,8 +13,8 @@ use crate::core::packet::Packet;
 use crate::services::MemoryCache;
 
 use anyhow::Result;
-use log::{info, warn};
 use tokio::sync::mpsc;
+use tracing::{info, warn};
 
 #[derive(Debug)]
 pub(super) struct StreamPullerFactory {
@@ -54,6 +54,10 @@ impl StreamPullerFactory {
 
     pub async fn remove_signal(&self, live_id: &str) {
         self.signal_cache.remove(live_id).await;
+    }
+
+    pub async fn get_signals(&self) -> Vec<Arc<AtomicBool>> {
+        self.signal_cache.values().await
     }
 
     pub async fn get_signal(&self, live_id: &str) -> Option<Arc<AtomicBool>> {

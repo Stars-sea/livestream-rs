@@ -1,84 +1,123 @@
 //! Application settings and configuration management.
 
 use anyhow::{Context, Result};
-use std::env;
+use config::{Config, Environment, File, FileFormat};
+use serde::Deserialize;
 
-/// Application settings loaded from environment variables
-#[derive(Clone, Debug)]
+/// Application settings loaded from configuration files and environment variables.
+#[derive(Clone, Debug, Deserialize)]
 pub struct Settings {
     /// Host for SRT listeners (e.g., "srt.example.local")
+    #[serde(default = "default_host")]
     pub host: String,
 
     /// Port range for SRT listeners (format: "start-end", e.g., "4000-5000")
+    #[serde(default = "default_srt_ports")]
     pub srt_ports: String,
+
     /// gRPC Server Port
+    #[serde(default = "default_grpc_port")]
     pub grpc_port: u16,
 
     /// gRPC callback URL for stream events (e.g., "http://localhost:50051")
+    #[serde(default, alias = "LIVE_SVC_GRPC")]
     pub grpc_callback: String,
+
     /// Segment duration in seconds for HLS/TS output
+    #[serde(default = "default_segment_time")]
     pub segment_time: i32,
 
     /// RTMP Server Port
+    #[serde(default = "default_rtmp_port")]
     pub rtmp_port: u16,
+
     /// RTMP Application Name
+    #[serde(default = "default_rtmp_app")]
     pub rtmp_app: String,
 
     /// Minio Endpoint URL
-    pub minio_endpoint: String,
+    #[serde(default = "default_minio_uri")]
+    pub minio_uri: String,
+
     /// Minio Access Key
-    pub minio_access_key: String,
+    #[serde(default = "default_minio_accesskey")]
+    pub minio_accesskey: String,
+
     /// Minio Secret Key
-    pub minio_secret_key: String,
+    #[serde(default = "default_minio_secretkey")]
+    pub minio_secretkey: String,
+
     /// Minio Bucket Name
+    #[serde(default = "default_minio_bucket")]
     pub minio_bucket: String,
 }
 
+fn default_host() -> String {
+    "0.0.0.0".to_string()
+}
+fn default_srt_ports() -> String {
+    "4000-4100".to_string()
+}
+fn default_grpc_port() -> u16 {
+    50051
+}
+fn default_segment_time() -> i32 {
+    10
+}
+fn default_rtmp_port() -> u16 {
+    1935
+}
+fn default_rtmp_app() -> String {
+    "lives".to_string()
+}
+fn default_minio_uri() -> String {
+    "http://localhost:9000".to_string()
+}
+fn default_minio_accesskey() -> String {
+    "minioadmin".to_string()
+}
+fn default_minio_secretkey() -> String {
+    "minioadmin".to_string()
+}
+fn default_minio_bucket() -> String {
+    "livestream".to_string()
+}
+
 impl Settings {
-    /// Loads settings from environment variables.
-    pub fn from_env() -> Result<Self> {
-        let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let srt_ports = env::var("SRT_PORTS").unwrap_or_else(|_| "4000-4100".to_string());
-        let grpc_port = env::var("GRPC_PORT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(50051);
-        let grpc_callback = env::var("LIVE_SVC_GRPC").unwrap_or_else(|_| "".to_string());
+    /// Loads settings from configuration files and environment variables.
+    pub fn new() -> Result<Self> {
+        let builder = Config::builder()
+            .add_source(File::new("config", FileFormat::Toml).required(false))
+            .add_source(File::new("config.local", FileFormat::Toml).required(false))
+            .add_source(Environment::default().try_parsing(true).separator("__"));
 
-        let segment_time = env::var("SEGMENT_TIME")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(2); // Default 2s
+        let config = builder.build().context("Failed to build configuration")?;
 
-        let rtmp_port = env::var("RTMP_PORT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1935);
+        let settings: Settings = config
+            .try_deserialize()
+            .context("Failed to deserialize configuration")?;
 
-        let rtmp_app = env::var("RTMP_APP").unwrap_or_else(|_| "lives".to_string());
+        settings.validate()?;
 
-        // Minio settings are required in production usually, but we can iterate or use defaults for dev
-        let minio_endpoint =
-            env::var("MINIO_URI").unwrap_or_else(|_| "http://localhost:9000".to_string());
-        let minio_access_key =
-            env::var("MINIO_ACCESSKEY").unwrap_or_else(|_| "minioadmin".to_string());
-        let minio_secret_key =
-            env::var("MINIO_SECRETKEY").unwrap_or_else(|_| "minioadmin".to_string());
-        let minio_bucket = env::var("MINIO_BUCKET").unwrap_or_else(|_| "livestream".to_string());
+        Ok(settings)
+    }
 
-        Ok(Self {
-            host,
-            srt_ports,
-            grpc_port,
-            grpc_callback,
-            segment_time,
-            rtmp_port,
-            rtmp_app,
-            minio_endpoint,
-            minio_access_key,
-            minio_secret_key,
-            minio_bucket,
-        })
+    /// Validates the configuration settings.
+    pub fn validate(&self) -> Result<()> {
+        let (start, end) = self.srt_port_range()?;
+        if start >= end {
+            anyhow::bail!(
+                "Invalid SRT port range: start port {} must be less than end port {}",
+                start,
+                end
+            );
+        }
+
+        if self.segment_time <= 0 {
+            anyhow::bail!("Segment time must be positive");
+        }
+
+        Ok(())
     }
 
     /// Parses the SRT port range from the configuration.
@@ -89,15 +128,7 @@ impl Settings {
     /// # Errors
     /// Returns an error if the port range format is invalid.
     pub fn srt_port_range(&self) -> Result<(u16, u16)> {
-        let segments: Vec<u16> = self
-            .srt_ports
-            .split('-')
-            .map(|s| {
-                s.trim()
-                    .parse::<u16>()
-                    .with_context(|| format!("Invalid port number in range: '{}'", s))
-            })
-            .collect::<Result<Vec<u16>>>()?;
+        let segments: Vec<&str> = self.srt_ports.split('-').collect();
 
         if segments.len() != 2 {
             anyhow::bail!(
@@ -106,13 +137,16 @@ impl Settings {
             );
         }
 
-        if segments[0] >= segments[1] {
-            anyhow::bail!(
-                "Invalid SRT port range '{}': start port must be less than end port",
-                self.srt_ports
-            );
-        }
+        let start = segments[0]
+            .trim()
+            .parse::<u16>()
+            .with_context(|| format!("Invalid start port number: '{}'", segments[0]))?;
 
-        Ok((segments[0], segments[1]))
+        let end = segments[1]
+            .trim()
+            .parse::<u16>()
+            .with_context(|| format!("Invalid end port number: '{}'", segments[1]))?;
+
+        Ok((start, end))
     }
 }
