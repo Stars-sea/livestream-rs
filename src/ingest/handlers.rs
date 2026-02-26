@@ -22,7 +22,7 @@ pub(super) async fn stream_message_handler(
     let mut stream = UnboundedReceiverStream::new(rx);
 
     while let Some(msg) = stream.next().await {
-        info!("Received stream message event: {:?}", msg);
+        info!(msg = ?msg, "Received stream message event");
 
         match msg {
             StreamMessage::SegmentComplete { live_id, path } => {
@@ -45,10 +45,10 @@ async fn stream_started_handler(live_id: String, grpc_callback: &String) {
     if let Ok(mut client) = LivestreamCallbackClient::connect(grpc_callback.clone()).await {
         let req = NotifyStartedRequest { live_id };
         if let Err(e) = client.notify_stream_started(req).await {
-            warn!("Failed to notify stream started: {}", e);
+            warn!(error = %e, "Failed to notify stream started");
         }
     } else {
-        warn!("Failed to connect to gRPC callback at {}", grpc_callback);
+        warn!(endpoint = %grpc_callback, "Failed to connect to gRPC callback");
     }
 }
 
@@ -69,10 +69,10 @@ async fn stream_stopped_handler(
             error_message,
         };
         if let Err(e) = client.notify_stream_stopped(req).await {
-            warn!("Failed to notify stream stopped: {}", e);
+            warn!(error = %e, "Failed to notify stream stopped");
         }
     } else {
-        warn!("Failed to connect to gRPC callback at {}", grpc_callback);
+        warn!(endpoint = %grpc_callback, "Failed to connect to gRPC callback");
     }
 }
 
@@ -94,7 +94,7 @@ async fn segment_complete_handler(
         .await;
 
     if let Err(e) = upload_resp {
-        warn!("Upload failed for {}: {:?}", path.display(), e);
+        warn!(path = %path.display(), error = ?e, "Upload failed");
         anyhow::bail!("Failed to upload file {}: {:?}", path.display(), e);
     }
 

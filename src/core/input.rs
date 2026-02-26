@@ -9,6 +9,7 @@ use std::ffi::{c_int, c_void};
 use std::ptr::null_mut;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::debug;
 
 /// Wrapper for FFmpeg input context configured for SRT streams.
 #[derive(Debug)]
@@ -42,21 +43,28 @@ impl SrtInputContext {
     /// # Errors
     /// Returns an error if the stream cannot be opened or stream info cannot be found.
     pub fn open(path: &str, stop_signal: Arc<AtomicBool>) -> Result<Self> {
+        debug!(url = %path, "Attempting to open SRT input");
         let mut ctx = Self::alloc_context(stop_signal)?;
 
         let c_url = std::ffi::CString::new(path)?;
         let ret = unsafe { avformat_open_input(&mut ctx, c_url.as_ptr(), null_mut(), null_mut()) };
         if ret < 0 {
+            let err_msg = ffmpeg_error(ret);
             unsafe { avformat_close_input(&mut ctx) };
-            anyhow::bail!("Failed to open input: {}", ffmpeg_error(ret));
+            anyhow::bail!("Failed to open input: {}", err_msg);
         }
 
         let ret = unsafe { avformat_find_stream_info(ctx, null_mut()) };
         if ret < 0 {
+            let err_msg = ffmpeg_error(ret);
             unsafe { avformat_close_input(&mut ctx) };
-            anyhow::bail!("Failed to find stream info: {}", ffmpeg_error(ret));
+            anyhow::bail!("Failed to find stream info: {}", err_msg);
         }
 
+        debug!(
+            url = %path,
+            "Successfully opened SRT input and found stream info"
+        );
         Ok(Self { ctx })
     }
 }

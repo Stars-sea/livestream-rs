@@ -33,7 +33,7 @@ impl MinioClient {
             .send()
             .await?;
 
-        debug!("File {} uploaded", filename);
+        debug!(filename = %filename, path = %path.display(), "File uploaded");
         Ok(())
     }
 }

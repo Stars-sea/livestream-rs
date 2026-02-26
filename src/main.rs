@@ -4,9 +4,9 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::ingest::{LivestreamService, StreamManager};
+use crate::ingest::{GrpcServerFactory, LivestreamService, StreamManager};
 use crate::publish::RtmpServer;
-use crate::services::{GrpcServerFactory, MinioClientFactory};
+use crate::services::MinioClientFactory;
 
 mod core;
 mod ingest;
@@ -24,7 +24,10 @@ async fn main() -> Result<()> {
         ))
         .init();
 
-    info!("Starting LiveStream server");
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "Starting LiveStream server"
+    );
 
     let settings = Settings::new()?;
 
@@ -50,7 +53,7 @@ async fn main() -> Result<()> {
     let shutdown_rx = shutdown_tx.subscribe();
     tokio::spawn(async move {
         if let Err(e) = server.start(rx, shutdown_rx).await {
-            tracing::error!("RTMP server failed: {}", e);
+            tracing::error!(error = %e, "RTMP server failed");
         }
     });
 
@@ -62,7 +65,7 @@ async fn main() -> Result<()> {
 
     // Wait for gRPC server (which listens for Ctrl+C)
     if let Err(e) = grpc_future.await {
-        tracing::error!("gRPC server error: {}", e);
+        tracing::error!(error = %e, "gRPC server error");
     }
 
     // Signal other components to shutdown

@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use tokio::sync::RwLock;
+use tracing::debug;
 
 /// Manages allocation of ports within a specified range.
 /// Ensures ports are available before allocation by testing UDP and TCP binding.
@@ -37,6 +38,7 @@ impl PortAllocator {
         for port in self.start_port..self.end_port {
             if !allocated.contains(&port) && test_port(port).await {
                 allocated.insert(port);
+                debug!(port = port, "Allocated port");
                 return Some(port);
             }
         }
@@ -49,7 +51,9 @@ impl PortAllocator {
     /// * `port` - The port number to release
     pub async fn release_port(&self, port: u16) {
         let mut allocated = self.allocated_ports.write().await;
-        allocated.remove(&port);
+        if allocated.remove(&port) {
+            debug!(port = port, "Released port");
+        }
     }
 }
 

@@ -5,7 +5,7 @@ use tokio::signal;
 use tonic::transport::Server;
 use tracing::info;
 
-use crate::ingest::{LivestreamServer, LivestreamService, StreamManager};
+use super::{LivestreamServer, LivestreamService, StreamManager};
 
 pub struct GrpcServerFactory {
     port: u16,
@@ -41,7 +41,7 @@ impl GrpcServerFactory {
             .ok_or_else(|| anyhow::anyhow!("StreamManager is required"))?;
 
         let grpc_addr = format!("0.0.0.0:{}", self.port);
-        info!("Server will listen on {}", grpc_addr);
+        info!(address = %grpc_addr, "gRPC Server will listen");
 
         Server::builder()
             .add_service(LivestreamServer::new(service))
@@ -73,10 +73,10 @@ async fn shutdown_signal(manager: Arc<StreamManager>) {
 
     tokio::select! {
         _ = ctrl_c => {
-            info!("Received Ctrl+C signal, shutting down gracefully...");
+            info!("Received Ctrl+C signal, shutting down gracefully");
         },
         _ = terminate => {
-            info!("Received SIGTERM signal, shutting down gracefully...");
+            info!("Received SIGTERM signal, shutting down gracefully");
         },
     }
 

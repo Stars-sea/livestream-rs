@@ -5,7 +5,6 @@ use super::input::SrtInputContext;
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
-use tracing::warn;
 
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
@@ -25,7 +24,6 @@ impl HlsOutputContext {
 
         // Copy parameters of streams
         if let Err(e) = Self::copy_streams(output_ctx, input_ctx) {
-            warn!("Failed to copy streams to MPEG-TS output context: {e}");
             unsafe { avformat_free_context(output_ctx) };
             return Err(e);
         }
@@ -35,7 +33,6 @@ impl HlsOutputContext {
             match Self::open_io(null_mut(), Some(&url), AVIO_FLAG_WRITE) {
                 Ok(pb) => unsafe { (*output_ctx).pb = pb },
                 Err(e) => {
-                    warn!("Failed to open output file for MPEG-TS context: {e}");
                     unsafe { avformat_free_context(output_ctx) };
                     return Err(e);
                 }
@@ -44,7 +41,6 @@ impl HlsOutputContext {
 
         // Write header
         if let Err(e) = Self::write_header(output_ctx) {
-            warn!("Failed to write header for MPEG-TS output context: {e}");
             unsafe { avformat_free_context(output_ctx) };
             return Err(e);
         }

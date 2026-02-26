@@ -5,7 +5,7 @@ use anyhow::Result;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::connection::RtmpConnection;
 use super::dispatcher::StreamDispatcher;
@@ -37,7 +37,7 @@ impl RtmpServer {
         mut shutdown: broadcast::Receiver<()>,
     ) -> Result<()> {
         let listener = TcpListener::bind(format!("0.0.0.0:{}", self.port)).await?;
-        info!("RTMP Server listening on 0.0.0.0:{}", self.port);
+        info!(port = self.port, "RTMP Server listening");
 
         let dispatcher = StreamDispatcher::new();
 
@@ -61,27 +61,29 @@ impl RtmpServer {
                     break;
                 }
                 accept_result = listener.accept() => {
-                    if let Err(e) = accept_result {
-                        error!("Failed to accept RTMP connection: {}", e);
-                        continue;
-                    }
+                    match accept_result {
+                        Ok((socket, addr)) => {
+                            debug!(remote_addr = %addr, "New RTMP connection");
 
-                    let (socket, addr) = accept_result.unwrap();
-                    info!("New RTMP connection from {}", addr);
+                            let mut connection = RtmpConnection::new(
+                                socket,
+                                dispatcher.clone(),
+                                self.appname.clone(),
+                                self.ingest_manager.clone(),
+                            );
+                            tokio::spawn(async move {
+                                if let Err(e) = connection.run().await {
+                                    error!(remote_addr = %addr, error = %e, "RTMP connection error");
+                                }
 
-                    let mut connection = RtmpConnection::new(
-                        socket,
-                        dispatcher.clone(),
-                        self.appname.clone(),
-                        self.ingest_manager.clone(),
-                    );
-                    tokio::spawn(async move {
-                        if let Err(e) = connection.run().await {
-                            error!("RTMP connection error {}: {}", addr, e);
+                                debug!(remote_addr = %addr, "RTMP connection closed");
+                            });
                         }
-
-                        info!("RTMP connection closed: {}", addr);
-                    });
+                        Err(e) => {
+                             error!(error = %e, "Failed to accept RTMP connection");
+                             continue;
+                        }
+                    }
                 }
             }
         }
@@ -97,9 +99,10 @@ async fn process_flv_packets(
 
     while let Some(packet) = flv_rx.recv().await {
         let live_id = packet.live_id().to_string();
-        let demuxer = demuxers
-            .entry(live_id.clone())
-            .or_insert_with(FlvDemuxer::new);
+        let demuxer = demuxers.entry(live_id.clone()).or_insert_with(|| {
+            debug!(live_id = %live_id, "Starting FLV demuxing context");
+            FlvDemuxer::new()
+        });
 
         match packet {
             FlvPacket::Data { data, .. } => {
@@ -133,7 +136,7 @@ async fn process_flv_packets(
                 }
             }
             FlvPacket::EndOfStream { live_id } => {
-                info!("Stream ended: {}", live_id);
+                info!(live_id = %live_id, "Stream ended (FLV Source)");
                 demuxers.remove(&live_id);
                 dispatcher.remove_stream(&live_id).await;
             }

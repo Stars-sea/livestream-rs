@@ -14,7 +14,7 @@ use crate::services::MemoryCache;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug)]
 pub(super) struct StreamPullerFactory {
@@ -41,6 +41,7 @@ impl StreamPullerFactory {
 
     pub async fn create(&self, stream_info: Arc<StreamInfo>) -> Result<StreamPuller> {
         let live_id = stream_info.live_id().to_string();
+        info!(live_id = %live_id, "Creating stream puller");
         let stop_signal = Arc::new(AtomicBool::new(false));
         self.signal_cache.set(live_id, stop_signal.clone()).await?;
 
@@ -53,6 +54,7 @@ impl StreamPullerFactory {
     }
 
     pub async fn remove_signal(&self, live_id: &str) {
+        debug!(live_id = %live_id, "Removing signal");
         self.signal_cache.remove(live_id).await;
     }
 
@@ -149,7 +151,7 @@ impl StreamPuller {
             .stream_msg_tx
             .send(StreamMessage::stream_started(live_id))
         {
-            warn!("Failed to send stream connected event: {}", e);
+            warn!(error = %e, live_id = %live_id, "Failed to send stream connected event");
             return false;
         }
         true
@@ -160,7 +162,7 @@ impl StreamPuller {
 
         let msg = StreamMessage::stream_stopped(live_id, error.clone());
         if let Err(e) = self.stream_msg_tx.send(msg) {
-            warn!("Failed to send stream terminate event: {}", e);
+            warn!(error = %e, live_id = %live_id, "Failed to send stream terminate event");
         }
 
         let flv_output = self
@@ -172,7 +174,7 @@ impl StreamPuller {
             if let Err(e) = tx.send(FlvPacket::EndOfStream {
                 live_id: live_id.to_string(),
             }) {
-                warn!("Failed to send end of stream packet: {}", e);
+                warn!(error = %e, live_id = %live_id, "Failed to send end of stream packet");
             }
         }
     }
@@ -186,7 +188,7 @@ impl StreamPuller {
         let live_id = self.stream_info.live_id();
         let event = StreamMessage::segment_complete(live_id, output_ctx.path());
         if let Err(e) = self.stream_msg_tx.send(event) {
-            warn!("Failed to send final segment complete event: {}", e);
+            warn!(error = %e, live_id = %live_id, "Failed to send final segment complete event");
         }
     }
 
@@ -204,6 +206,7 @@ impl StreamPuller {
     /// Main loop for pulling SRT stream, segmenting, and writing to disk.
     fn start_impl(&mut self) -> Result<()> {
         let live_id = self.stream_info.live_id();
+        info!(live_id = %live_id, "Starting stream puller loop");
         let cache_dir = self.stream_info.cache_dir();
 
         self.srt_input = Some(SrtInputContext::open(
@@ -226,7 +229,7 @@ impl StreamPuller {
         while !self.stop_signal.load(Ordering::Relaxed) {
             let packet = Packet::alloc()?;
             if packet.read_safely(self.srt_input()?) == 0 {
-                info!("Stream ended for {}", live_id);
+                info!(live_id = %live_id, "Stream ended");
                 self.notify_stream_stopped(None);
                 self.notified_stopped = true;
                 break;
@@ -237,9 +240,16 @@ impl StreamPuller {
             // Send stream started event on first successful packet read
             if !self.notified_started {
                 self.notified_started = self.notify_stream_started();
+                info!(live_id = %live_id, "Stream started receiving data");
             }
 
             if let Some(pts) = self.should_segment(&packet) {
+                debug!(
+                    segment_id = self.segment_id + 1,
+                    live_id = %live_id,
+                    pts = pts,
+                    "Creating new segment"
+                );
                 self.notify_segment_complete();
 
                 self.last_start_pts = pts;
@@ -254,14 +264,12 @@ impl StreamPuller {
 
             packet.rescale_ts_for_ctx(self.srt_input()?, self.flv_output()?)?;
             if let Err(e) = packet.write(self.flv_output()?) {
-                warn!("Failed to write packet to FLV output: {}", e);
                 self.notify_segment_complete();
                 anyhow::bail!("Failed to write packet to FLV output: {}", e);
             }
 
             cloned_packet.rescale_ts_for_ctx(self.srt_input()?, self.hls_output()?)?;
             if let Err(e) = cloned_packet.write(self.hls_output()?) {
-                warn!("Failed to write packet to TS output: {}", e);
                 self.notify_segment_complete();
                 anyhow::bail!("Failed to write packet to TS output: {}", e);
             }

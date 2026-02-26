@@ -5,7 +5,6 @@ use super::context::{Context, InputContext, OutputContext, ffmpeg_error};
 use anyhow::Result;
 use ffmpeg_sys_next::*;
 use tokio::sync::mpsc;
-use tracing::warn;
 
 use std::ffi::{c_int, c_void};
 use std::ptr::null_mut;
@@ -43,7 +42,6 @@ impl FlvOutputContext {
         let ctx = Self::alloc_output_ctx("flv", None)?;
 
         if let Err(e) = Self::copy_streams(ctx, input_ctx) {
-            warn!("Failed to copy streams to FLV output context: {e}");
             unsafe { avformat_free_context(ctx) };
             return Err(e);
         }
@@ -60,7 +58,6 @@ impl FlvOutputContext {
                     (*ctx).flags |= AVFMT_FLAG_CUSTOM_IO;
                 },
                 Err(e) => {
-                    warn!("Failed to open RTMP IO context: {e}");
                     unsafe { avformat_free_context(ctx) };
                     return Err(e);
                 }
@@ -68,7 +65,6 @@ impl FlvOutputContext {
         }
 
         if let Err(e) = Self::write_header(ctx) {
-            warn!("Failed to write header for FLV output context: {e}");
             unsafe { avformat_free_context(ctx) };
             return Err(e);
         }

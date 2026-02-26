@@ -101,14 +101,11 @@ impl StreamManager {
         let live_id = stream_info.live_id().to_string();
 
         if !self.puller_factory.can_create(&stream_info).await {
-            warn!("Cannot create stream puller for live_id: {}", live_id);
+            warn!(live_id = %live_id, "Cannot create stream puller");
             anyhow::bail!("Failed to create stream puller for live_id: {live_id}");
         }
 
-        info!(
-            "Ready to pull stream at srt port: {} (LiveId: {live_id})",
-            stream_info.srt_port()
-        );
+        info!(live_id = %live_id, port = stream_info.srt_port(), "Starting stream process");
 
         let cloned_info = stream_info.clone();
         let arc_self = self.clone();
@@ -118,11 +115,11 @@ impl StreamManager {
             match handle.block_on(arc_self.puller_factory.create(cloned_info.clone())) {
                 Ok(mut puller) => {
                     if let Err(e) = puller.start() {
-                        error!("Stream puller error: {e}");
+                         error!(error = %e, "Stream puller error");
                     }
                 }
                 Err(e) => {
-                    error!("Failed to create stream puller: {e}");
+                    error!(error = %e, "Failed to create stream puller");
                 }
             }
 
@@ -142,9 +139,11 @@ impl StreamManager {
     }
 
     pub async fn stop_stream(&self, live_id: &str) -> Result<()> {
+        info!(live_id = %live_id, "Stopping stream request");
         if let Some(signal) = self.puller_factory.get_signal(live_id).await {
             signal.store(true, Ordering::SeqCst);
         } else {
+            error!(live_id = %live_id, "No active stream found to stop");
             anyhow::bail!("No active stream found for live_id: {}", live_id);
         }
         Ok(())

@@ -7,7 +7,7 @@ use rml_rtmp::time::RtmpTimestamp;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::dispatcher::StreamDispatcher;
 use super::dispatcher::StreamState;
@@ -55,9 +55,10 @@ impl RtmpConnection {
     }
 
     pub async fn run(&mut self) -> Result<()> {
+        let addr = self.socket.peer_addr().ok();
         // Handshake
         if !self.perform_handshake().await? {
-            info!("Handshake incomplete, disconnecting");
+            info!(remote_addr = ?addr, "Handshake incomplete or failed, disconnecting");
             return Ok(());
         }
 
@@ -74,13 +75,23 @@ impl RtmpConnection {
                 // Read from Socket
                 n = self.socket.read(&mut buffer) => {
                     let n = n?;
-                    if n == 0 { break; } // Client disconnected
-                    self.handle_input(&buffer[..n]).await?;
+                    if n == 0 {
+                        info!(remote_addr = ?addr, "Client disconnected normally");
+                        break;
+                    }
+                    if let Err(e) = self.handle_input(&buffer[..n]).await {
+                         warn!(remote_addr = ?addr, error = %e, "Failed to handle input");
+                         break;
+                    }
                 }
 
                 // Write to Socket (from Broadcast)
                 Ok(tag) = Self::wait_for_tag(&mut self.active_stream_rx) => {
-                    self.handle_broadcast_tag(tag).await?;
+                    if let Err(e) = self.handle_broadcast_tag(tag).await {
+                         // Client might have disconnected or socket error
+                         warn!(remote_addr = ?addr, error = %e, "Failed to send tag to client");
+                         break;
+                    }
                 }
             }
         }
