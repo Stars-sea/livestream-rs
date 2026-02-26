@@ -1,8 +1,15 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use opentelemetry::{global, trace::TracerProvider as _};
+use opentelemetry_sdk::{
+    Resource,
+    propagation::TraceContextPropagator,
+    trace::{Sampler, SdkTracerProvider},
+};
 use tokio::sync::mpsc;
 use tracing::info;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::ingest::{GrpcServerFactory, LivestreamService, StreamManager};
 use crate::publish::RtmpServer;
@@ -18,10 +25,35 @@ pub use settings::Settings;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
-        ))
+    global::set_text_map_propagator(TraceContextPropagator::new());
+
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .build()?;
+
+    let tracer_provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_sampler(Sampler::ParentBased(Box::new(Sampler::AlwaysOn)))
+        .with_resource(
+            Resource::builder()
+                .with_service_name("livestream-rs")
+                .build(),
+        )
+        .build();
+
+    let tracer = tracer_provider.tracer("livestream-rs");
+    global::set_tracer_provider(tracer_provider.clone());
+
+    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    let filter = tracing_subscriber::EnvFilter::new(
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
+    );
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(telemetry)
         .init();
 
     info!(
@@ -70,5 +102,8 @@ async fn main() -> Result<()> {
 
     // Signal other components to shutdown
     let _ = shutdown_tx.send(());
+
+    let _ = tracer_provider.shutdown();
+
     Ok(())
 }
