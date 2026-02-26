@@ -13,8 +13,10 @@ RUN mkdir -p ~/.cargo && \
     echo "index = 'sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml
 
 # Install additional OS packages.
-
-RUN sudo apt-get update && sudo apt-get dist-upgrade -y && sudo apt-get install -y \
+# Use BuildKit cache mounts to speed up apt
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get dist-upgrade -y && apt-get install -y \
     build-essential \
     clang \
     libclang-dev \

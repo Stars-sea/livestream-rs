@@ -1,9 +1,35 @@
+FROM rust:slim AS planner
+WORKDIR /app
+
+RUN cargo install cargo-chef
+
+FROM planner AS cacher
+WORKDIR /app
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
 FROM rust:slim AS builder
 
-RUN sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
-    sed -i 's/bookworm/trixie/g' /etc/apt/sources.list.d/debian.sources
+ARG USE_MIRROR=true
 
-RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y \
+# Conditionally configure mirrors
+RUN if [ "$USE_MIRROR" = "true" ]; then \
+    sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
+    sed -i 's/bookworm/trixie/g' /etc/apt/sources.list.d/debian.sources && \
+    mkdir -p ~/.cargo && \
+    echo "[source.crates-io]" > ~/.cargo/config.toml && \
+    echo "replace-with = 'tuna'" >> ~/.cargo/config.toml && \
+    echo "[source.tuna]" >> ~/.cargo/config.toml && \
+    echo "registry = 'sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml && \
+    echo "[registries.tuna]" >> ~/.cargo/config.toml && \
+    echo "index = 'sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml && \
+    echo "[source.ustc]" >> ~/.cargo/config.toml && \
+    echo "registry = 'sparse+https://mirrors.ustc.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml && \
+    echo "[registries.ustc]" >> ~/.cargo/config.toml && \
+    echo "index = 'sparse+https://mirrors.ustc.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml \
+    fi
+
+RUN apt-get update && apt-get install -y \
     build-essential \
     clang \
     libclang-dev \
@@ -15,31 +41,24 @@ RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
-# Configure Cargo mirrors
-RUN mkdir -p ~/.cargo && \
-    echo "[source.crates-io]" > ~/.cargo/config.toml && \
-    echo "replace-with = 'tuna'" >> ~/.cargo/config.toml && \
-    echo "[source.tuna]" >> ~/.cargo/config.toml && \
-    echo "registry = 'sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml && \
-    echo "[registries.tuna]" >> ~/.cargo/config.toml && \
-    echo "index = 'sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml && \
-    echo "[source.ustc]" >> ~/.cargo/config.toml && \
-    echo "registry = 'sparse+https://mirrors.ustc.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml && \
-    echo "[registries.ustc]" >> ~/.cargo/config.toml && \
-    echo "index = 'sparse+https://mirrors.ustc.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml
-
 WORKDIR /app
-COPY . ./
+COPY --from=cacher /app/recipe.json recipe.json
 
-RUN cargo fetch
+# Build dependencies - this is the caching layer!
+RUN cargo chef cook --release --recipe-path recipe.json
 
-# Build with release profile (dynamic linking)
+# Build application
+COPY . .
 RUN cargo build --release && \
     strip target/release/livestream-rs
 
 FROM debian:trixie-slim
 
-RUN sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources
+ARG USE_MIRROR=true
+
+RUN if [ "$USE_MIRROR" = "true" ]; then \
+    sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources; \
+    fi
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
