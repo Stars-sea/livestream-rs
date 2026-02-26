@@ -25,7 +25,7 @@ impl LivestreamService {
 }
 
 #[tonic::async_trait]
-impl Livestream for Arc<LivestreamService> {
+impl Livestream for LivestreamService {
     async fn start_pull_stream(
         &self,
         request: Request<StartPullStreamRequest>,

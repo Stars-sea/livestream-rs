@@ -9,7 +9,7 @@ use crate::ingest::{LivestreamServer, LivestreamService, StreamManager};
 
 pub struct GrpcServerFactory {
     port: u16,
-    livestream_service: Option<Arc<LivestreamService>>,
+    livestream_service: Option<LivestreamService>,
     stream_manager: Option<Arc<StreamManager>>,
 }
 
@@ -22,7 +22,7 @@ impl GrpcServerFactory {
         }
     }
 
-    pub fn with_service(mut self, service: Arc<LivestreamService>) -> Self {
+    pub fn with_service(mut self, service: LivestreamService) -> Self {
         self.livestream_service = Some(service);
         self
     }

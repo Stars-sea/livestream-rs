@@ -159,13 +159,11 @@ impl StreamManager {
         Ok(self.stream_info_cache.keys().await)
     }
 
+    pub async fn has_stream(&self, live_id: &str) -> bool {
+        self.stream_info_cache.contains_key(live_id).await
+    }
+
     pub async fn get_stream_info(&self, live_id: &str) -> Option<Arc<StreamInfo>> {
-        match self.stream_info_cache.get(live_id).await {
-            Some(info) => Some(info),
-            None => {
-                warn!("Failed to get stream info for live_id: {live_id}");
-                None
-            }
-        }
+        self.stream_info_cache.get(live_id).await
     }
 }

@@ -13,6 +13,7 @@ use super::dispatcher::StreamDispatcher;
 use super::dispatcher::StreamState;
 
 use crate::core::flv_parser::FlvTag;
+use crate::ingest::StreamManager;
 
 pub(super) struct RtmpConnection {
     socket: TcpStream,
@@ -23,10 +24,17 @@ pub(super) struct RtmpConnection {
     current_stream_id: u32,
     stream_state: Option<StreamState>,
     sent_headers: bool,
+
+    ingest_manager: Arc<StreamManager>,
 }
 
 impl RtmpConnection {
-    pub fn new(socket: TcpStream, dispatcher: StreamDispatcher, appname: String) -> Self {
+    pub fn new(
+        socket: TcpStream,
+        dispatcher: StreamDispatcher,
+        appname: String,
+        ingest_manager: Arc<StreamManager>,
+    ) -> Self {
         Self {
             socket,
             dispatcher,
@@ -36,6 +44,7 @@ impl RtmpConnection {
             current_stream_id: 0,
             stream_state: None,
             sent_headers: false,
+            ingest_manager,
         }
     }
 
@@ -143,16 +152,19 @@ impl RtmpConnection {
                 request_id,
             } => {
                 info!("Connection requested: {}", app_name);
-                
+
                 let res = if self.appname == app_name {
                     self.session_mut()?.accept_request(request_id)?
                 } else {
-                    self.session_mut()?.reject_request(request_id, "AppNotFound", "Application not found")?
+                    self.session_mut()?.reject_request(
+                        request_id,
+                        "AppNotFound",
+                        "Application not found",
+                    )?
                 };
                 self.write_response(res).await?;
             }
             ServerSessionEvent::PlayStreamRequested {
-                app_name,
                 stream_key,
                 request_id,
                 stream_id,
@@ -160,7 +172,7 @@ impl RtmpConnection {
             } => {
                 info!("Play requested: {} (ID: {})", stream_key, stream_id);
 
-                let res = if self.appname == app_name {
+                let res = if self.ingest_manager.has_stream(&stream_key).await {
                     self.current_stream_id = stream_id;
 
                     let (rx, state) = self.dispatcher.subscribe(&stream_key).await;
@@ -169,7 +181,11 @@ impl RtmpConnection {
 
                     self.session_mut()?.accept_request(request_id)?
                 } else {
-                    self.session_mut()?.reject_request(request_id, "AppNotFound", "Application not found")?
+                    self.session_mut()?.reject_request(
+                        request_id,
+                        "StreamNotFound",
+                        "Stream not found",
+                    )?
                 };
 
                 self.write_response(res).await?;

@@ -5,6 +5,7 @@ use log::info;
 use tokio::sync::mpsc;
 
 use crate::ingest::{LivestreamService, StreamManager};
+use crate::publish::RtmpServer;
 use crate::services::{GrpcServerFactory, MinioClientFactory};
 
 mod core;
@@ -26,14 +27,7 @@ async fn main() -> Result<()> {
     core::set_log_quiet();
     core::init();
 
-    // Start RTMP server
     let (tx, rx) = mpsc::unbounded_channel();
-
-    let server = services::RtmpServerFactory::new()
-        .with_port(settings.rtmp_port)
-        .with_appname(settings.rtmp_app.clone())
-        .create();
-    tokio::spawn(async move { server.start(rx).await });
 
     let minio_client = MinioClientFactory::new(
         settings.minio_endpoint.clone(),
@@ -43,14 +37,16 @@ async fn main() -> Result<()> {
     )
     .create()
     .await?;
+    let manager = Arc::new(StreamManager::new(settings.clone(), minio_client, tx));
+
+    // Start RTMP server
+    let server = RtmpServer::new(settings.rtmp_port, settings.rtmp_app, manager.clone());
+    tokio::spawn(async move { server.start(rx).await });
 
     // Start GRPC & SRT pull stream server
-    let stream_manager = Arc::new(StreamManager::new(settings.clone(), minio_client, tx));
-    let livestream = Arc::new(LivestreamService::new(stream_manager.clone()));
-
     GrpcServerFactory::new(settings.grpc_port)
-        .with_service(livestream)
-        .with_manager(stream_manager)
+        .with_service(LivestreamService::new(manager.clone()))
+        .with_manager(manager)
         .serve()
         .await?;
 

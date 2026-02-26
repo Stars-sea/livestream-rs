@@ -11,16 +11,23 @@ use super::dispatcher::StreamDispatcher;
 
 use crate::core::flv_parser::{FlvDemuxer, FlvTag};
 use crate::core::output::FlvPacket;
+use crate::ingest::StreamManager;
 
 #[derive(Debug)]
 pub struct RtmpServer {
     port: u16,
     appname: String,
+
+    ingest_manager: Arc<StreamManager>,
 }
 
 impl RtmpServer {
-    pub fn new(port: u16, appname: String) -> Self {
-        Self { port, appname }
+    pub fn new(port: u16, appname: String, ingest_manager: Arc<StreamManager>) -> Self {
+        Self {
+            port,
+            appname,
+            ingest_manager,
+        }
     }
 
     pub async fn start(&self, flv_packet_rx: mpsc::UnboundedReceiver<FlvPacket>) -> Result<()> {
@@ -36,8 +43,12 @@ impl RtmpServer {
             let (socket, addr) = listener.accept().await?;
             info!("New RTMP connection from {}", addr);
 
-            let mut connection =
-                RtmpConnection::new(socket, dispatcher.clone(), self.appname.clone());
+            let mut connection = RtmpConnection::new(
+                socket,
+                dispatcher.clone(),
+                self.appname.clone(),
+                self.ingest_manager.clone(),
+            );
             tokio::spawn(async move {
                 if let Err(e) = connection.run().await {
                     error!("RTMP connection error {}: {}", addr, e);
