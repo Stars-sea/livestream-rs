@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tracing::{error, info, warn};
+use tracing::{error, info, instrument, warn};
 
 use super::events::StreamMessage;
 use super::factory::GrpcClientFactory;
@@ -98,6 +98,7 @@ impl StreamManager {
         self.stream_info_cache.remove(info.live_id()).await;
     }
 
+    #[instrument(skip(self, stream_info), fields(live_id = %stream_info.live_id(), srt_port = stream_info.srt_port()))]
     pub async fn start_stream(self: &Arc<Self>, stream_info: Arc<StreamInfo>) -> Result<()> {
         let live_id = stream_info.live_id().to_string();
 
@@ -139,6 +140,7 @@ impl StreamManager {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(live_id = %live_id))]
     pub async fn stop_stream(&self, live_id: &str) -> Result<()> {
         info!(live_id = %live_id, "Stopping stream request");
         if let Some(signal) = self.puller_factory.get_signal(live_id).await {
@@ -150,24 +152,29 @@ impl StreamManager {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     pub async fn shutdown(&self) {
         for signal in self.puller_factory.get_signals().await {
             signal.store(true, Ordering::SeqCst);
         }
     }
 
+    #[instrument(skip(self))]
     pub async fn list_active_streams(&self) -> Result<Vec<String>> {
         Ok(self.stream_info_cache.keys().await)
     }
 
+    #[instrument(skip(self))]
     pub async fn is_streams_empty(&self) -> bool {
         self.stream_info_cache.keys().await.is_empty()
     }
 
+    #[instrument(skip(self), fields(live_id = %live_id))]
     pub async fn has_stream(&self, live_id: &str) -> bool {
         self.stream_info_cache.contains_key(live_id).await
     }
 
+    #[instrument(skip(self), fields(live_id = %live_id))]
     pub async fn get_stream_info(&self, live_id: &str) -> Option<Arc<StreamInfo>> {
         self.stream_info_cache.get(live_id).await
     }

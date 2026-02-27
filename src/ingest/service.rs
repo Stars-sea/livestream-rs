@@ -11,6 +11,7 @@ use anyhow::Result;
 use regex::Regex;
 use std::sync::OnceLock;
 use tonic::{Request, Response, Status};
+use tracing::instrument;
 
 pub use super::grpc::livestream_server::LivestreamServer;
 
@@ -30,6 +31,7 @@ impl LivestreamService {
 
 #[tonic::async_trait]
 impl Livestream for LivestreamService {
+    #[instrument(skip(self, request), fields(live_id = %request.get_ref().live_id))]
     async fn start_pull_stream(
         &self,
         request: Request<StartPullStreamRequest>,
@@ -70,6 +72,7 @@ impl Livestream for LivestreamService {
         Ok(Response::new(resp))
     }
 
+    #[instrument(skip(self, request), fields(live_id = %request.get_ref().live_id))]
     async fn stop_pull_stream(
         &self,
         request: Request<StopPullStreamRequest>,
@@ -87,10 +90,12 @@ impl Livestream for LivestreamService {
         Ok(Response::new(resp))
     }
 
+    #[instrument(skip(self, request))]
     async fn list_active_streams(
         &self,
-        _: Request<ListActiveStreamsRequest>,
+        request: Request<ListActiveStreamsRequest>,
     ) -> Result<Response<ListActiveStreamsResponse>, Status> {
+        let _ = request;
         let resp = self
             .manager
             .list_active_streams()
@@ -103,6 +108,7 @@ impl Livestream for LivestreamService {
         }
     }
 
+    #[instrument(skip(self, request), fields(live_id = %request.get_ref().live_id))]
     async fn get_stream_info(
         &self,
         request: Request<GetStreamInfoRequest>,

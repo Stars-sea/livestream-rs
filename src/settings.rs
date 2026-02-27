@@ -38,7 +38,7 @@ pub struct IngestConfig {
     pub duration: i32,
 
     /// Callback URL (gRPC) for stream events (e.g., stream start/stop) --- IGNORE ---
-    #[serde(default, alias = "LIVE_SVC_GRPC")]
+    #[serde(default)]
     pub callback: String,
 }
 

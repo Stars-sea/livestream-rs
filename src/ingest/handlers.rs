@@ -5,7 +5,7 @@ use tokio::fs;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 
 use super::events::*;
 use super::grpc::*;
@@ -13,6 +13,7 @@ use crate::ingest::factory::GrpcClientFactory;
 use crate::ingest::puller::StreamPullerFactory;
 use crate::services::MinioClient;
 
+#[instrument(skip(rx, client_factory, minio, factory))]
 pub(super) async fn stream_message_handler(
     rx: mpsc::UnboundedReceiver<StreamMessage>,
     client_factory: GrpcClientFactory,
@@ -38,6 +39,7 @@ pub(super) async fn stream_message_handler(
     }
 }
 
+#[instrument(skip(client_factory), fields(live_id = %live_id))]
 async fn stream_started_handler(live_id: String, client_factory: &GrpcClientFactory) {
     if let Ok(Some(mut client)) = client_factory.build().await {
         let req = NotifyStartedRequest { live_id };
@@ -49,6 +51,7 @@ async fn stream_started_handler(live_id: String, client_factory: &GrpcClientFact
     }
 }
 
+#[instrument(skip(client_factory, factory), fields(live_id = %live_id))]
 async fn stream_stopped_handler(
     live_id: String,
     error_message: Option<String>,
@@ -70,6 +73,7 @@ async fn stream_stopped_handler(
     }
 }
 
+#[instrument(skip(minio), fields(live_id = %live_id, path = %path.display()))]
 async fn segment_complete_handler(
     live_id: String,
     path: PathBuf,

@@ -1,17 +1,12 @@
 use std::sync::Arc;
-use std::sync::OnceLock;
 
 use anyhow::Result;
 use opentelemetry::global;
+use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_otlp::{LogExporter, MetricExporter, SpanExporter};
-use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::logs::SdkLoggerProvider;
-use opentelemetry_sdk::metrics::SdkMeterProvider;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::{RandomIdGenerator, Sampler, SdkTracerProvider};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info};
+use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{EnvFilter, Layer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -20,70 +15,21 @@ use crate::publish::RtmpServer;
 
 mod core;
 mod ingest;
+mod init_otlp;
 mod publish;
 mod services;
 mod settings;
 
-fn resource() -> Resource {
-    static RESOURCE: OnceLock<Resource> = OnceLock::new();
-
-    RESOURCE
-        .get_or_init(|| {
-            let resource_name = match std::env::var("OTEL_SERVICE_NAME") {
-                Ok(name) => name,
-                Err(_) => "livestream-rs".to_string(),
-            };
-            Resource::builder().with_service_name(resource_name).build()
-        })
-        .clone()
-}
-
-fn init_logs() -> Result<SdkLoggerProvider> {
-    let exporter = LogExporter::builder().with_tonic().build()?;
-
-    let logger_provider = SdkLoggerProvider::builder()
-        .with_resource(resource())
-        .with_batch_exporter(exporter)
-        .build();
-
-    Ok(logger_provider)
-}
-
-fn init_tracer() -> Result<SdkTracerProvider> {
-    global::set_text_map_propagator(TraceContextPropagator::new());
-
-    let exporter = SpanExporter::builder().with_tonic().build()?;
-
-    let provider = SdkTracerProvider::builder()
-        .with_resource(resource())
-        .with_batch_exporter(exporter)
-        .with_sampler(Sampler::AlwaysOn)
-        .with_id_generator(RandomIdGenerator::default())
-        .build();
-
-    Ok(provider)
-}
-
-fn init_metrics() -> Result<SdkMeterProvider> {
-    let exporter = MetricExporter::builder()
-        .with_tonic()
-        .build()
-        .expect("Failed to create metric exporter");
-
-    let provider = SdkMeterProvider::builder()
-        .with_periodic_exporter(exporter)
-        .with_resource(resource())
-        .build();
-
-    Ok(provider)
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    let logger_provider = init_logs()?;
+    let (logger_provider, tracer_provider, meter_provider) = init_otlp::init_otlp()?;
+    let tracer = tracer_provider.tracer("livestream-rs");
 
     let otel_layer = OpenTelemetryTracingBridge::new(&logger_provider)
         .with_filter(EnvFilter::from_default_env());
+
+    let otel_trace_layer =
+        OpenTelemetryLayer::new(tracer).with_filter(EnvFilter::from_default_env());
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_thread_names(true)
@@ -91,13 +37,12 @@ async fn main() -> Result<()> {
 
     tracing_subscriber::registry()
         .with(otel_layer)
+        .with(otel_trace_layer)
         .with(fmt_layer)
         .init();
 
-    let tracer_provider = init_tracer()?;
     global::set_tracer_provider(tracer_provider.clone());
 
-    let meter_provider = init_metrics()?;
     global::set_meter_provider(meter_provider.clone());
 
     info!(

@@ -5,7 +5,7 @@ use anyhow::Result;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, instrument};
 
 use super::connection::RtmpConnection;
 use super::dispatcher::StreamDispatcher;
@@ -30,6 +30,7 @@ impl RtmpServer {
         }
     }
 
+    #[instrument(skip(self, flv_packet_rx, shutdown), fields(port = self.config.port))]
     pub async fn start(
         &self,
         flv_packet_rx: mpsc::UnboundedReceiver<FlvPacket>,
@@ -90,6 +91,7 @@ impl RtmpServer {
     }
 }
 
+#[instrument(skip(flv_rx, dispatcher))]
 async fn process_flv_packets(
     mut flv_rx: mpsc::UnboundedReceiver<FlvPacket>,
     dispatcher: StreamDispatcher,

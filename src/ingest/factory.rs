@@ -6,7 +6,7 @@ use tokio::signal;
 use tonic::transport::{Channel, Server};
 use tonic_tracing_opentelemetry::middleware::{client, server};
 use tower::ServiceBuilder;
-use tracing::info;
+use tracing::{info, instrument};
 
 use crate::settings::IngestConfig;
 
@@ -82,6 +82,7 @@ impl GrpcServerFactory {
         self
     }
 
+    #[instrument(skip(self), fields(port = %self.config.as_ref().map(|c| c.port).unwrap_or_default()))]
     pub async fn serve(self) -> Result<()> {
         let service = self
             .livestream_service
