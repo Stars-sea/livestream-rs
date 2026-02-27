@@ -5,20 +5,22 @@ use tokio::signal;
 use tonic::transport::Server;
 use tracing::info;
 
+use crate::settings::IngestConfig;
+
 use super::{LivestreamServer, LivestreamService, StreamManager};
 
 pub struct GrpcServerFactory {
-    port: u16,
     livestream_service: Option<LivestreamService>,
-    stream_manager: Option<Arc<StreamManager>>,
+    manger: Option<Arc<StreamManager>>,
+    config: Option<IngestConfig>,
 }
 
 impl GrpcServerFactory {
-    pub fn new(port: u16) -> Self {
+    pub fn new() -> Self {
         Self {
-            port,
             livestream_service: None,
-            stream_manager: None,
+            manger: None,
+            config: None,
         }
     }
 
@@ -28,7 +30,12 @@ impl GrpcServerFactory {
     }
 
     pub fn with_manager(mut self, manager: Arc<StreamManager>) -> Self {
-        self.stream_manager = Some(manager);
+        self.manger = Some(manager);
+        self
+    }
+
+    pub fn with_config(mut self, config: IngestConfig) -> Self {
+        self.config = Some(config);
         self
     }
 
@@ -36,11 +43,16 @@ impl GrpcServerFactory {
         let service = self
             .livestream_service
             .ok_or_else(|| anyhow::anyhow!("LivestreamService is required"))?;
+
         let manager = self
-            .stream_manager
+            .manger
             .ok_or_else(|| anyhow::anyhow!("StreamManager is required"))?;
 
-        let grpc_addr = format!("0.0.0.0:{}", self.port);
+        let config = self
+            .config
+            .ok_or_else(|| anyhow::anyhow!("IngestConfig is required"))?;
+
+        let grpc_addr = format!("0.0.0.0:{}", config.port);
         info!(address = %grpc_addr, "gRPC Server will listen");
 
         Server::builder()

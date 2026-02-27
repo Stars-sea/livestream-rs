@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use tempfile::TempDir;
 
-use crate::Settings;
+use crate::settings::IngestConfig;
 
 #[derive(Debug)]
 pub struct StreamInfo {
@@ -24,10 +24,10 @@ impl StreamInfo {
         live_id: String,
         port: u16,
         passphrase: String,
-        settings: &Settings,
+        config: &IngestConfig,
     ) -> Result<Self> {
-        let host = settings.host.clone();
-        let segment_duration = settings.segment_time;
+        let host = config.host.clone();
+        let segment_duration = config.duration;
 
         let cache_dir = tempfile::tempdir()?;
 

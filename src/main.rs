@@ -2,26 +2,21 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use opentelemetry::{global, trace::TracerProvider as _};
-use opentelemetry_sdk::{
-    Resource,
-    propagation::TraceContextPropagator,
-    trace::{Sampler, SdkTracerProvider},
-};
-use tokio::sync::mpsc;
-use tracing::info;
+use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::propagation::TraceContextPropagator;
+use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
+use tokio::sync::{broadcast, mpsc};
+use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::ingest::{GrpcServerFactory, LivestreamService, StreamManager};
 use crate::publish::RtmpServer;
-use crate::services::MinioClientFactory;
 
 mod core;
 mod ingest;
 mod publish;
 mod services;
 mod settings;
-
-pub use settings::Settings;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -61,27 +56,31 @@ async fn main() -> Result<()> {
         "Starting LiveStream server"
     );
 
-    let settings = Settings::new()?;
+    let settings = match settings::Settings::new() {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "Failed to load configuration");
+            return Err(e);
+        }
+    };
 
     // core::set_log_level(Level::Trace);
     core::set_log_quiet();
     core::init();
 
     let (tx, rx) = mpsc::unbounded_channel();
-    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
-    let minio_client = MinioClientFactory::new(
-        settings.minio_uri.clone(),
-        settings.minio_accesskey.clone(),
-        settings.minio_secretkey.clone(),
-        settings.minio_bucket.clone(),
-    )
-    .create()
-    .await?;
-    let manager = Arc::new(StreamManager::new(settings.clone(), minio_client, tx));
+    let minio_client = services::MinioClient::create(settings.minio.unwrap()).await?;
+    let manager = Arc::new(StreamManager::new(
+        settings.ingest.clone(),
+        minio_client,
+        tx,
+    ));
 
     // Start RTMP server
-    let server = RtmpServer::new(settings.rtmp_port, settings.rtmp_app, manager.clone());
+    let server = RtmpServer::new(settings.publish, manager.clone());
+
     let shutdown_rx = shutdown_tx.subscribe();
     tokio::spawn(async move {
         if let Err(e) = server.start(rx, shutdown_rx).await {
@@ -89,15 +88,16 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Start GRPC & SRT pull stream server
-    let grpc_future = GrpcServerFactory::new(settings.grpc_port)
+    // Start GRPC Server & SRT Stream Puller
+    let grpc_future = GrpcServerFactory::new()
         .with_service(LivestreamService::new(manager.clone()))
         .with_manager(manager)
+        .with_config(settings.ingest)
         .serve();
 
     // Wait for gRPC server (which listens for Ctrl+C)
     if let Err(e) = grpc_future.await {
-        tracing::error!(error = %e, "gRPC server error");
+        error!(error = %e, "gRPC server error");
     }
 
     // Signal other components to shutdown

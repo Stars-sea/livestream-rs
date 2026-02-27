@@ -9,11 +9,14 @@ services:
       MINIO_SECRETKEY: 123456MinIO
       MINIO_BUCKET: videos
 
+      INGEST_HOST: srt.example.local
+      INGEST_PORT: 50051
+      INGEST_SRTPORTS: 4000-4100
+
+      PUBLISH_PORT: 1935
+      PUBLISH_APPNAME: lives
+
       RUST_LOG: info
-      HOST: srt.example.local
-      GRPC_PORT: 50051
-      RTMP_PORT: 1935
-      SRT_PORTS: 4000-4100
     ports:
       - "50051:50051"
       - "4000-4100:4000-4100/udp"

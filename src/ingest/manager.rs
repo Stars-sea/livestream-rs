@@ -13,14 +13,14 @@ use super::port_allocator::PortAllocator;
 use super::puller::StreamPullerFactory;
 use super::stream_info::StreamInfo;
 
-use crate::Settings;
 use crate::core::output::FlvPacket;
 use crate::services::MemoryCache;
 use crate::services::MinioClient;
+use crate::settings::IngestConfig;
 
 #[derive(Debug)]
 pub struct StreamManager {
-    settings: Settings,
+    settings: IngestConfig,
 
     puller_factory: Arc<StreamPullerFactory>,
     stream_info_cache: MemoryCache<Arc<StreamInfo>>,
@@ -29,7 +29,7 @@ pub struct StreamManager {
 
 impl StreamManager {
     pub fn new(
-        settings: Settings,
+        config: IngestConfig,
         minio_client: MinioClient,
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     ) -> Self {
@@ -38,20 +38,20 @@ impl StreamManager {
 
         tokio::spawn(handlers::stream_message_handler(
             stream_msg_rx,
-            settings.grpc_callback.clone(),
+            config.callback.clone(),
             minio_client,
             puller_factory.clone(),
         ));
 
         let port_allocator = {
-            let (start_port, end_port) = settings
+            let (start_port, end_port) = config
                 .srt_port_range()
                 .expect("Invalid SRT port range in settings");
             PortAllocator::new(start_port, end_port)
         };
 
         Self {
-            settings,
+            settings: config,
             puller_factory,
             stream_info_cache: MemoryCache::new(),
             port_allocator,
@@ -115,7 +115,7 @@ impl StreamManager {
             match handle.block_on(arc_self.puller_factory.create(cloned_info.clone())) {
                 Ok(mut puller) => {
                     if let Err(e) = puller.start() {
-                         error!(error = %e, "Stream puller error");
+                        error!(error = %e, "Stream puller error");
                     }
                 }
                 Err(e) => {
