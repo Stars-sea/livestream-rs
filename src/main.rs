@@ -12,8 +12,7 @@ use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{RandomIdGenerator, Sampler, SdkTracerProvider};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info};
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::Layer;
+use tracing_subscriber::{EnvFilter, Layer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::ingest::{GrpcServerFactory, LivestreamService, StreamManager};
@@ -83,19 +82,12 @@ fn init_metrics() -> Result<SdkMeterProvider> {
 async fn main() -> Result<()> {
     let logger_provider = init_logs()?;
 
-    let otel_layer = OpenTelemetryTracingBridge::new(&logger_provider);
+    let otel_layer = OpenTelemetryTracingBridge::new(&logger_provider)
+        .with_filter(EnvFilter::from_default_env());
 
-    let filter_otel = EnvFilter::new("info")
-        .add_directive("hyper=off".parse().unwrap())
-        .add_directive("tonic=off".parse().unwrap())
-        .add_directive("h2=off".parse().unwrap())
-        .add_directive("reqwest=off".parse().unwrap());
-    let otel_layer = otel_layer.with_filter(filter_otel);
-
-    let filter_fmt = EnvFilter::new("info");
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_thread_names(true)
-        .with_filter(filter_fmt);
+        .with_filter(EnvFilter::from_default_env());
 
     tracing_subscriber::registry()
         .with(otel_layer)

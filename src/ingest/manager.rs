@@ -8,6 +8,7 @@ use tokio::time::timeout;
 use tracing::{error, info, warn};
 
 use super::events::StreamMessage;
+use super::factory::GrpcClientFactory;
 use super::handlers;
 use super::port_allocator::PortAllocator;
 use super::puller::StreamPullerFactory;
@@ -38,7 +39,7 @@ impl StreamManager {
 
         tokio::spawn(handlers::stream_message_handler(
             stream_msg_rx,
-            config.callback.clone(),
+            GrpcClientFactory::new(config.callback.clone()),
             minio_client,
             puller_factory.clone(),
         ));

@@ -1,13 +1,56 @@
+use std::fmt::Display;
 use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::signal;
-use tonic::transport::Server;
+use tonic::transport::{Channel, Server};
+use tonic_tracing_opentelemetry::middleware::{client, server};
+use tower::ServiceBuilder;
 use tracing::info;
 
 use crate::settings::IngestConfig;
 
+use super::grpc::livestream_callback_client::LivestreamCallbackClient;
 use super::{LivestreamServer, LivestreamService, StreamManager};
+
+pub struct GrpcClientFactory {
+    url: String,
+}
+
+impl GrpcClientFactory {
+    pub fn new(url: String) -> Self {
+        Self { url }
+    }
+
+    pub async fn build(
+        &self,
+    ) -> Result<Option<LivestreamCallbackClient<client::OtelGrpcService<Channel>>>> {
+        if self.url.is_empty() {
+            return Ok(None);
+        }
+
+        let channel = Channel::from_shared(self.url.clone())?.connect().await?;
+        let channel = ServiceBuilder::new()
+            .layer(client::OtelGrpcLayer::default())
+            .service(channel);
+
+        let client = LivestreamCallbackClient::new(channel);
+
+        Ok(Some(client))
+    }
+}
+
+impl Default for GrpcClientFactory {
+    fn default() -> Self {
+        Self::new("".to_string())
+    }
+}
+
+impl Display for GrpcClientFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("GrpcClientFactory {{ {} }}", &self.url))
+    }
+}
 
 pub struct GrpcServerFactory {
     livestream_service: Option<LivestreamService>,
@@ -56,6 +99,7 @@ impl GrpcServerFactory {
         info!(address = %grpc_addr, "gRPC Server will listen");
 
         Server::builder()
+            .layer(server::OtelGrpcLayer::default())
             .add_service(LivestreamServer::new(service))
             .serve_with_shutdown(grpc_addr.parse()?, shutdown_signal(manager))
             .await?;

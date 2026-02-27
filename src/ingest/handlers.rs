@@ -8,14 +8,14 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{info, warn};
 
 use super::events::*;
-use super::grpc::livestream_callback_client::LivestreamCallbackClient;
 use super::grpc::*;
+use crate::ingest::factory::GrpcClientFactory;
 use crate::ingest::puller::StreamPullerFactory;
 use crate::services::MinioClient;
 
 pub(super) async fn stream_message_handler(
     rx: mpsc::UnboundedReceiver<StreamMessage>,
-    grpc_callback: String,
+    client_factory: GrpcClientFactory,
     minio: MinioClient,
     factory: Arc<StreamPullerFactory>,
 ) {
@@ -29,41 +29,35 @@ pub(super) async fn stream_message_handler(
                 segment_complete_handler(live_id, path, &minio).await.ok();
             }
             StreamMessage::StreamStarted { live_id } => {
-                stream_started_handler(live_id, &grpc_callback).await;
+                stream_started_handler(live_id, &client_factory).await;
             }
             StreamMessage::StreamStopped { live_id, error } => {
-                stream_stopped_handler(live_id, error, &grpc_callback, &factory).await;
+                stream_stopped_handler(live_id, error, &client_factory, &factory).await;
             }
         }
     }
 }
 
-async fn stream_started_handler(live_id: String, grpc_callback: &String) {
-    if grpc_callback.is_empty() {
-        return;
-    }
-    if let Ok(mut client) = LivestreamCallbackClient::connect(grpc_callback.clone()).await {
+async fn stream_started_handler(live_id: String, client_factory: &GrpcClientFactory) {
+    if let Ok(Some(mut client)) = client_factory.build().await {
         let req = NotifyStartedRequest { live_id };
         if let Err(e) = client.notify_stream_started(req).await {
             warn!(error = %e, "Failed to notify stream started");
         }
     } else {
-        warn!(endpoint = %grpc_callback, "Failed to connect to gRPC callback");
+        warn!(client = %client_factory, "Failed to connect to gRPC callback");
     }
 }
 
 async fn stream_stopped_handler(
     live_id: String,
     error_message: Option<String>,
-    grpc_callback: &String,
+    client_factory: &GrpcClientFactory,
     factory: &Arc<StreamPullerFactory>,
 ) {
     factory.remove_signal(&live_id).await;
 
-    if grpc_callback.is_empty() {
-        return;
-    }
-    if let Ok(mut client) = LivestreamCallbackClient::connect(grpc_callback.clone()).await {
+    if let Ok(Some(mut client)) = client_factory.build().await {
         let req = NotifyStoppedRequest {
             live_id,
             error_message,
@@ -72,7 +66,7 @@ async fn stream_stopped_handler(
             warn!(error = %e, "Failed to notify stream stopped");
         }
     } else {
-        warn!(endpoint = %grpc_callback, "Failed to connect to gRPC callback");
+        warn!(client = %client_factory, "Failed to connect to gRPC callback");
     }
 }
 
