@@ -83,9 +83,11 @@ fn default_ingest_srtports() -> String {
 fn default_ingest_duration() -> i32 {
     10
 }
+
 fn default_publish_port() -> u16 {
     1935
 }
+
 fn default_publish_appname() -> String {
     "lives".to_string()
 }
