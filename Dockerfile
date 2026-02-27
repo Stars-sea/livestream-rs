@@ -26,7 +26,7 @@ RUN if [ "$USE_MIRROR" = "true" ]; then \
     echo "[source.ustc]" >> ~/.cargo/config.toml && \
     echo "registry = 'sparse+https://mirrors.ustc.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml && \
     echo "[registries.ustc]" >> ~/.cargo/config.toml && \
-    echo "index = 'sparse+https://mirrors.ustc.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml \
+    echo "index = 'sparse+https://mirrors.ustc.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml; \
     fi
 
 RUN apt-get update && apt-get install -y \
@@ -42,6 +42,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+RUN cargo install cargo-chef
 COPY --from=cacher /app/recipe.json recipe.json
 
 # Build dependencies - this is the caching layer!
@@ -69,7 +70,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY --from=builder /app/target/release/livestream-rs ./
-COPY --from=builder /app/settings.json ./
 
 ENV HOST=srt.example.local
 
