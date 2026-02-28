@@ -14,18 +14,18 @@ use crate::services::MemoryCache;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
-use tracing::{debug, info, instrument, warn};
+use tracing::{Span, debug, info, instrument, warn};
 
 #[derive(Debug)]
 pub(super) struct StreamPullerFactory {
-    stream_msg_tx: mpsc::UnboundedSender<StreamMessage>,
+    stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
     flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     signal_cache: MemoryCache<Arc<AtomicBool>>,
 }
 
 impl StreamPullerFactory {
     pub fn new(
-        stream_msg_tx: mpsc::UnboundedSender<StreamMessage>,
+        stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     ) -> Self {
         Self {
@@ -71,7 +71,7 @@ impl StreamPullerFactory {
 pub(super) struct StreamPuller {
     stream_info: Arc<StreamInfo>,
 
-    stream_msg_tx: mpsc::UnboundedSender<StreamMessage>,
+    stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
     flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     stop_signal: Arc<AtomicBool>,
 
@@ -89,7 +89,7 @@ pub(super) struct StreamPuller {
 impl StreamPuller {
     pub fn new(
         stream_info: Arc<StreamInfo>,
-        stream_msg_tx: mpsc::UnboundedSender<StreamMessage>,
+        stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
         stop_signal: Arc<AtomicBool>,
     ) -> Self {
@@ -148,9 +148,10 @@ impl StreamPuller {
     #[instrument(name = "ingest.puller.notify_started", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
     fn notify_stream_started(&self) -> bool {
         let live_id = self.stream_info.live_id();
+        let parent_span = Span::current();
         if let Err(e) = self
             .stream_msg_tx
-            .send(StreamMessage::stream_started(live_id))
+            .send((StreamMessage::stream_started(live_id), parent_span))
         {
             warn!(error = %e, live_id = %live_id, "Failed to send stream connected event");
             return false;
@@ -162,7 +163,10 @@ impl StreamPuller {
     fn notify_stream_stopped(&self, error: Option<String>) {
         let live_id = self.stream_info.live_id();
 
-        let msg = StreamMessage::stream_stopped(live_id, error.clone());
+        let msg = (
+            StreamMessage::stream_stopped(live_id, error.clone()),
+            Span::current(),
+        );
         if let Err(e) = self.stream_msg_tx.send(msg) {
             warn!(error = %e, live_id = %live_id, "Failed to send stream terminate event");
         }
@@ -189,7 +193,10 @@ impl StreamPuller {
         };
 
         let live_id = self.stream_info.live_id();
-        let event = StreamMessage::segment_complete(live_id, output_ctx.path());
+        let event = (
+            StreamMessage::segment_complete(live_id, output_ctx.path()),
+            Span::current(),
+        );
         if let Err(e) = self.stream_msg_tx.send(event) {
             warn!(error = %e, live_id = %live_id, "Failed to send final segment complete event");
         }
@@ -208,7 +215,6 @@ impl StreamPuller {
     }
 
     /// Main loop for pulling SRT stream, segmenting, and writing to disk.
-    #[instrument(name = "ingest.puller.run", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
     fn start_impl(&mut self) -> Result<()> {
         let live_id = self.stream_info.live_id();
         info!(live_id = %live_id, "Starting stream puller loop");

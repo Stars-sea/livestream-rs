@@ -7,7 +7,7 @@ use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info};
 use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_subscriber::{EnvFilter, Layer};
+use tracing_subscriber::{EnvFilter, Layer, fmt};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::ingest::{GrpcServerFactory, LivestreamService, StreamManager};
@@ -31,8 +31,10 @@ async fn main() -> Result<()> {
     let otel_trace_layer =
         OpenTelemetryLayer::new(tracer).with_filter(EnvFilter::from_default_env());
 
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_thread_names(true)
+    let fmt_layer = fmt::layer()
+        .with_target(false)
+        .with_thread_names(false)
+        .with_file(true)
         .with_filter(EnvFilter::from_default_env());
 
     tracing_subscriber::registry()

@@ -7,7 +7,6 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{Span, error, info, instrument, warn};
 
-use super::events::StreamMessage;
 use super::factory::GrpcClientFactory;
 use super::handlers;
 use super::port_allocator::PortAllocator;
@@ -34,7 +33,7 @@ impl StreamManager {
         minio_client: MinioClient,
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     ) -> Self {
-        let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_channel::<StreamMessage>();
+        let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_channel();
         let puller_factory = Arc::new(StreamPullerFactory::new(stream_msg_tx, flv_packet_tx));
 
         tokio::spawn(handlers::stream_message_handler(

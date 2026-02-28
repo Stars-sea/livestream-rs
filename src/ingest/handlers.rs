@@ -5,6 +5,7 @@ use tokio::fs;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing::Span;
 use tracing::{info, warn};
 
 use super::events::*;
@@ -14,14 +15,15 @@ use crate::ingest::puller::StreamPullerFactory;
 use crate::services::MinioClient;
 
 pub(super) async fn stream_message_handler(
-    rx: mpsc::UnboundedReceiver<StreamMessage>,
+    rx: mpsc::UnboundedReceiver<(StreamMessage, Span)>,
     client_factory: GrpcClientFactory,
     minio: MinioClient,
     factory: Arc<StreamPullerFactory>,
 ) {
     let mut stream = UnboundedReceiverStream::new(rx);
 
-    while let Some(msg) = stream.next().await {
+    while let Some((msg, span)) = stream.next().await {
+        let _ = span.enter();
         info!(msg = ?msg, "Received stream message event");
 
         match msg {
