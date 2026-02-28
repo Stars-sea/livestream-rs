@@ -31,7 +31,7 @@ impl LivestreamService {
 
 #[tonic::async_trait]
 impl Livestream for LivestreamService {
-    #[instrument(skip(self, request), fields(live_id = %request.get_ref().live_id))]
+    #[instrument(name = "ingest.grpc.start_pull_stream", skip(self, request), fields(stream.live_id = %request.get_ref().live_id))]
     async fn start_pull_stream(
         &self,
         request: Request<StartPullStreamRequest>,
@@ -72,7 +72,7 @@ impl Livestream for LivestreamService {
         Ok(Response::new(resp))
     }
 
-    #[instrument(skip(self, request), fields(live_id = %request.get_ref().live_id))]
+    #[instrument(name = "ingest.grpc.stop_pull_stream", skip(self, request), fields(stream.live_id = %request.get_ref().live_id))]
     async fn stop_pull_stream(
         &self,
         request: Request<StopPullStreamRequest>,
@@ -90,7 +90,7 @@ impl Livestream for LivestreamService {
         Ok(Response::new(resp))
     }
 
-    #[instrument(skip(self, request))]
+    #[instrument(name = "ingest.grpc.list_active_streams", skip(self, request))]
     async fn list_active_streams(
         &self,
         request: Request<ListActiveStreamsRequest>,
@@ -108,7 +108,7 @@ impl Livestream for LivestreamService {
         }
     }
 
-    #[instrument(skip(self, request), fields(live_id = %request.get_ref().live_id))]
+    #[instrument(name = "ingest.grpc.get_stream_info", skip(self, request), fields(stream.live_id = %request.get_ref().live_id))]
     async fn get_stream_info(
         &self,
         request: Request<GetStreamInfoRequest>,

@@ -7,7 +7,7 @@ use rml_rtmp::time::RtmpTimestamp;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 
 use super::dispatcher::StreamDispatcher;
 use super::dispatcher::StreamState;
@@ -54,6 +54,7 @@ impl RtmpConnection {
             .ok_or_else(|| anyhow::anyhow!("RTMP Session not initialized"))
     }
 
+    #[instrument(name = "publish.rtmp.connection.run", skip(self))]
     pub async fn run(&mut self) -> Result<()> {
         let addr = self.socket.peer_addr().ok();
         // Handshake
@@ -107,6 +108,7 @@ impl RtmpConnection {
         }
     }
 
+    #[instrument(name = "publish.rtmp.connection.handshake", skip(self))]
     async fn perform_handshake(&mut self) -> Result<bool> {
         let mut buffer = [0u8; 1536];
         let mut handshake = Handshake::new(PeerType::Server);
@@ -136,6 +138,7 @@ impl RtmpConnection {
         }
     }
 
+    #[instrument(name = "publish.rtmp.connection.handle_input", skip(self, data), fields(network.bytes = data.len()))]
     async fn handle_input(&mut self, data: &[u8]) -> Result<()> {
         let results = {
             let session = self.session_mut()?;
@@ -156,13 +159,14 @@ impl RtmpConnection {
         Ok(())
     }
 
+    #[instrument(name = "publish.rtmp.connection.handle_event", skip(self, event))]
     async fn handle_event(&mut self, event: ServerSessionEvent) -> Result<()> {
         match event {
             ServerSessionEvent::ConnectionRequested {
                 app_name,
                 request_id,
             } => {
-                info!("Connection requested: {}", app_name);
+                info!(rtmp.app_name = %app_name, "Connection requested");
 
                 let res = if self.appname == app_name {
                     self.session_mut()?.accept_request(request_id)?
@@ -181,7 +185,7 @@ impl RtmpConnection {
                 stream_id,
                 ..
             } => {
-                info!("Play requested: {} (ID: {})", stream_key, stream_id);
+                info!(stream.live_id = %stream_key, stream.id = stream_id, "Play requested");
 
                 let res = if self.ingest_manager.has_stream(&stream_key).await {
                     self.current_stream_id = stream_id;
@@ -210,6 +214,7 @@ impl RtmpConnection {
         Ok(())
     }
 
+    #[instrument(name = "publish.rtmp.connection.handle_broadcast_tag", skip(self, tag), fields(stream.id = self.current_stream_id))]
     async fn handle_broadcast_tag(&mut self, tag: Arc<FlvTag>) -> Result<()> {
         // Send cached headers first if not sent yet
         if !self.sent_headers {
@@ -220,6 +225,7 @@ impl RtmpConnection {
         self.send_tag(tag.as_ref()).await
     }
 
+    #[instrument(name = "publish.rtmp.connection.send_cached_headers", skip(self), fields(stream.id = self.current_stream_id))]
     async fn send_cached_headers(&mut self) -> Result<()> {
         let state = if let Some(s) = &self.stream_state {
             s.clone()
@@ -237,6 +243,7 @@ impl RtmpConnection {
         Ok(())
     }
 
+    #[instrument(name = "publish.rtmp.connection.send_tag", skip(self, tag), fields(stream.id = self.current_stream_id))]
     async fn send_tag(&mut self, tag: &FlvTag) -> Result<()> {
         let stream_id = self.current_stream_id;
         let session = self.session_mut()?;
@@ -264,6 +271,7 @@ impl RtmpConnection {
         Ok(())
     }
 
+    #[instrument(name = "publish.rtmp.connection.write_response", skip(self, results))]
     async fn write_response(&mut self, results: Vec<ServerSessionResult>) -> Result<()> {
         for result in results {
             if let ServerSessionResult::OutboundResponse(packet) = result {

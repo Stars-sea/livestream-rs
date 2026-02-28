@@ -14,7 +14,7 @@ use crate::services::MemoryCache;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
 #[derive(Debug)]
 pub(super) struct StreamPullerFactory {
@@ -145,6 +145,7 @@ impl StreamPuller {
         None
     }
 
+    #[instrument(name = "ingest.puller.notify_started", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
     fn notify_stream_started(&self) -> bool {
         let live_id = self.stream_info.live_id();
         if let Err(e) = self
@@ -157,6 +158,7 @@ impl StreamPuller {
         true
     }
 
+    #[instrument(name = "ingest.puller.notify_stopped", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
     fn notify_stream_stopped(&self, error: Option<String>) {
         let live_id = self.stream_info.live_id();
 
@@ -179,6 +181,7 @@ impl StreamPuller {
         }
     }
 
+    #[instrument(name = "ingest.puller.segment_complete", skip(self), fields(stream.live_id = %self.stream_info.live_id(), stream.segment_id = self.segment_id))]
     fn notify_segment_complete(&self) {
         let output_ctx = match self.hls_output() {
             Ok(ctx) => ctx,
@@ -192,6 +195,7 @@ impl StreamPuller {
         }
     }
 
+    #[instrument(name = "ingest.puller.start", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
     pub fn start(&mut self) -> Result<()> {
         let result = self.start_impl();
 
@@ -204,6 +208,7 @@ impl StreamPuller {
     }
 
     /// Main loop for pulling SRT stream, segmenting, and writing to disk.
+    #[instrument(name = "ingest.puller.run", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
     fn start_impl(&mut self) -> Result<()> {
         let live_id = self.stream_info.live_id();
         info!(live_id = %live_id, "Starting stream puller loop");

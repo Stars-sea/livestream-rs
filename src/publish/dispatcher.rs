@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tokio::sync::{RwLock, broadcast};
+use tracing::instrument;
 
 use crate::core::flv_parser::FlvTag;
 use crate::services::MemoryCache;
@@ -38,17 +39,20 @@ impl StreamDispatcher {
         }
     }
 
+    #[instrument(name = "publish.dispatcher.stream", skip(self), fields(stream.live_id = %stream_key))]
     pub async fn stream(&self, stream_key: &str) -> StreamState {
         self.streams
             .get_or_insert_with(stream_key.to_string(), || StreamState::new())
             .await
     }
 
+    #[instrument(name = "publish.dispatcher.remove_stream", skip(self), fields(stream.live_id = %stream_key))]
     pub async fn remove_stream(&self, stream_key: &str) {
         self.streams.remove(stream_key).await;
     }
 
     /// Returns a receiver for the specified stream key, along with cached headers.
+    #[instrument(name = "publish.dispatcher.subscribe", skip(self), fields(stream.live_id = %stream_key))]
     pub async fn subscribe(
         &self,
         stream_key: &str,

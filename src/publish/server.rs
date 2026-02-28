@@ -30,7 +30,7 @@ impl RtmpServer {
         }
     }
 
-    #[instrument(skip(self, flv_packet_rx, shutdown), fields(port = self.config.port))]
+    #[instrument(name = "publish.rtmp.server.start", skip(self, flv_packet_rx, shutdown), fields(server.port = self.config.port))]
     pub async fn start(
         &self,
         flv_packet_rx: mpsc::UnboundedReceiver<FlvPacket>,
@@ -91,7 +91,7 @@ impl RtmpServer {
     }
 }
 
-#[instrument(skip(flv_rx, dispatcher))]
+#[instrument(name = "publish.rtmp.flv.process", skip(flv_rx, dispatcher))]
 async fn process_flv_packets(
     mut flv_rx: mpsc::UnboundedReceiver<FlvPacket>,
     dispatcher: StreamDispatcher,

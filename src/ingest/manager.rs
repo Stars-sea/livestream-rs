@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tracing::{error, info, instrument, warn};
+use tracing::{Span, error, info, instrument, warn};
 
 use super::events::StreamMessage;
 use super::factory::GrpcClientFactory;
@@ -98,7 +98,7 @@ impl StreamManager {
         self.stream_info_cache.remove(info.live_id()).await;
     }
 
-    #[instrument(skip(self, stream_info), fields(live_id = %stream_info.live_id(), srt_port = stream_info.srt_port()))]
+    #[instrument(name = "ingest.stream.start", skip(self, stream_info), fields(stream.live_id = %stream_info.live_id(), stream.srt_port = stream_info.srt_port()))]
     pub async fn start_stream(self: &Arc<Self>, stream_info: Arc<StreamInfo>) -> Result<()> {
         let live_id = stream_info.live_id().to_string();
 
@@ -111,7 +111,9 @@ impl StreamManager {
 
         let cloned_info = stream_info.clone();
         let arc_self = self.clone();
+        let parent_span = Span::current();
         tokio::task::spawn_blocking(move || {
+            let _entered = parent_span.enter();
             let handle = tokio::runtime::Handle::current();
 
             match handle.block_on(arc_self.puller_factory.create(cloned_info.clone())) {
@@ -140,7 +142,7 @@ impl StreamManager {
         Ok(())
     }
 
-    #[instrument(skip(self), fields(live_id = %live_id))]
+    #[instrument(name = "ingest.stream.stop", skip(self), fields(stream.live_id = %live_id))]
     pub async fn stop_stream(&self, live_id: &str) -> Result<()> {
         info!(live_id = %live_id, "Stopping stream request");
         if let Some(signal) = self.puller_factory.get_signal(live_id).await {
@@ -152,29 +154,29 @@ impl StreamManager {
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(name = "ingest.stream.shutdown", skip(self))]
     pub async fn shutdown(&self) {
         for signal in self.puller_factory.get_signals().await {
             signal.store(true, Ordering::SeqCst);
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(name = "ingest.stream.list_active", skip(self))]
     pub async fn list_active_streams(&self) -> Result<Vec<String>> {
         Ok(self.stream_info_cache.keys().await)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(name = "ingest.stream.is_empty", skip(self))]
     pub async fn is_streams_empty(&self) -> bool {
         self.stream_info_cache.keys().await.is_empty()
     }
 
-    #[instrument(skip(self), fields(live_id = %live_id))]
+    #[instrument(name = "ingest.stream.exists", skip(self), fields(stream.live_id = %live_id))]
     pub async fn has_stream(&self, live_id: &str) -> bool {
         self.stream_info_cache.contains_key(live_id).await
     }
 
-    #[instrument(skip(self), fields(live_id = %live_id))]
+    #[instrument(name = "ingest.stream.get_info", skip(self), fields(stream.live_id = %live_id))]
     pub async fn get_stream_info(&self, live_id: &str) -> Option<Arc<StreamInfo>> {
         self.stream_info_cache.get(live_id).await
     }

@@ -113,7 +113,7 @@ impl GrpcServerFactory {
         self
     }
 
-    #[instrument(skip(self), fields(port = %self.config.as_ref().map(|c| c.port).unwrap_or_default()))]
+    #[instrument(name = "ingest.grpc.serve", skip(self), fields(server.port = %self.config.as_ref().map(|c| c.port).unwrap_or_default()))]
     pub async fn serve(self) -> Result<()> {
         let service = self
             .livestream_service
