@@ -32,9 +32,8 @@ async fn main() -> Result<()> {
         OpenTelemetryLayer::new(tracer).with_filter(EnvFilter::from_default_env());
 
     let fmt_layer = fmt::layer()
+        .compact()
         .with_target(false)
-        .with_thread_names(false)
-        .with_file(true)
         .with_filter(EnvFilter::from_default_env());
 
     tracing_subscriber::registry()

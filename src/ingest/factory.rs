@@ -2,24 +2,21 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use anyhow::Result;
-use opentelemetry::Context as OtelContext;
 use opentelemetry::global;
-use opentelemetry::propagation::Injector;
+use opentelemetry::propagation::{Extractor, Injector};
 use tokio::signal;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::service::Interceptor;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Status};
-use tracing::{info, instrument};
+use tracing::{Span, info, instrument};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::settings::IngestConfig;
 
 use super::grpc::livestream_callback_client::LivestreamCallbackClient;
 use super::{LivestreamServer, LivestreamService, StreamManager};
-
-#[derive(Clone, Default)]
-pub(crate) struct TraceContextInterceptor;
 
 struct MetadataInjector<'a>(&'a mut MetadataMap);
 
@@ -36,9 +33,30 @@ impl Injector for MetadataInjector<'_> {
     }
 }
 
+struct MetadataExtractor<'a>(&'a MetadataMap);
+
+impl Extractor for MetadataExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0
+            .keys()
+            .map(|key| match key {
+                tonic::metadata::KeyRef::Ascii(k) => k.as_str(),
+                tonic::metadata::KeyRef::Binary(k) => k.as_str(),
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct TraceContextInterceptor;
+
 impl Interceptor for TraceContextInterceptor {
     fn call(&mut self, mut request: Request<()>) -> std::result::Result<Request<()>, Status> {
-        let context = OtelContext::current();
+        let context = Span::current().context();
         global::get_text_map_propagator(|propagator| {
             propagator.inject_context(&context, &mut MetadataInjector(request.metadata_mut()));
         });
@@ -65,7 +83,8 @@ impl GrpcClientFactory {
         }
 
         let channel = Channel::from_shared(self.url.clone())?.connect().await?;
-        let client = LivestreamCallbackClient::with_interceptor(channel, TraceContextInterceptor);
+        let client =
+            LivestreamCallbackClient::with_interceptor(channel, TraceContextInterceptor::default());
 
         Ok(Some(client))
     }
@@ -131,11 +150,25 @@ impl GrpcServerFactory {
         info!(address = %grpc_addr, "gRPC Server will listen");
 
         Server::builder()
-            .add_service(LivestreamServer::new(service))
+            .add_service(LivestreamServer::with_interceptor(
+                service,
+                Self::server_trace_interceptor,
+            ))
             .serve_with_shutdown(grpc_addr.parse()?, shutdown_signal(manager))
             .await?;
 
         Ok(())
+    }
+
+    fn server_trace_interceptor(request: Request<()>) -> Result<Request<()>, Status> {
+        let parent_cx = global::get_text_map_propagator(|prop| {
+            prop.extract(&MetadataExtractor(request.metadata()))
+        });
+
+        // Set parent context for the trace, linking it with incoming grpc calls
+        let _ = Span::current().set_parent(parent_cx);
+
+        Ok(request)
     }
 }
 

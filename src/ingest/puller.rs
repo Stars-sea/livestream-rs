@@ -217,7 +217,6 @@ impl StreamPuller {
     /// Main loop for pulling SRT stream, segmenting, and writing to disk.
     fn start_impl(&mut self) -> Result<()> {
         let live_id = self.stream_info.live_id();
-        info!(live_id = %live_id, "Starting stream puller loop");
         let cache_dir = self.stream_info.cache_dir();
 
         self.srt_input = Some(SrtInputContext::open(
