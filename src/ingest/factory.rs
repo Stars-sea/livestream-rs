@@ -2,16 +2,53 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use anyhow::Result;
+use opentelemetry::Context as OtelContext;
+use opentelemetry::global;
+use opentelemetry::propagation::Injector;
 use tokio::signal;
+use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
+use tonic::service::Interceptor;
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Server};
-use tonic_tracing_opentelemetry::middleware::{client, server};
-use tower::ServiceBuilder;
+use tonic::{Request, Status};
 use tracing::{info, instrument};
 
 use crate::settings::IngestConfig;
 
 use super::grpc::livestream_callback_client::LivestreamCallbackClient;
 use super::{LivestreamServer, LivestreamService, StreamManager};
+
+#[derive(Clone, Default)]
+pub(crate) struct TraceContextInterceptor;
+
+struct MetadataInjector<'a>(&'a mut MetadataMap);
+
+impl Injector for MetadataInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        let Ok(metadata_key) = MetadataKey::from_bytes(key.as_bytes()) else {
+            return;
+        };
+        let Ok(metadata_value) = MetadataValue::try_from(value) else {
+            return;
+        };
+
+        self.0.insert(metadata_key, metadata_value);
+    }
+}
+
+impl Interceptor for TraceContextInterceptor {
+    fn call(&mut self, mut request: Request<()>) -> std::result::Result<Request<()>, Status> {
+        let context = OtelContext::current();
+        global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(&context, &mut MetadataInjector(request.metadata_mut()));
+        });
+
+        Ok(request)
+    }
+}
+
+pub(crate) type CallbackClient =
+    LivestreamCallbackClient<InterceptedService<Channel, TraceContextInterceptor>>;
 
 pub struct GrpcClientFactory {
     url: String,
@@ -22,19 +59,13 @@ impl GrpcClientFactory {
         Self { url }
     }
 
-    pub async fn build(
-        &self,
-    ) -> Result<Option<LivestreamCallbackClient<client::OtelGrpcService<Channel>>>> {
+    pub async fn build(&self) -> Result<Option<CallbackClient>> {
         if self.url.is_empty() {
             return Ok(None);
         }
 
         let channel = Channel::from_shared(self.url.clone())?.connect().await?;
-        let channel = ServiceBuilder::new()
-            .layer(client::OtelGrpcLayer::default())
-            .service(channel);
-
-        let client = LivestreamCallbackClient::new(channel);
+        let client = LivestreamCallbackClient::with_interceptor(channel, TraceContextInterceptor);
 
         Ok(Some(client))
     }
@@ -100,7 +131,6 @@ impl GrpcServerFactory {
         info!(address = %grpc_addr, "gRPC Server will listen");
 
         Server::builder()
-            .layer(server::OtelGrpcLayer::default())
             .add_service(LivestreamServer::new(service))
             .serve_with_shutdown(grpc_addr.parse()?, shutdown_signal(manager))
             .await?;
