@@ -92,12 +92,7 @@ async fn segment_complete_handler(
     path: PathBuf,
     minio: &MinioClient,
 ) -> anyhow::Result<()> {
-    event!(
-        Level::INFO,
-        "Segment complete: live_id={}, path={}",
-        live_id,
-        path.display()
-    );
+    event!(Level::DEBUG, "Segment complete: live_id={}", live_id);
 
     let filename = path
         .file_name()

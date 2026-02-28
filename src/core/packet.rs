@@ -85,6 +85,10 @@ impl Packet {
         unsafe { (*self.packet).stream_index as u32 }
     }
 
+    pub fn size(&self) -> i32 {
+        unsafe { (*self.packet).size }
+    }
+
     pub fn pts(&self) -> Option<i64> {
         let pts = unsafe { (*self.packet).pts };
         if pts != AV_NOPTS_VALUE {

@@ -7,13 +7,14 @@ use rml_rtmp::time::RtmpTimestamp;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
-use tracing::{info, instrument, warn};
+use tracing::{Level, event, info, instrument, warn};
 
 use super::dispatcher::StreamDispatcher;
 use super::dispatcher::StreamState;
 
 use crate::core::flv_parser::FlvTag;
 use crate::ingest::StreamManager;
+use crate::otlp::metrics;
 
 pub(super) struct RtmpConnection {
     socket: TcpStream,
@@ -24,6 +25,7 @@ pub(super) struct RtmpConnection {
     current_stream_id: u32,
     stream_state: Option<StreamState>,
     sent_headers: bool,
+    pull_guard: Option<metrics::MetricGuard>,
 
     ingest_manager: Arc<StreamManager>,
 }
@@ -44,6 +46,7 @@ impl RtmpConnection {
             current_stream_id: 0,
             stream_state: None,
             sent_headers: false,
+            pull_guard: None,
             ingest_manager,
         }
     }
@@ -56,6 +59,9 @@ impl RtmpConnection {
 
     #[instrument(name = "publish.rtmp.connection.run", skip(self))]
     pub async fn run(&mut self) -> Result<()> {
+        let _conn_guard =
+            metrics::MetricGuard::new(&metrics::get_metrics().rtmp_connections, vec![]);
+
         let addr = self.socket.peer_addr().ok();
         // Handshake
         if !self.perform_handshake().await? {
@@ -80,6 +86,7 @@ impl RtmpConnection {
                         info!(remote_addr = ?addr, "Client disconnected normally");
                         break;
                     }
+                    metrics::get_metrics().add_network_bytes_in(n as u64, &[]);
                     if let Err(e) = self.handle_input(&buffer[..n]).await {
                          warn!(remote_addr = ?addr, error = %e, "Failed to handle input");
                          break;
@@ -118,6 +125,7 @@ impl RtmpConnection {
             if n == 0 {
                 return Ok(false);
             }
+            metrics::get_metrics().add_network_bytes_in(n as u64, &[]);
 
             let (completed, resp) = match handshake.process_bytes(&buffer[..n]) {
                 Ok(HandshakeProcessResult::InProgress { response_bytes }) => {
@@ -131,6 +139,7 @@ impl RtmpConnection {
 
             if !resp.is_empty() {
                 self.socket.write_all(&resp).await?;
+                metrics::get_metrics().add_network_bytes_out(resp.len() as u64, &[]);
             }
             if completed {
                 return Ok(true);
@@ -149,6 +158,7 @@ impl RtmpConnection {
             match result {
                 ServerSessionResult::OutboundResponse(packet) => {
                     self.socket.write_all(&packet.bytes).await?;
+                    metrics::get_metrics().add_network_bytes_out(packet.bytes.len() as u64, &[]);
                 }
                 ServerSessionResult::RaisedEvent(event) => {
                     self.handle_event(event).await?;
@@ -161,6 +171,8 @@ impl RtmpConnection {
 
     #[instrument(name = "publish.rtmp.connection.handle_event", skip(self, event))]
     async fn handle_event(&mut self, event: ServerSessionEvent) -> Result<()> {
+        event!(Level::INFO, "Received event: {:?}", event);
+
         match event {
             ServerSessionEvent::ConnectionRequested {
                 app_name,
@@ -194,6 +206,13 @@ impl RtmpConnection {
                     self.active_stream_rx = Some(rx);
                     self.stream_state = Some(state);
 
+                    if self.pull_guard.is_none() {
+                        self.pull_guard = Some(metrics::MetricGuard::new(
+                            &metrics::get_metrics().pull_connections,
+                            vec![],
+                        ));
+                    }
+
                     self.session_mut()?.accept_request(request_id)?
                 } else {
                     self.session_mut()?.reject_request(
@@ -214,7 +233,6 @@ impl RtmpConnection {
         Ok(())
     }
 
-    #[instrument(name = "publish.rtmp.connection.handle_broadcast_tag", skip(self, tag), fields(stream.id = self.current_stream_id))]
     async fn handle_broadcast_tag(&mut self, tag: Arc<FlvTag>) -> Result<()> {
         // Send cached headers first if not sent yet
         if !self.sent_headers {
@@ -225,7 +243,6 @@ impl RtmpConnection {
         self.send_tag(tag.as_ref()).await
     }
 
-    #[instrument(name = "publish.rtmp.connection.send_cached_headers", skip(self), fields(stream.id = self.current_stream_id))]
     async fn send_cached_headers(&mut self) -> Result<()> {
         let state = if let Some(s) = &self.stream_state {
             s.clone()
@@ -243,7 +260,6 @@ impl RtmpConnection {
         Ok(())
     }
 
-    #[instrument(name = "publish.rtmp.connection.send_tag", skip(self, tag), fields(stream.id = self.current_stream_id))]
     async fn send_tag(&mut self, tag: &FlvTag) -> Result<()> {
         let stream_id = self.current_stream_id;
         let session = self.session_mut()?;
@@ -268,14 +284,15 @@ impl RtmpConnection {
             FlvTag::ScriptData { .. } => return Ok(()),
         };
         self.socket.write_all(&packet.bytes).await?;
+        metrics::get_metrics().add_network_bytes_out(packet.bytes.len() as u64, &[]);
         Ok(())
     }
 
-    #[instrument(name = "publish.rtmp.connection.write_response", skip(self, results))]
     async fn write_response(&mut self, results: Vec<ServerSessionResult>) -> Result<()> {
         for result in results {
             if let ServerSessionResult::OutboundResponse(packet) = result {
                 self.socket.write_all(&packet.bytes).await?;
+                metrics::get_metrics().add_network_bytes_out(packet.bytes.len() as u64, &[]);
             }
         }
         Ok(())

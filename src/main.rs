@@ -15,14 +15,14 @@ use crate::publish::RtmpServer;
 
 mod core;
 mod ingest;
-mod init_otlp;
+mod otlp;
 mod publish;
 mod services;
 mod settings;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (logger_provider, tracer_provider, meter_provider) = init_otlp::init_otlp()?;
+    let (logger_provider, tracer_provider, meter_provider) = otlp::init_otlp()?;
     let tracer = tracer_provider.tracer("livestream-rs");
 
     let otel_layer = OpenTelemetryTracingBridge::new(&logger_provider)

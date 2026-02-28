@@ -14,6 +14,7 @@ use super::puller::StreamPullerFactory;
 use super::stream_info::StreamInfo;
 
 use crate::core::output::FlvPacket;
+use crate::otlp::metrics;
 use crate::services::MemoryCache;
 use crate::services::MinioClient;
 use crate::settings::IngestConfig;
@@ -114,6 +115,9 @@ impl StreamManager {
         tokio::task::spawn_blocking(move || {
             let _entered = parent_span.enter();
             let handle = tokio::runtime::Handle::current();
+
+            let _stream_guard =
+                metrics::MetricGuard::new(&metrics::get_metrics().online_streams, vec![]);
 
             match handle.block_on(arc_self.puller_factory.create(cloned_info.clone())) {
                 Ok(mut puller) => {

@@ -1,5 +1,7 @@
 //! Live stream service managing SRT stream pulling and processing.
 
+use crate::otlp::metrics;
+
 use super::grpc::livestream_server::Livestream;
 use super::grpc::*;
 use super::manager::StreamManager;
@@ -36,6 +38,7 @@ impl Livestream for LivestreamService {
         &self,
         request: Request<StartPullStreamRequest>,
     ) -> Result<Response<StreamInfoResponse>, Status> {
+        let mut grpc_guard = metrics::get_metrics().grpc_call("start_pull_stream");
         let request = request.into_inner();
 
         // Validate input
@@ -69,6 +72,7 @@ impl Livestream for LivestreamService {
         }
 
         let resp: StreamInfoResponse = stream_info.into();
+        grpc_guard.success();
         Ok(Response::new(resp))
     }
 
@@ -77,6 +81,7 @@ impl Livestream for LivestreamService {
         &self,
         request: Request<StopPullStreamRequest>,
     ) -> Result<Response<StopPullStreamResponse>, Status> {
+        let mut grpc_guard = metrics::get_metrics().grpc_call("stop_pull_stream");
         let live_id = request.into_inner().live_id;
 
         // Validate input
@@ -87,6 +92,7 @@ impl Livestream for LivestreamService {
         let resp = StopPullStreamResponse {
             is_success: self.manager.stop_stream(&live_id).await.is_ok(),
         };
+        grpc_guard.success();
         Ok(Response::new(resp))
     }
 
@@ -95,6 +101,7 @@ impl Livestream for LivestreamService {
         &self,
         request: Request<ListActiveStreamsRequest>,
     ) -> Result<Response<ListActiveStreamsResponse>, Status> {
+        let mut grpc_guard = metrics::get_metrics().grpc_call("list_active_streams");
         let _ = request;
         let resp = self
             .manager
@@ -103,7 +110,10 @@ impl Livestream for LivestreamService {
             .map(|live_ids| ListActiveStreamsResponse { live_ids });
 
         match resp {
-            Ok(response) => Ok(Response::new(response)),
+            Ok(response) => {
+                grpc_guard.success();
+                Ok(Response::new(response))
+            }
             Err(e) => Err(Status::internal(e.to_string())),
         }
     }
@@ -113,6 +123,7 @@ impl Livestream for LivestreamService {
         &self,
         request: Request<GetStreamInfoRequest>,
     ) -> Result<Response<StreamInfoResponse>, Status> {
+        let mut grpc_guard = metrics::get_metrics().grpc_call("get_stream_info");
         let live_id = request.into_inner().live_id;
 
         // Validate input
@@ -122,6 +133,7 @@ impl Livestream for LivestreamService {
 
         if let Some(info) = self.manager.get_stream_info(&live_id).await {
             let resp: StreamInfoResponse = info.into();
+            grpc_guard.success();
             Ok(Response::new(resp))
         } else {
             Err(Status::not_found("Stream not found"))

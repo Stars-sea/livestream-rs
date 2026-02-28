@@ -10,6 +10,7 @@ use crate::core::context::Context;
 use crate::core::input::SrtInputContext;
 use crate::core::output::{FlvOutputContext, FlvPacket, HlsOutputContext};
 use crate::core::packet::Packet;
+use crate::otlp::metrics;
 use crate::services::MemoryCache;
 
 use anyhow::Result;
@@ -245,7 +246,11 @@ impl StreamPuller {
                 break;
             }
 
+            metrics::get_metrics().add_network_bytes_in(packet.size() as u64, &[]);
+
             let cloned_packet = packet.clone();
+
+            metrics::get_metrics().add_ingest_packets(1, &[]);
 
             // Send stream started event on first successful packet read
             if !self.notified_started {
