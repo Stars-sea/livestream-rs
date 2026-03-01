@@ -120,14 +120,8 @@ impl StreamManager {
                 metrics::MetricGuard::new(&metrics::get_metrics().online_streams, vec![]);
 
             match handle.block_on(arc_self.puller_factory.create(cloned_info.clone())) {
-                Ok(mut puller) => {
-                    if let Err(e) = puller.start() {
-                        error!(error = %e, "Stream puller error");
-                    }
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to create stream puller");
-                }
+                Ok(mut puller) => puller.start(),
+                Err(e) => error!(error = %e, "Failed to create stream puller"),
             }
 
             handle.block_on(async {

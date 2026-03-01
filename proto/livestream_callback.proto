@@ -5,18 +5,37 @@ option csharp_namespace = "LiveService.Protos";
 package livestream;
 
 service LivestreamCallback {
-  rpc NotifyStreamStarted (NotifyStartedRequest) returns (NotifyResponse);
+  rpc NotifyStreamStarted (NotifyStreamStartedRequest) returns (NotifyResponse);
 
-  rpc NotifyStreamStopped (NotifyStoppedRequest) returns (NotifyResponse);
+  rpc NotifyStreamStopped (NotifyStreamStoppedRequest) returns (NotifyResponse);
+
+  rpc NotifyStreamRestarting (NotifyStreamRestartingRequest) returns (NotifyResponse);
+
+  rpc NotifyPullerStarted (NotifyPullerStartedRequest) returns (NotifyResponse);
+
+  rpc NotifyPullerStopped (NotifyPullerStoppedRequest) returns (NotifyResponse);
 }
 
-message NotifyStartedRequest {
+message NotifyStreamStartedRequest {
   string live_id = 1;
 }
 
-message NotifyStoppedRequest {
+message NotifyStreamStoppedRequest {
   string live_id = 1;
   optional string error_message = 2;
+}
+
+message NotifyStreamRestartingRequest {
+  string live_id = 1;
+  string error_message = 2;
+}
+
+message NotifyPullerStartedRequest {
+  string live_id = 1;
+}
+
+message NotifyPullerStoppedRequest {
+  string live_id = 1;
 }
 
 message NotifyResponse {

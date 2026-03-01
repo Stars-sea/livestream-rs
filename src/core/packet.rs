@@ -4,7 +4,14 @@ use super::context::{Context, ffmpeg_error};
 
 use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
-use tracing::debug;
+
+#[derive(Debug)]
+pub enum PacketReadResult {
+    Data,
+    Eof,
+    Retryable { code: i32, message: String },
+    Fatal { code: i32, message: String },
+}
 
 /// Wrapper for FFmpeg AVPacket with safe operations.
 ///
@@ -28,24 +35,32 @@ impl Packet {
         Ok(Self { packet: pkt })
     }
 
-    pub fn read(&self, ctx: &impl Context) -> Result<i32> {
+    pub fn read(&self, ctx: &impl Context) -> PacketReadResult {
         let ret = unsafe { av_read_frame(ctx.get_ctx(), self.packet) };
-        if ret < 0 {
-            return if ret == AVERROR_EOF {
-                Ok(0)
-            } else {
-                Err(anyhow!(ffmpeg_error(ret)))
+
+        if ret >= 0 {
+            return PacketReadResult::Data;
+        }
+
+        if ret == AVERROR_EOF {
+            return PacketReadResult::Eof;
+        }
+
+        let err_msg = ffmpeg_error(ret);
+        let err_upper = err_msg.to_uppercase();
+
+        if ret == AVERROR(EAGAIN) || err_upper.contains("EAGAIN") || err_upper.contains("TIMED OUT")
+        {
+            return PacketReadResult::Retryable {
+                code: ret,
+                message: err_msg,
             };
         }
 
-        unsafe { Ok((*self.packet).size) }
-    }
-
-    pub fn read_safely(&self, ctx: &impl Context) -> i32 {
-        self.read(ctx).unwrap_or_else(|e| {
-            debug!("read_safely failed: {}", e);
-            0
-        })
+        PacketReadResult::Fatal {
+            code: ret,
+            message: err_msg,
+        }
     }
 
     pub fn rescale_ts(&self, original_time_base: AVRational, target_time_base: AVRational) {

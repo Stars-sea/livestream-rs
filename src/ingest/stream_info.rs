@@ -72,7 +72,7 @@ impl StreamInfo {
 
     pub fn srt_listener_url(&self) -> String {
         format!(
-            "srt://:{}?mode=listener&passphrase={}&srt_streamid={}",
+            "srt://:{}?mode=listener&passphrase={}&srt_streamid={}&latency=500000&timeout=5000000",
             self.srt_port, self.passphrase, self.live_id
         )
     }

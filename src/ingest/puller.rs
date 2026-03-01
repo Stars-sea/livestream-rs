@@ -9,13 +9,15 @@ use super::stream_info::StreamInfo;
 use crate::core::context::Context;
 use crate::core::input::SrtInputContext;
 use crate::core::output::{FlvOutputContext, FlvPacket, HlsOutputContext};
-use crate::core::packet::Packet;
+use crate::core::packet::{Packet, PacketReadResult};
 use crate::otlp::metrics;
 use crate::services::MemoryCache;
 
 use anyhow::Result;
+use retry::OperationResult;
+use retry::delay::{Exponential, jitter};
 use tokio::sync::mpsc;
-use tracing::{Span, debug, info, instrument, warn};
+use tracing::{Span, debug, error, info, instrument, warn};
 
 #[derive(Debug)]
 pub(super) struct StreamPullerFactory {
@@ -82,9 +84,11 @@ pub(super) struct StreamPuller {
 
     segment_id: u64,
     last_start_pts: i64,
+}
 
-    notified_started: bool,
-    notified_stopped: bool,
+enum ReadResult {
+    Ok,
+    Eof,
 }
 
 impl StreamPuller {
@@ -104,8 +108,6 @@ impl StreamPuller {
             hls_output: None,
             segment_id: 1,
             last_start_pts: 0,
-            notified_started: false,
-            notified_stopped: false,
         }
     }
 
@@ -127,6 +129,40 @@ impl StreamPuller {
             .ok_or_else(|| anyhow::anyhow!("HLS output context not initialized"))
     }
 
+    fn read_packet_with_retry(&self, packet: &Packet) -> Result<ReadResult> {
+        let srt_input = self.srt_input()?;
+
+        let result = retry::retry(
+            Exponential::from_millis(10).map(jitter).take(5),
+            || match packet.read(srt_input) {
+                PacketReadResult::Data => OperationResult::Ok(ReadResult::Ok),
+                PacketReadResult::Eof => OperationResult::Ok(ReadResult::Eof),
+                PacketReadResult::Retryable { code, message } => {
+                    debug!(
+                        code = code,
+                        message = %message,
+                        "Retryable error reading packet, will retry"
+                    );
+                    OperationResult::Retry(anyhow::anyhow!(
+                        "Retryable error reading packet: code={}, message={}",
+                        code,
+                        message
+                    ))
+                }
+                PacketReadResult::Fatal { code, message } => OperationResult::Err(anyhow::anyhow!(
+                    "Fatal error reading packet: code={}, message={}",
+                    code,
+                    message
+                )),
+            },
+        );
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => Err(anyhow::anyhow!("Failed to read packet: {}", e)),
+        }
+    }
+
     /// Determines if a new segment should be created based on packet and duration.
     fn should_segment(&self, packet: &Packet) -> Option<i64> {
         let input_ctx = self.srt_input.as_ref()?;
@@ -146,46 +182,6 @@ impl StreamPuller {
         None
     }
 
-    #[instrument(name = "ingest.puller.notify_started", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
-    fn notify_stream_started(&self) -> bool {
-        let live_id = self.stream_info.live_id();
-        let parent_span = Span::current();
-        if let Err(e) = self
-            .stream_msg_tx
-            .send((StreamMessage::stream_started(live_id), parent_span))
-        {
-            warn!(error = %e, live_id = %live_id, "Failed to send stream connected event");
-            return false;
-        }
-        true
-    }
-
-    #[instrument(name = "ingest.puller.notify_stopped", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
-    fn notify_stream_stopped(&self, error: Option<String>) {
-        let live_id = self.stream_info.live_id();
-
-        let msg = (
-            StreamMessage::stream_stopped(live_id, error.clone()),
-            Span::current(),
-        );
-        if let Err(e) = self.stream_msg_tx.send(msg) {
-            warn!(error = %e, live_id = %live_id, "Failed to send stream terminate event");
-        }
-
-        let flv_output = self
-            .flv_output
-            .as_ref()
-            .map(|o| o.get_flv_packet_sender())
-            .flatten();
-        if let Some(tx) = flv_output {
-            if let Err(e) = tx.send(FlvPacket::EndOfStream {
-                live_id: live_id.to_string(),
-            }) {
-                warn!(error = %e, live_id = %live_id, "Failed to send end of stream packet");
-            }
-        }
-    }
-
     #[instrument(name = "ingest.puller.segment_complete", skip(self), fields(stream.live_id = %self.stream_info.live_id(), stream.segment_id = self.segment_id))]
     fn notify_segment_complete(&self) {
         let output_ctx = match self.hls_output() {
@@ -203,22 +199,112 @@ impl StreamPuller {
         }
     }
 
-    #[instrument(name = "ingest.puller.start", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
-    pub fn start(&mut self) -> Result<()> {
-        let result = self.start_impl();
+    #[instrument(name = "ingest.stream.notify_started", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
+    fn notify_stream_started(&self) {
+        let live_id = self.stream_info.live_id();
+        let event = (StreamMessage::stream_started(live_id), Span::current());
+        if let Err(e) = self.stream_msg_tx.send(event) {
+            warn!(error = %e, live_id = %live_id, "Failed to send stream started event");
+        }
+    }
 
-        if !self.notified_stopped {
-            self.notify_stream_stopped(result.as_ref().err().map(|e| e.to_string()));
-            self.notified_stopped = true;
+    #[instrument(name = "ingest.stream.notify_stopped", skip(self), fields(stream.live_id = %self.stream_info.live_id(), error = ?error))]
+    fn notify_stream_stopped(&self, error: Option<String>) {
+        let live_id = self.stream_info.live_id();
+        let event = (
+            StreamMessage::stream_stopped(live_id, error.clone()),
+            Span::current(),
+        );
+        if let Err(e) = self.stream_msg_tx.send(event) {
+            warn!(error = %e, live_id = %live_id, "Failed to send stream stopped event");
+        }
+    }
+
+    #[instrument(name = "ingest.stream.notify_restarting", skip(self), fields(stream.live_id = %self.stream_info.live_id(), error = %error))]
+    fn notify_stream_restarting(&self, error: String) {
+        let live_id = self.stream_info.live_id();
+        let event = (
+            StreamMessage::stream_restarting(live_id, error),
+            Span::current(),
+        );
+        if let Err(e) = self.stream_msg_tx.send(event) {
+            warn!(error = %e, live_id = %live_id, "Failed to send stream restarting event");
+        }
+    }
+
+    #[instrument(name = "ingest.puller.notify_started", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
+    fn notify_puller_started(&self) {
+        let live_id = self.stream_info.live_id();
+
+        let event = (StreamMessage::puller_started(live_id), Span::current());
+        if let Err(e) = self.stream_msg_tx.send(event) {
+            warn!(error = %e, live_id = %live_id, "Failed to send puller started event");
+        }
+    }
+
+    #[instrument(name = "ingest.puller.notify_stopped", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
+    fn notify_puller_stopped(&self) {
+        let live_id = self.stream_info.live_id();
+
+        let event = (StreamMessage::puller_stopped(live_id), Span::current());
+        if let Err(e) = self.stream_msg_tx.send(event) {
+            warn!(error = %e, live_id = %live_id, "Failed to send puller stopped event");
         }
 
-        result
+        // TODO:
+        let flv_output = self
+            .flv_output
+            .as_ref()
+            .map(|o| o.get_flv_packet_sender())
+            .flatten();
+        if let Some(tx) = flv_output {
+            if let Err(e) = tx.send(FlvPacket::EndOfStream {
+                live_id: live_id.to_string(),
+            }) {
+                warn!(error = %e, live_id = %live_id, "Failed to send end of stream packet");
+            }
+        }
+    }
+
+    #[instrument(name = "ingest.puller.start", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
+    pub fn start(&mut self) {
+        // Send stream started event on first successful packet read
+        self.notify_puller_started();
+        info!(live_id = %self.stream_info.live_id(), "Stream puller loop starting");
+
+        'puller_loop: loop {
+            let mut delay = Exponential::from_millis(10).map(jitter).take(5);
+
+            while let Some(duration) = delay.next() {
+                let mut recovered = false;
+
+                if let Err(e) = self.start_impl(&mut recovered) {
+                    error!(error = %e, live_id = %self.stream_info.live_id(), "Error in stream puller loop");
+                    self.notify_stream_restarting(e.to_string());
+                } else {
+                    break 'puller_loop;
+                }
+
+                std::thread::sleep(duration);
+
+                if recovered {
+                    delay = Exponential::from_millis(10).map(jitter).take(5);
+                    continue 'puller_loop;
+                }
+            }
+        }
+
+        self.notify_puller_stopped();
+        info!(live_id = %self.stream_info.live_id(), "Stream puller loop exited");
     }
 
     /// Main loop for pulling SRT stream, segmenting, and writing to disk.
-    fn start_impl(&mut self) -> Result<()> {
-        let live_id = self.stream_info.live_id();
-        let cache_dir = self.stream_info.cache_dir();
+    #[instrument(name = "ingest.puller.loop", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
+    fn start_impl(&mut self, input_connected: &mut bool) -> Result<()> {
+        let live_id = self.stream_info.live_id().to_string();
+        let cache_dir = self.stream_info.cache_dir().to_path_buf();
+
+        let mut stream_started_notified = false;
 
         self.srt_input = Some(SrtInputContext::open(
             &self.stream_info.srt_listener_url(),
@@ -239,32 +325,29 @@ impl StreamPuller {
 
         while !self.stop_signal.load(Ordering::Relaxed) {
             let packet = Packet::alloc()?;
-            if packet.read_safely(self.srt_input()?) == 0 {
-                info!(live_id = %live_id, "Stream ended");
-                self.notify_stream_stopped(None);
-                self.notified_stopped = true;
-                break;
+            match self.read_packet_with_retry(&packet) {
+                Ok(ReadResult::Ok) => *input_connected = true,
+                Ok(ReadResult::Eof) => {
+                    info!(live_id = %live_id, "End of stream reached");
+                    break;
+                }
+                Err(e) => {
+                    error!(error = %e, live_id = %live_id, "Error reading packet, terminating stream");
+                    anyhow::bail!("Error reading packet: {}", e);
+                }
             }
 
             metrics::get_metrics().add_network_bytes_in(packet.size() as u64, &[]);
+            metrics::get_metrics().add_ingest_packets(1, &[]);
+
+            if !stream_started_notified {
+                self.notify_stream_started();
+                stream_started_notified = true;
+            }
 
             let cloned_packet = packet.clone();
 
-            metrics::get_metrics().add_ingest_packets(1, &[]);
-
-            // Send stream started event on first successful packet read
-            if !self.notified_started {
-                self.notified_started = self.notify_stream_started();
-                info!(live_id = %live_id, "Stream started receiving data");
-            }
-
             if let Some(pts) = self.should_segment(&packet) {
-                debug!(
-                    segment_id = self.segment_id + 1,
-                    live_id = %live_id,
-                    pts = pts,
-                    "Creating new segment"
-                );
                 self.notify_segment_complete();
 
                 self.last_start_pts = pts;
@@ -280,17 +363,20 @@ impl StreamPuller {
             packet.rescale_ts_for_ctx(self.srt_input()?, self.flv_output()?)?;
             if let Err(e) = packet.write(self.flv_output()?) {
                 self.notify_segment_complete();
+                self.notify_stream_stopped(Some(format!("FLV output write failed: {}", e)));
                 anyhow::bail!("Failed to write packet to FLV output: {}", e);
             }
 
             cloned_packet.rescale_ts_for_ctx(self.srt_input()?, self.hls_output()?)?;
             if let Err(e) = cloned_packet.write(self.hls_output()?) {
                 self.notify_segment_complete();
+                self.notify_stream_stopped(Some(format!("HLS output write failed: {}", e)));
                 anyhow::bail!("Failed to write packet to TS output: {}", e);
             }
         }
 
         self.notify_segment_complete();
+        self.notify_stream_stopped(None);
 
         Ok(())
     }
