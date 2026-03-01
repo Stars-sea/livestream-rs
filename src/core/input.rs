@@ -1,6 +1,7 @@
 //! SRT input context wrapper for FFmpeg.
 
 use super::context::{Context, InputContext, ffmpeg_error};
+use super::options::{SrtInputStreamOptions, StreamOptions};
 
 use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
@@ -38,16 +39,23 @@ impl SrtInputContext {
     /// Opens an SRT stream for reading.
     ///
     /// # Arguments
-    /// * `path` - SRT URL (e.g., "srt://0.0.0.0:4000?mode=listener&passphrase=secret")
+    /// * `options` - SRT input stream options
+    /// * `stop_signal` - Atomic flag to signal when to stop reading from the stream
     ///
-    /// # Errors
+    /// # Returns & Errors
     /// Returns an error if the stream cannot be opened or stream info cannot be found.
-    pub fn open(path: &str, stop_signal: Arc<AtomicBool>) -> Result<Self> {
-        debug!(url = %path, "Attempting to open SRT input");
+    pub fn open(options: &SrtInputStreamOptions, stop_signal: Arc<AtomicBool>) -> Result<Self> {
+        debug!(url = %options.filename(), "Attempting to open SRT input");
         let mut ctx = Self::alloc_context(stop_signal)?;
 
-        let c_url = std::ffi::CString::new(path)?;
-        let ret = unsafe { avformat_open_input(&mut ctx, c_url.as_ptr(), null_mut(), null_mut()) };
+        let c_url = std::ffi::CString::new(options.filename())?;
+        let mut c_opt = options.to_dict();
+
+        let ret = unsafe { avformat_open_input(&mut ctx, c_url.as_ptr(), null_mut(), &mut c_opt) };
+        if !c_opt.is_null() {
+            unsafe { av_dict_free(&mut c_opt) };
+        }
+
         if ret < 0 {
             let err_msg = ffmpeg_error(ret);
             unsafe { avformat_close_input(&mut ctx) };
@@ -62,7 +70,7 @@ impl SrtInputContext {
         }
 
         debug!(
-            url = %path,
+            url = %options.filename(),
             "Successfully opened SRT input and found stream info"
         );
         Ok(Self { ctx })

@@ -266,11 +266,14 @@ impl StreamPuller {
         }
     }
 
-    #[instrument(name = "ingest.puller.start", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
     pub fn start(&mut self) {
-        // Send stream started event on first successful packet read
         self.notify_puller_started();
-        info!(live_id = %self.stream_info.live_id(), "Stream puller loop starting");
+
+        let start_span = tracing::info_span!("ingest.puller.start", stream.live_id = %self.stream_info.live_id());
+
+        start_span.in_scope(|| {
+            info!(live_id = %self.stream_info.live_id(), "Stream puller loop starting");
+        });
 
         'puller_loop: loop {
             let mut delay = Exponential::from_millis(10).map(jitter).take(5);
@@ -307,7 +310,7 @@ impl StreamPuller {
         let mut stream_started_notified = false;
 
         self.srt_input = Some(SrtInputContext::open(
-            &self.stream_info.srt_listener_url(),
+            self.stream_info.srt_options(),
             self.stop_signal.clone(),
         )?);
 
@@ -333,7 +336,7 @@ impl StreamPuller {
                 }
                 Err(e) => {
                     error!(error = %e, live_id = %live_id, "Error reading packet, terminating stream");
-                    anyhow::bail!("Error reading packet: {}", e);
+                    anyhow::bail!(e);
                 }
             }
 

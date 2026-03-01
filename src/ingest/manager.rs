@@ -75,12 +75,14 @@ impl StreamManager {
     }
 
     async fn release_stream_resources(&self, info: Arc<StreamInfo>) {
-        self.port_allocator.release_port(info.srt_port()).await;
+        self.port_allocator
+            .release_port(info.srt_options().port())
+            .await;
 
         self.stream_info_cache.remove(info.live_id()).await;
     }
 
-    #[instrument(name = "ingest.stream.start", skip(self, stream_info), fields(stream.live_id = %stream_info.live_id(), stream.srt_port = stream_info.srt_port()))]
+    #[instrument(name = "ingest.stream.start", skip(self, stream_info), fields(stream.live_id = %stream_info.live_id(), stream.srt_port = stream_info.srt_options().port()))]
     pub async fn start_stream(self: &Arc<Self>, stream_info: Arc<StreamInfo>) -> Result<()> {
         let live_id = stream_info.live_id().to_string();
 
@@ -89,7 +91,7 @@ impl StreamManager {
             anyhow::bail!("Failed to create stream puller for live_id: {live_id}");
         }
 
-        info!(live_id = %live_id, port = stream_info.srt_port(), "Starting stream process");
+        info!(live_id = %live_id, port = stream_info.srt_options().port(), "Starting stream process");
 
         let cloned_info = stream_info.clone();
         let arc_self = self.clone();

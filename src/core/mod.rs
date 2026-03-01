@@ -12,6 +12,7 @@ use tracing::Level;
 pub mod context;
 pub mod flv_parser;
 pub mod input;
+pub mod options;
 pub mod packet;
 mod stream;
 
