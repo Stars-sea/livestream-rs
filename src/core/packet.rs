@@ -42,7 +42,7 @@ impl Packet {
             return PacketReadResult::Data;
         }
 
-        if ret == AVERROR_EOF {
+        if ret == AVERROR_EOF || ret == AVERROR(EIO) {
             return PacketReadResult::Eof;
         }
 

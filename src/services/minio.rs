@@ -1,6 +1,6 @@
 //! MinIO/S3 client for uploading stream segments.
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use minio::s3::Client;
 use minio::s3::builders::ObjectContent;
 use minio::s3::creds::StaticProvider;
@@ -39,6 +39,15 @@ impl MinioClient {
         })
     }
 
+    pub async fn create_default() -> Result<Self> {
+        let config = load_settings()
+            .minio
+            .clone()
+            .ok_or_else(|| anyhow!("Minio configuration not found in settings"))?;
+
+        Self::create(config).await
+    }
+
     /// Uploads a file to MinIO storage.
     ///
     /// # Arguments
@@ -65,18 +74,5 @@ impl MinioClient {
 
         debug!(filename = %filename, path = %path.display(), "File uploaded");
         Ok(())
-    }
-}
-
-impl Default for MinioClient {
-    fn default() -> Self {
-        let config = load_settings()
-            .minio
-            .clone()
-            .expect("Failed to load Minio configuration");
-
-        tokio::runtime::Handle::current()
-            .block_on(Self::create(config))
-            .expect("Failed to create Minio client")
     }
 }

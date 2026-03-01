@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
     let (tx, rx) = mpsc::unbounded_channel();
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
-    let minio_client = services::MinioClient::default();
+    let minio_client = services::MinioClient::create_default().await?;
     let manager = Arc::new(StreamManager::new(minio_client, tx));
 
     // Start RTMP server
