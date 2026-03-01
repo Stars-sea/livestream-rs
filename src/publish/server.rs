@@ -14,6 +14,7 @@ use crate::core::flv_parser::{FlvDemuxer, FlvTag};
 use crate::core::output::FlvPacket;
 use crate::ingest::StreamManager;
 use crate::settings::PublishConfig;
+use crate::settings::load_settings;
 
 #[derive(Debug)]
 pub struct RtmpServer {
@@ -23,7 +24,8 @@ pub struct RtmpServer {
 }
 
 impl RtmpServer {
-    pub fn new(config: PublishConfig, ingest_manager: Arc<StreamManager>) -> Self {
+    pub fn new(ingest_manager: Arc<StreamManager>) -> Self {
+        let config = load_settings().publish.clone();
         Self {
             config,
             ingest_manager,

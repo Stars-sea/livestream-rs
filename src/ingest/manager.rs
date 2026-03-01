@@ -17,42 +17,29 @@ use crate::core::output::FlvPacket;
 use crate::otlp::metrics;
 use crate::services::MemoryCache;
 use crate::services::MinioClient;
-use crate::settings::IngestConfig;
 
 #[derive(Debug)]
 pub struct StreamManager {
-    settings: IngestConfig,
-
     puller_factory: Arc<StreamPullerFactory>,
     stream_info_cache: MemoryCache<Arc<StreamInfo>>,
     port_allocator: PortAllocator,
 }
 
 impl StreamManager {
-    pub fn new(
-        config: IngestConfig,
-        minio_client: MinioClient,
-        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-    ) -> Self {
+    pub fn new(minio_client: MinioClient, flv_packet_tx: mpsc::UnboundedSender<FlvPacket>) -> Self {
         let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_channel();
         let puller_factory = Arc::new(StreamPullerFactory::new(stream_msg_tx, flv_packet_tx));
 
         tokio::spawn(handlers::stream_message_handler(
             stream_msg_rx,
-            GrpcClientFactory::new(config.callback.clone()),
+            GrpcClientFactory::default(),
             minio_client,
             puller_factory.clone(),
         ));
 
-        let port_allocator = {
-            let (start_port, end_port) = config
-                .srt_port_range()
-                .expect("Invalid SRT port range in settings");
-            PortAllocator::new(start_port, end_port)
-        };
+        let port_allocator = PortAllocator::default();
 
         Self {
-            settings: config,
             puller_factory,
             stream_info_cache: MemoryCache::new(),
             port_allocator,
@@ -72,12 +59,7 @@ impl StreamManager {
                 "No available ports to allocate for SRT stream"
             ))?;
 
-        let info = StreamInfo::new(
-            live_id.to_string(),
-            port,
-            passphrase.to_string(),
-            &self.settings,
-        );
+        let info = StreamInfo::new(live_id.to_string(), port, passphrase.to_string());
 
         if let Err(e) = info {
             self.port_allocator.release_port(port).await;

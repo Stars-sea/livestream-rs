@@ -1,5 +1,7 @@
 //! Application settings and configuration management.
 
+use std::sync::OnceLock;
+
 use anyhow::{Context, Result};
 use config::{Config, Environment, File, FileFormat};
 use serde::Deserialize;
@@ -186,4 +188,10 @@ impl Settings {
 
         Ok(())
     }
+}
+
+pub fn load_settings() -> &'static Settings {
+    static SETTINGS: OnceLock<Settings> = OnceLock::new();
+
+    &SETTINGS.get_or_init(|| Settings::new().expect("Failed to load application settings"))
 }

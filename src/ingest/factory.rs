@@ -13,7 +13,7 @@ use tonic::{Request, Status};
 use tracing::{Span, info, instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::settings::IngestConfig;
+use crate::settings::{IngestConfig, load_settings};
 
 use super::grpc::livestream_callback_client::LivestreamCallbackClient;
 use super::{LivestreamServer, LivestreamService, StreamManager};
@@ -92,7 +92,7 @@ impl GrpcClientFactory {
 
 impl Default for GrpcClientFactory {
     fn default() -> Self {
-        Self::new("".to_string())
+        Self::new(load_settings().ingest.callback.clone())
     }
 }
 
@@ -130,6 +130,10 @@ impl GrpcServerFactory {
     pub fn with_config(mut self, config: IngestConfig) -> Self {
         self.config = Some(config);
         self
+    }
+
+    pub fn with_default_config(self) -> Self {
+        self.with_config(load_settings().ingest.clone())
     }
 
     #[instrument(name = "ingest.grpc.serve", skip(self), fields(server.port = %self.config.as_ref().map(|c| c.port).unwrap_or_default()))]

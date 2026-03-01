@@ -51,14 +51,6 @@ async fn main() -> Result<()> {
         "Starting LiveStream server"
     );
 
-    let settings = match settings::Settings::new() {
-        Ok(s) => s,
-        Err(e) => {
-            error!(error = %e, "Failed to load configuration");
-            return Err(e);
-        }
-    };
-
     // core::set_log_level(Level::Trace);
     core::set_log_quiet();
     core::init();
@@ -66,15 +58,11 @@ async fn main() -> Result<()> {
     let (tx, rx) = mpsc::unbounded_channel();
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
-    let minio_client = services::MinioClient::create(settings.minio.unwrap()).await?;
-    let manager = Arc::new(StreamManager::new(
-        settings.ingest.clone(),
-        minio_client,
-        tx,
-    ));
+    let minio_client = services::MinioClient::default();
+    let manager = Arc::new(StreamManager::new(minio_client, tx));
 
     // Start RTMP server
-    let server = RtmpServer::new(settings.publish, manager.clone());
+    let server = RtmpServer::new(manager.clone());
 
     let shutdown_rx = shutdown_tx.subscribe();
     tokio::spawn(async move {
@@ -87,7 +75,7 @@ async fn main() -> Result<()> {
     let grpc_future = GrpcServerFactory::new()
         .with_service(LivestreamService::new(manager.clone()))
         .with_manager(manager)
-        .with_config(settings.ingest)
+        .with_default_config()
         .serve();
 
     // Wait for gRPC server (which listens for Ctrl+C)

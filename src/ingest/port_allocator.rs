@@ -5,6 +5,8 @@ use std::collections::HashSet;
 use tokio::sync::RwLock;
 use tracing::debug;
 
+use crate::settings::load_settings;
+
 /// Manages allocation of ports within a specified range.
 /// Ensures ports are available before allocation by testing UDP and TCP binding.
 #[derive(Debug)]
@@ -54,6 +56,16 @@ impl PortAllocator {
         if allocated.remove(&port) {
             debug!(port = port, "Released port");
         }
+    }
+}
+
+impl Default for PortAllocator {
+    fn default() -> Self {
+        let (start_port, end_port) = load_settings()
+            .ingest
+            .srt_port_range()
+            .expect("Invalid SRT port range in settings");
+        Self::new(start_port, end_port)
     }
 }
 

@@ -143,12 +143,14 @@ impl Livestream for LivestreamService {
 
 impl Into<StreamInfoResponse> for Arc<StreamInfo> {
     fn into(self) -> StreamInfoResponse {
+        let options = self.srt_options();
+
         StreamInfoResponse {
             live_id: self.live_id().to_string(),
-            host: self.host().to_string(),
-            srt_port: self.srt_port() as u32,
+            host: options.host().to_string(),
+            srt_port: options.port() as u32,
             rtmp_url: "Not implemented".to_string(),
-            passphrase: self.passphrase().to_string(),
+            passphrase: options.passphrase().to_string(),
         }
     }
 }

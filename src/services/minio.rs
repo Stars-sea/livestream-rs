@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::{Instrument, debug, info_span};
 
-use crate::settings::MinioConfig;
+use crate::settings::{MinioConfig, load_settings};
 
 /// Client for interacting with MinIO or S3-compatible storage.
 #[derive(Debug, Clone)]
@@ -65,5 +65,18 @@ impl MinioClient {
 
         debug!(filename = %filename, path = %path.display(), "File uploaded");
         Ok(())
+    }
+}
+
+impl Default for MinioClient {
+    fn default() -> Self {
+        let config = load_settings()
+            .minio
+            .clone()
+            .expect("Failed to load Minio configuration");
+
+        tokio::runtime::Handle::current()
+            .block_on(Self::create(config))
+            .expect("Failed to create Minio client")
     }
 }
