@@ -4,10 +4,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::events::*;
-use super::stream_info::StreamInfo;
+use super::stream_info::{StreamInfo, StreamInputOptions};
 
-use crate::core::context::Context;
-use crate::core::input::SrtInputContext;
+use crate::core::context::{Context, InputContext};
+use crate::core::input::{RtmpInputContext, SrtInputContext};
 use crate::core::output::{FlvOutputContext, FlvPacket, HlsOutputContext};
 use crate::core::packet::{Packet, PacketReadResult};
 use crate::otlp::metrics;
@@ -71,6 +71,25 @@ impl StreamPullerFactory {
 }
 
 #[derive(Debug)]
+enum IngestInputContext {
+    Srt(SrtInputContext),
+    Rtmp(RtmpInputContext),
+}
+
+impl Drop for IngestInputContext {
+    fn drop(&mut self) {}
+}
+
+impl Context for IngestInputContext {
+    fn get_ctx(&self) -> *mut ffmpeg_sys_next::AVFormatContext {
+        match self {
+            IngestInputContext::Srt(ctx) => ctx.get_ctx(),
+            IngestInputContext::Rtmp(ctx) => ctx.get_ctx(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct StreamPuller {
     stream_info: Arc<StreamInfo>,
 
@@ -78,7 +97,7 @@ pub(super) struct StreamPuller {
     flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     stop_signal: Arc<AtomicBool>,
 
-    srt_input: Option<SrtInputContext>,
+    input_ctx: Option<IngestInputContext>,
     flv_output: Option<FlvOutputContext>,
     hls_output: Option<HlsOutputContext>,
 
@@ -103,7 +122,7 @@ impl StreamPuller {
             stream_msg_tx,
             flv_packet_tx,
             stop_signal,
-            srt_input: None,
+            input_ctx: None,
             flv_output: None,
             hls_output: None,
             segment_id: 1,
@@ -111,10 +130,10 @@ impl StreamPuller {
         }
     }
 
-    fn srt_input(&self) -> Result<&SrtInputContext> {
-        self.srt_input
+    fn input_ctx(&self) -> Result<&IngestInputContext> {
+        self.input_ctx
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("SRT input context not initialized"))
+            .ok_or_else(|| anyhow::anyhow!("Input context not initialized"))
     }
 
     fn flv_output(&self) -> Result<&FlvOutputContext> {
@@ -130,11 +149,11 @@ impl StreamPuller {
     }
 
     fn read_packet_with_retry(&self, packet: &Packet) -> Result<ReadResult> {
-        let srt_input = self.srt_input()?;
+        let input_ctx = self.input_ctx()?;
 
         let result = retry::retry(
             Exponential::from_millis(10).map(jitter).take(5),
-            || match packet.read(srt_input) {
+            || match packet.read(input_ctx) {
                 PacketReadResult::Data => OperationResult::Ok(ReadResult::Ok),
                 PacketReadResult::Eof => OperationResult::Ok(ReadResult::Eof),
                 PacketReadResult::Retryable { code, message } => {
@@ -165,7 +184,7 @@ impl StreamPuller {
 
     /// Determines if a new segment should be created based on packet and duration.
     fn should_segment(&self, packet: &Packet) -> Option<i64> {
-        let input_ctx = self.srt_input.as_ref()?;
+        let input_ctx = self.input_ctx.as_ref()?;
 
         let current_pts = packet.pts().unwrap_or(0);
         let current_stream = input_ctx.stream(packet.stream_idx())?;
@@ -309,20 +328,24 @@ impl StreamPuller {
 
         let mut stream_started_notified = false;
 
-        self.srt_input = Some(SrtInputContext::open(
-            self.stream_info.srt_options(),
-            self.stop_signal.clone(),
-        )?);
+        self.input_ctx = Some(match self.stream_info.input_options() {
+            StreamInputOptions::Srt(options) => {
+                IngestInputContext::Srt(SrtInputContext::open(options, self.stop_signal.clone())?)
+            }
+            StreamInputOptions::Rtmp(options) => {
+                IngestInputContext::Rtmp(RtmpInputContext::open(options, self.stop_signal.clone())?)
+            }
+        });
 
         self.flv_output = Some(FlvOutputContext::create(
             live_id.to_string(),
             self.flv_packet_tx.clone(),
-            self.srt_input()?,
+            self.input_ctx()?,
         )?);
 
         self.hls_output = Some(HlsOutputContext::create_segment(
             &cache_dir,
-            self.srt_input()?,
+            self.input_ctx()?,
             self.segment_id,
         )?);
 
@@ -358,19 +381,19 @@ impl StreamPuller {
 
                 self.hls_output = Some(HlsOutputContext::create_segment(
                     &cache_dir,
-                    self.srt_input()?,
+                    self.input_ctx()?,
                     self.segment_id,
                 )?);
             }
 
-            packet.rescale_ts_for_ctx(self.srt_input()?, self.flv_output()?)?;
+            packet.rescale_ts_for_ctx(self.input_ctx()?, self.flv_output()?)?;
             if let Err(e) = packet.write(self.flv_output()?) {
                 self.notify_segment_complete();
                 self.notify_stream_stopped(Some(format!("FLV output write failed: {}", e)));
                 anyhow::bail!("Failed to write packet to FLV output: {}", e);
             }
 
-            cloned_packet.rescale_ts_for_ctx(self.srt_input()?, self.hls_output()?)?;
+            cloned_packet.rescale_ts_for_ctx(self.input_ctx()?, self.hls_output()?)?;
             if let Err(e) = cloned_packet.write(self.hls_output()?) {
                 self.notify_segment_complete();
                 self.notify_stream_stopped(Some(format!("HLS output write failed: {}", e)));

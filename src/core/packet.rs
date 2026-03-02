@@ -1,6 +1,7 @@
 //! FFmpeg packet wrapper for safe packet operations.
 
-use super::context::{Context, ffmpeg_error};
+use super::context::{Context, OutputContext};
+use super::ffmpeg_error;
 
 use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
@@ -48,7 +49,7 @@ impl Packet {
 
         let err_msg = ffmpeg_error(ret);
 
-        if ret == AVERROR(EAGAIN) {
+        if ret == AVERROR(EAGAIN) || ret == AVERROR(ETIMEDOUT) {
             return PacketReadResult::Retryable {
                 code: ret,
                 message: err_msg,
@@ -78,7 +79,7 @@ impl Packet {
         Ok(())
     }
 
-    pub fn write(self, ctx: &impl Context) -> Result<()> {
+    pub fn write(self, ctx: &impl OutputContext) -> Result<()> {
         if !ctx.available() {
             return Err(anyhow!("Context is not available"));
         }

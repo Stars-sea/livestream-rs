@@ -14,6 +14,7 @@ use super::puller::StreamPullerFactory;
 use super::stream_info::StreamInfo;
 
 use crate::core::output::FlvPacket;
+use crate::core::options::StreamOptions;
 use crate::otlp::metrics;
 use crate::services::MemoryCache;
 use crate::services::MinioClient;
@@ -46,7 +47,7 @@ impl StreamManager {
         }
     }
 
-    pub async fn make_stream_info(
+    pub async fn make_srt_stream_info(
         &self,
         live_id: &str,
         passphrase: &str,
@@ -59,7 +60,7 @@ impl StreamManager {
                 "No available ports to allocate for SRT stream"
             ))?;
 
-        let info = StreamInfo::new(live_id.to_string(), port, passphrase.to_string());
+        let info = StreamInfo::new_srt(live_id.to_string(), port, passphrase.to_string());
 
         if let Err(e) = info {
             self.port_allocator.release_port(port).await;
@@ -74,15 +75,23 @@ impl StreamManager {
         Ok(info)
     }
 
+    pub async fn make_rtmp_stream_info(&self, live_id: &str) -> Result<Arc<StreamInfo>> {
+        let info = Arc::new(StreamInfo::new_rtmp(live_id.to_string())?);
+        self.stream_info_cache
+            .set(live_id.to_string(), info.clone())
+            .await?;
+        Ok(info)
+    }
+
     async fn release_stream_resources(&self, info: Arc<StreamInfo>) {
-        self.port_allocator
-            .release_port(info.srt_options().port())
-            .await;
+        if let Some(srt_options) = info.srt_options() {
+            self.port_allocator.release_port(srt_options.port()).await;
+        }
 
         self.stream_info_cache.remove(info.live_id()).await;
     }
 
-    #[instrument(name = "ingest.stream.start", skip(self, stream_info), fields(stream.live_id = %stream_info.live_id(), stream.srt_port = stream_info.srt_options().port()))]
+    #[instrument(name = "ingest.stream.start", skip(self, stream_info), fields(stream.live_id = %stream_info.live_id()))]
     pub async fn start_stream(self: &Arc<Self>, stream_info: Arc<StreamInfo>) -> Result<()> {
         let live_id = stream_info.live_id().to_string();
 
@@ -91,7 +100,19 @@ impl StreamManager {
             anyhow::bail!("Failed to create stream puller for live_id: {live_id}");
         }
 
-        info!(live_id = %live_id, port = stream_info.srt_options().port(), "Starting stream process");
+        if let Some(options) = stream_info.srt_options() {
+            info!(
+                live_id = %live_id,
+                port = options.port(),
+                "Starting stream process with SRT input"
+            );
+        } else if let Some(options) = stream_info.rtmp_options() {
+            info!(
+                live_id = %live_id,
+                rtmp_url = %options.filename(),
+                "Starting stream process with RTMP input"
+            );
+        }
 
         let cloned_info = stream_info.clone();
         let arc_self = self.clone();

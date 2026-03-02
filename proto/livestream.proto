@@ -14,9 +14,15 @@ service Livestream {
   rpc GetStreamInfo (GetStreamInfoRequest) returns (StreamInfoResponse);
 }
 
+enum InputProtocol {
+  INPUT_PROTOCOL_SRT = 0;
+  INPUT_PROTOCOL_RTMP = 1;
+}
+
 message StartPullStreamRequest {
   string live_id = 1;
   string passphrase = 2;
+  InputProtocol input_protocol = 3;
 }
 
 message StreamInfoResponse {

@@ -1,7 +1,6 @@
 //! MPEG-TS output context wrapper for FFmpeg.
 
 use super::context::{Context, OutputContext};
-use super::input::SrtInputContext;
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
@@ -17,7 +16,7 @@ pub struct HlsOutputContext {
 }
 
 impl HlsOutputContext {
-    pub fn create(path: &PathBuf, input_ctx: &SrtInputContext) -> Result<Self> {
+    pub fn create(path: &PathBuf, input_ctx: &impl Context) -> Result<Self> {
         // Alloc output AVFormatContext
         let url = path.as_path().display().to_string();
         let output_ctx = Self::alloc_output_ctx("mpegts", Some(&url))?;
@@ -53,12 +52,12 @@ impl HlsOutputContext {
 
     pub fn create_segment<T: AsRef<Path>>(
         tmp_dir: T,
-        input_ctx: &SrtInputContext,
+        input_ctx: &impl Context,
         segment_id: u64,
     ) -> Result<Self> {
         let filename = format!("segment_{:04}.ts", segment_id);
         let path = PathBuf::from(tmp_dir.as_ref()).join(&filename);
-        Self::create(&path, &input_ctx)
+        Self::create(&path, input_ctx)
     }
 
     pub fn path(&self) -> &PathBuf {

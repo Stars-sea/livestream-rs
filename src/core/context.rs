@@ -1,12 +1,17 @@
 //! Context trait and utilities for FFmpeg format contexts.
 
+use super::ffmpeg_error;
 use super::stream::Stream;
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
 
-use std::ffi::{CStr, CString, c_int, c_void};
+use std::ffi::{CString, c_int, c_void};
 use std::ptr::{null, null_mut};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use super::options::StreamOptions;
 
 /// Trait for accessing AVFormatContext functionality.
 ///
@@ -47,11 +52,58 @@ pub(crate) trait Context: Drop {
     }
 }
 
-pub trait InputContext: Context {}
+pub trait InputContext: Context + Sized {
+    type Options: StreamOptions;
+
+    fn open(options: &Self::Options, stop_signal: Arc<AtomicBool>) -> Result<Self>;
+
+    fn alloc_context(stop_signal: Arc<AtomicBool>) -> Result<*mut AVFormatContext> {
+        let ctx = unsafe { avformat_alloc_context() };
+        if ctx.is_null() {
+            return Err(anyhow::anyhow!("Failed to alloc AVFormatContext"));
+        }
+
+        unsafe {
+            let stop_signal_ptr = Arc::into_raw(stop_signal) as *mut c_void;
+            (*ctx).interrupt_callback = AVIOInterruptCB {
+                callback: Some(interrupt_callback),
+                opaque: stop_signal_ptr,
+            };
+        }
+
+        Ok(ctx)
+    }
+
+    /// Frees the context and reclaims the interrupt callback Arc if present.
+    /// This should be used when initialization fails before the struct is created.
+    fn free_context(ctx: *mut AVFormatContext) {
+        if ctx.is_null() {
+            return;
+        }
+        unsafe {
+            if !(*ctx).interrupt_callback.opaque.is_null() {
+                let _ = Arc::from_raw((*ctx).interrupt_callback.opaque as *const AtomicBool);
+            }
+            avformat_close_input(&mut { ctx });
+        }
+    }
+}
+
+extern "C" fn interrupt_callback(opaque: *mut c_void) -> c_int {
+    if opaque.is_null() {
+        return 0;
+    }
+    let stop_flag = unsafe { &*(opaque as *const AtomicBool) };
+    if stop_flag.load(Ordering::Relaxed) {
+        1
+    } else {
+        0
+    }
+}
 
 pub trait OutputContext: Context {
     /// Copies stream parameters from an input context to this output context.
-    fn copy_streams(ctx_ptr: *mut AVFormatContext, input_ctx: &impl InputContext) -> Result<()> {
+    fn copy_streams(ctx_ptr: *mut AVFormatContext, input_ctx: &impl Context) -> Result<()> {
         for i in 0..input_ctx.nb_streams() {
             let in_stream = input_ctx
                 .stream(i)
@@ -127,23 +179,5 @@ pub trait OutputContext: Context {
         } else {
             Ok(())
         }
-    }
-}
-
-/// Converts an FFmpeg error code to a human-readable string.
-///
-/// # Arguments
-/// * `code` - FFmpeg error code (negative value)
-///
-/// # Returns
-/// Error message string
-pub(super) fn ffmpeg_error(code: c_int) -> String {
-    let mut buf = [0i8; 1024];
-    unsafe {
-        av_strerror(code, buf.as_mut_ptr(), buf.len());
-
-        CStr::from_ptr(buf.as_mut_ptr())
-            .to_string_lossy()
-            .into_owned()
     }
 }

@@ -1,6 +1,7 @@
 //! FLV output context for streaming to RTMP servers.
 
-use super::context::{Context, InputContext, OutputContext, ffmpeg_error};
+use super::context::{Context, OutputContext};
+use super::ffmpeg_error;
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
@@ -37,7 +38,7 @@ impl FlvOutputContext {
     pub fn create(
         live_id: String,
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-        input_ctx: &impl InputContext,
+        input_ctx: &impl Context,
     ) -> Result<Self> {
         let ctx = Self::alloc_output_ctx("flv", None)?;
 
@@ -97,7 +98,7 @@ impl Context for FlvOutputContext {
 }
 
 impl OutputContext for FlvOutputContext {
-    fn copy_streams(ctx_ptr: *mut AVFormatContext, input_ctx: &impl InputContext) -> Result<()> {
+    fn copy_streams(ctx_ptr: *mut AVFormatContext, input_ctx: &impl Context) -> Result<()> {
         for i in 0..input_ctx.nb_streams() {
             let in_stream = input_ctx.stream(i).unwrap();
             let out_stream = unsafe { avformat_new_stream(ctx_ptr, null_mut()) };

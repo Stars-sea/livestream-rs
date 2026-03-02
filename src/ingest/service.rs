@@ -15,6 +15,8 @@ use std::sync::OnceLock;
 use tonic::{Request, Response, Status};
 use tracing::instrument;
 
+use crate::settings::load_settings;
+
 pub use super::grpc::livestream_server::LivestreamServer;
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -40,31 +42,41 @@ impl Livestream for LivestreamService {
     ) -> Result<Response<StreamInfoResponse>, Status> {
         let mut grpc_guard = metrics::get_metrics().grpc_call("start_pull_stream");
         let request = request.into_inner();
+        let protocol = InputProtocol::try_from(request.input_protocol).unwrap_or(InputProtocol::Srt);
 
         // Validate input
         if request.live_id.is_empty() {
             return Err(Status::invalid_argument("live_id cannot be empty"));
         }
-        if request.passphrase.is_empty() {
-            return Err(Status::invalid_argument("passphrase cannot be empty"));
-        }
+        let stream_info = match protocol {
+            InputProtocol::Srt => {
+                if request.passphrase.is_empty() {
+                    return Err(Status::invalid_argument("passphrase cannot be empty"));
+                }
 
-        let re = PASSPHRASE_REGEX
-            .get_or_init(|| Regex::new(r"^[a-zA-Z0-9]{10,79}$").expect("invalid regex pattern"));
+                let re = PASSPHRASE_REGEX.get_or_init(|| {
+                    Regex::new(r"^[a-zA-Z0-9]{10,79}$").expect("invalid regex pattern")
+                });
 
-        re.is_match(&request.passphrase)
-            .then_some(())
-            .ok_or_else(|| {
-                Status::invalid_argument("passphrase must be 10-79 alphanumeric characters")
-            })?;
+                re.is_match(&request.passphrase).then_some(()).ok_or_else(|| {
+                    Status::invalid_argument("passphrase must be 10-79 alphanumeric characters")
+                })?;
 
-        let stream_info = match self
-            .manager
-            .make_stream_info(&request.live_id, &request.passphrase)
-            .await
-        {
-            Ok(info) => info,
-            Err(e) => return Err(Status::resource_exhausted(e.to_string())),
+                match self
+                    .manager
+                    .make_srt_stream_info(&request.live_id, &request.passphrase)
+                    .await
+                {
+                    Ok(info) => info,
+                    Err(e) => return Err(Status::resource_exhausted(e.to_string())),
+                }
+            }
+            InputProtocol::Rtmp => {
+                match self.manager.make_rtmp_stream_info(&request.live_id).await {
+                    Ok(info) => info,
+                    Err(e) => return Err(Status::internal(e.to_string())),
+                }
+            }
         };
 
         if let Err(e) = self.manager.start_stream(stream_info.clone()).await {
@@ -143,14 +155,32 @@ impl Livestream for LivestreamService {
 
 impl Into<StreamInfoResponse> for Arc<StreamInfo> {
     fn into(self) -> StreamInfoResponse {
-        let options = self.srt_options();
+        let settings = load_settings();
+
+        let (host, srt_port, passphrase) = if let Some(options) = self.srt_options() {
+            (
+                options.host().to_string(),
+                options.port() as u32,
+                options.passphrase().to_string(),
+            )
+        } else {
+            ("".to_string(), 0, "".to_string())
+        };
+
+        let rtmp_url = format!(
+            "rtmp://{}:{}/{}/{}",
+            settings.ingest.host.as_str(),
+            settings.publish.port,
+            settings.publish.appname.as_str(),
+            self.live_id()
+        );
 
         StreamInfoResponse {
             live_id: self.live_id().to_string(),
-            host: options.host().to_string(),
-            srt_port: options.port() as u32,
-            rtmp_url: "Not implemented".to_string(),
-            passphrase: options.passphrase().to_string(),
+            host,
+            srt_port,
+            rtmp_url,
+            passphrase,
         }
     }
 }

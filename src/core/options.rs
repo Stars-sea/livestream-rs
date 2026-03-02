@@ -1,3 +1,5 @@
+use std::ptr::null_mut;
+
 use ffmpeg_sys_next::*;
 
 #[allow(drop_bounds)]
@@ -71,7 +73,7 @@ impl StreamOptions for SrtInputStreamOptions {
     }
 
     fn to_dict(&self) -> *mut AVDictionary {
-        let mut dict: *mut AVDictionary = std::ptr::null_mut();
+        let mut dict: *mut AVDictionary = null_mut();
 
         dict_set(&mut dict, "mode", "listener");
         dict_set(&mut dict, "srt_streamid", &self.live_id);
@@ -96,6 +98,69 @@ impl StreamOptions for SrtInputStreamOptions {
         // which can happen in high-latency or unstable network conditions
         // See: https://svn.ffmpeg.org/ffmpeg-protocols.html#toc-udp
         dict_set_int(&mut dict, "overrun_nonfatal", 1);
+
+        // Set RW timeout to 30s to prevent blocking forever if the connection drops silently.
+        // Value is in microseconds.
+        dict_set_int(&mut dict, "timeout", 30000000);
+
+        dict
+    }
+}
+
+#[derive(Debug)]
+pub struct RtmpInputStreamOptions {
+    host: String,
+    port: u16,
+
+    appname: String,
+    stream_id: String,
+}
+
+impl RtmpInputStreamOptions {
+    pub fn new(host: String, port: u16, appname: String, stream_id: String) -> Self {
+        Self {
+            host,
+            port,
+            appname,
+            stream_id,
+        }
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn appname(&self) -> &str {
+        &self.appname
+    }
+
+    pub fn stream_id(&self) -> &str {
+        &self.stream_id
+    }
+}
+
+impl StreamOptions for RtmpInputStreamOptions {
+    fn live_id(&self) -> String {
+        self.stream_id.clone()
+    }
+
+    fn filename(&self) -> String {
+        format!(
+            "rtmp://{}:{}/{}/{}",
+            self.host, self.port, self.appname, self.stream_id
+        )
+    }
+
+    fn to_dict(&self) -> *mut AVDictionary {
+        let mut dict = null_mut();
+
+        dict_set(&mut dict, "rtmp_app", &self.appname);
+        dict_set(&mut dict, "rtmp_stream", &self.stream_id);
+        dict_set(&mut dict, "rtmp_live", "live");
 
         dict
     }

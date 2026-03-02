@@ -107,17 +107,46 @@ export RUST_LOG=info
 
 定义见 `proto/livestream.proto`：
 
-- `StartPullStream(live_id, passphrase)`
+- `StartPullStream(live_id, passphrase, input_protocol)`
 - `StopPullStream(live_id)`
 - `ListActiveStreams()`
 - `GetStreamInfo(live_id)`
 
-`passphrase` 限制为 10~79 位字母数字（`^[a-zA-Z0-9]{10,79}$`）。
+`input_protocol`：
+
+- `INPUT_PROTOCOL_SRT`（默认值）
+- `INPUT_PROTOCOL_RTMP`
+
+`passphrase` 规则：
+
+- 当 `input_protocol=INPUT_PROTOCOL_SRT` 时必填，且限制为 10~79 位字母数字（`^[a-zA-Z0-9]{10,79}$`）。
+- 当 `input_protocol=INPUT_PROTOCOL_RTMP` 时可为空。
+
+请求示例（SRT）：
+
+```json
+{
+  "live_id": "live_1001",
+  "passphrase": "abc123def456",
+  "input_protocol": "INPUT_PROTOCOL_SRT"
+}
+```
+
+请求示例（RTMP）：
+
+```json
+{
+  "live_id": "live_1001",
+  "passphrase": "",
+  "input_protocol": "INPUT_PROTOCOL_RTMP"
+}
+```
 
 ## 推拉流说明 / Stream flow
 
-- 调用 `StartPullStream` 后，服务会分配一个 SRT 监听端口。
+- 当 `input_protocol=INPUT_PROTOCOL_SRT` 时，调用 `StartPullStream` 后服务会分配一个 SRT 监听端口。
 - SRT 端使用 `live_id` 作为 `streamid`，`passphrase` 为加密口令。
+- 当 `input_protocol=INPUT_PROTOCOL_RTMP` 时，服务会从 `rtmp://<INGEST_HOST>:<PUBLISH_PORT>/<PUBLISH_APPNAME>/<live_id>` 拉流。
 - RTMP 播放地址格式：`rtmp://<server>:<PUBLISH_PORT>/<PUBLISH_APPNAME>/<live_id>`。
 
 ## 回调接口 / Callback API
