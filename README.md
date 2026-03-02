@@ -49,7 +49,8 @@ Configuration is loaded from `config.toml` and environment variables (env overri
 ```toml
 [ingest]
 host = "0.0.0.0"
-port = 50051
+grpcport = 50051
+rtmpport = 1936
 srtports = "4000-4100"
 duration = 10
 callback = ""
@@ -70,7 +71,8 @@ bucket = "videos"
 | 变量名 | 说明 | 默认值 |
 |---|---|---|
 | `INGEST_HOST` | 返回给客户端的 SRT 主机地址 / host reported in stream info | `0.0.0.0` |
-| `INGEST_PORT` | gRPC 监听端口 | `50051` |
+| `INGEST_GRPCPORT` | gRPC 监听端口 | `50051` |
+| `INGEST_RTMPPORT` | ingest 侧 RTMP 拉流端口（用于 `INPUT_PROTOCOL_RTMP`） | `1936` |
 | `INGEST_SRTPORTS` | SRT 端口范围（`start-end`） | `4000-4100` |
 | `INGEST_DURATION` | 分段时长（秒） | `10` |
 | `INGEST_CALLBACK` | 回调 gRPC 地址（可选） | `""` |
@@ -89,7 +91,8 @@ bucket = "videos"
 
 ```bash
 export INGEST_HOST=0.0.0.0
-export INGEST_PORT=50051
+export INGEST_GRPCPORT=50051
+export INGEST_RTMPPORT=1936
 export INGEST_SRTPORTS=4000-4100
 export INGEST_DURATION=10
 export PUBLISH_PORT=1935
@@ -146,8 +149,10 @@ export RUST_LOG=info
 
 - 当 `input_protocol=INPUT_PROTOCOL_SRT` 时，调用 `StartPullStream` 后服务会分配一个 SRT 监听端口。
 - SRT 端使用 `live_id` 作为 `streamid`，`passphrase` 为加密口令。
-- 当 `input_protocol=INPUT_PROTOCOL_RTMP` 时，服务会从 `rtmp://<INGEST_HOST>:<PUBLISH_PORT>/<PUBLISH_APPNAME>/<live_id>` 拉流。
+- 当 `input_protocol=INPUT_PROTOCOL_RTMP` 时，服务会从 `rtmp://<INGEST_HOST>:<INGEST_RTMPPORT>/<PUBLISH_APPNAME>/<live_id>` 拉流。
 - RTMP 播放地址格式：`rtmp://<server>:<PUBLISH_PORT>/<PUBLISH_APPNAME>/<live_id>`。
+
+> 注意：`INGEST_RTMPPORT` 与 `PUBLISH_PORT` 不能相同，程序启动时会校验并拒绝相同配置。
 
 ## 回调接口 / Callback API
 

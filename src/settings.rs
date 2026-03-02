@@ -28,8 +28,12 @@ pub struct IngestConfig {
     pub host: String,
 
     /// Port for gRPC server to listen on
-    #[serde(default = "default_ingest_port")]
-    pub port: u16,
+    #[serde(default = "default_ingest_grpcport")]
+    pub grpcport: u16,
+
+    /// Port for RTMP server to listen on (for pull mode)
+    #[serde(default = "default_ingest_rtmpport")]
+    pub rtmpport: u16,
 
     /// Port range for SRT listeners (format: "start-end", e.g., "4000-5000")
     #[serde(default = "default_ingest_srtports")]
@@ -74,8 +78,12 @@ fn default_ingest_host() -> String {
     "0.0.0.0".to_string()
 }
 
-fn default_ingest_port() -> u16 {
+fn default_ingest_grpcport() -> u16 {
     50051
+}
+
+fn default_ingest_rtmpport() -> u16 {
+    1936
 }
 
 fn default_ingest_srtports() -> String {
@@ -130,7 +138,8 @@ impl Default for IngestConfig {
     fn default() -> Self {
         Self {
             host: default_ingest_host(),
-            port: default_ingest_port(),
+            grpcport: default_ingest_grpcport(),
+            rtmpport: default_ingest_rtmpport(),
             srtports: default_ingest_srtports(),
             duration: default_ingest_duration(),
             callback: "".to_string(),
@@ -178,6 +187,10 @@ impl Settings {
 
         if self.ingest.duration <= 0 {
             anyhow::bail!("Segment duration must be positive");
+        }
+
+        if self.publish.port == self.ingest.rtmpport {
+            anyhow::bail!("RTMP publish port must be different from RTMP port");
         }
 
         if self.minio.is_none() {

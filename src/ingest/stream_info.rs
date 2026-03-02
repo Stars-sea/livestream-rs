@@ -30,8 +30,12 @@ impl StreamInfo {
         let host = settings.ingest.host.clone();
         let segment_duration = settings.ingest.duration;
 
-        let input_options =
-            StreamInputOptions::Srt(SrtInputStreamOptions::new(host, port, live_id.clone(), passphrase));
+        let input_options = StreamInputOptions::Srt(SrtInputStreamOptions::new(
+            host,
+            port,
+            live_id.clone(),
+            passphrase,
+        ));
 
         let cache_dir = tempfile::tempdir()?;
 
@@ -46,12 +50,16 @@ impl StreamInfo {
     pub fn new_rtmp(live_id: String) -> Result<Self> {
         let settings = load_settings();
         let host = settings.ingest.host.clone();
-        let port = settings.publish.port;
+        let port = settings.ingest.rtmpport;
         let appname = settings.publish.appname.clone();
         let segment_duration = settings.ingest.duration;
 
-        let input_options =
-            StreamInputOptions::Rtmp(RtmpInputStreamOptions::new(host, port, appname, live_id.clone()));
+        let input_options = StreamInputOptions::Rtmp(RtmpInputStreamOptions::new(
+            host,
+            port,
+            appname,
+            live_id.clone(),
+        ));
 
         let cache_dir = tempfile::tempdir()?;
 

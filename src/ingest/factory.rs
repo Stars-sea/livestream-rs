@@ -136,7 +136,7 @@ impl GrpcServerFactory {
         self.with_config(load_settings().ingest.clone())
     }
 
-    #[instrument(name = "ingest.grpc.serve", skip(self), fields(server.port = %self.config.as_ref().map(|c| c.port).unwrap_or_default()))]
+    #[instrument(name = "ingest.grpc.serve", skip(self), fields(server.port = %self.config.as_ref().map(|c| c.grpcport).unwrap_or_default()))]
     pub async fn serve(self) -> Result<()> {
         let service = self
             .livestream_service
@@ -150,7 +150,7 @@ impl GrpcServerFactory {
             .config
             .ok_or_else(|| anyhow::anyhow!("IngestConfig is required"))?;
 
-        let grpc_addr = format!("0.0.0.0:{}", config.port);
+        let grpc_addr = format!("0.0.0.0:{}", config.grpcport);
         info!(address = %grpc_addr, "gRPC Server will listen");
 
         Server::builder()
