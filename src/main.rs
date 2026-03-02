@@ -5,7 +5,7 @@ use opentelemetry::global;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{Level, error, info};
+use tracing::{error, info};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{EnvFilter, Layer, fmt};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -51,8 +51,6 @@ async fn main() -> Result<()> {
         "Starting LiveStream server"
     );
 
-    core::log::set_log_level(Level::DEBUG);
-    // core::log::set_log_quiet();
     core::init();
 
     let (tx, rx) = mpsc::unbounded_channel();

@@ -42,15 +42,13 @@ impl Packet {
             return PacketReadResult::Data;
         }
 
-        if ret == AVERROR_EOF || ret == AVERROR(EIO) {
+        if ret == AVERROR_EOF {
             return PacketReadResult::Eof;
         }
 
         let err_msg = ffmpeg_error(ret);
-        let err_upper = err_msg.to_uppercase();
 
-        if ret == AVERROR(EAGAIN) || err_upper.contains("EAGAIN") || err_upper.contains("TIMED OUT")
-        {
+        if ret == AVERROR(EAGAIN) {
             return PacketReadResult::Retryable {
                 code: ret,
                 message: err_msg,
@@ -80,7 +78,7 @@ impl Packet {
         Ok(())
     }
 
-    pub fn write(&self, ctx: &impl Context) -> Result<()> {
+    pub fn write(self, ctx: &impl Context) -> Result<()> {
         if !ctx.available() {
             return Err(anyhow!("Context is not available"));
         }

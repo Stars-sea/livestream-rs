@@ -83,19 +83,21 @@ unsafe extern "C" fn log_callback(
     }
 
     let level = match level {
+        AV_LOG_FATAL => Level::ERROR,
+        AV_LOG_PANIC => Level::ERROR,
         AV_LOG_ERROR => Level::ERROR,
         AV_LOG_WARNING => Level::WARN,
         AV_LOG_INFO => Level::INFO,
         AV_LOG_DEBUG => Level::DEBUG,
         AV_LOG_TRACE => Level::TRACE,
-        _ => Level::TRACE,
+        _ => Level::INFO,
     };
 
     match level {
-        Level::ERROR => error!("{}", log_message),
-        Level::WARN => warn!("{}", log_message),
-        Level::INFO => info!("{}", log_message),
-        Level::DEBUG => debug!("{}", log_message),
-        Level::TRACE => trace!("{}", log_message),
+        Level::ERROR => error!(target: "ffmpeg", "{}", log_message),
+        Level::WARN => warn!(target: "ffmpeg", "{}", log_message),
+        Level::INFO => info!(target: "ffmpeg", "{}", log_message),
+        Level::DEBUG => debug!(target: "ffmpeg", "{}", log_message),
+        Level::TRACE => trace!(target: "ffmpeg", "{}", log_message),
     }
 }
