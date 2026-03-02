@@ -1,39 +1,39 @@
 # livestream-rs
 
-使用 Rust 重写的 SRT 拉流项目  
-A project for SRT Streaming rewritten in Rust
+使用 Rust 编写的 SRT 接入与 RTMP 分发服务。  
+A Rust-based service for SRT ingest and RTMP distribution.
 
-<https://github.com/Stars-sea/Medicloud.Streaming>
+相关项目 / Related project: <https://github.com/Stars-sea/Medicloud.Streaming>
 
 ## 功能特性 / Features
 
-- 🚀 高性能 SRT 流拉取和转码 / High-performance SRT stream pulling and transcoding
-- 📦 自动分段和上传到 MinIO / Automatic segmentation and upload to MinIO
-- 🔌 gRPC API 接口 / gRPC API interface
-- 🎯 智能端口分配 / Smart port allocation
-- 📊 实时流状态监控 / Real-time stream status monitoring
+- SRT Listener 接入（按需分配端口）/ SRT listener ingest with on-demand port allocation
+- gRPC 控制平面（启动/停止/查询流）/ gRPC control plane (start/stop/query streams)
+- TS 分段并上传 MinIO / TS segmentation and MinIO upload
+- 内置 RTMP 服务器用于播放分发 / Built-in RTMP server for playback distribution
+- OpenTelemetry 日志、指标、链路追踪 / OpenTelemetry logs, metrics, traces
 
 ## 系统要求 / Requirements
 
-- Rust 1.70+
-- FFmpeg libraries (libavcodec, libavformat, libavutil)
-- pkg-config
-- MinIO or S3-compatible storage
+- Rust 1.85+（`edition = 2024`）
+- FFmpeg 开发库：`libavcodec`、`libavformat`、`libavutil`
+- `clang`、`libclang-dev`、`pkg-config`
+- `protobuf-compiler`（用于 `tonic` 生成代码）
+- MinIO 或任意 S3 兼容对象存储
 
-## 构建 / Building
+## 构建 / Build
 
-### 本地构建 / Local Build
+### 本地构建 / Local build
 
 ```bash
-# Install dependencies (Ubuntu/Debian)
+# Ubuntu / Debian
 sudo apt-get install -y build-essential clang libclang-dev pkg-config \
-    libssl-dev libavcodec-dev libavformat-dev libavutil-dev protobuf-compiler
+  libssl-dev libavcodec-dev libavformat-dev libavutil-dev protobuf-compiler
 
-# Build
 cargo build --release
 ```
 
-### Docker 构建 / Docker Build
+### Docker 构建 / Docker build
 
 ```bash
 docker build -t livestream-rs .
@@ -41,67 +41,102 @@ docker build -t livestream-rs .
 
 ## 配置 / Configuration
 
-### 环境变量 / Environment Variables
+当前代码通过 `config.toml` + 环境变量加载配置（环境变量会覆盖文件配置）。  
+Configuration is loaded from `config.toml` and environment variables (env overrides file).
 
-| 变量名 / Variable | 描述 / Description | 默认值 / Default |
-|-------------------|-------------------|------------------|
-| `HOST` | 服务主机名 / Service hostname | `srt.example.local` |
-| `GRPC_PORT` | gRPC 服务端口 / gRPC server port | `50051` |
-| `RTMP_PORT` | RTMP 服务端口 / RTMP server port | `1935` |
-| `SRT_PORTS` | SRT 监听端口范围 / SRT listening port range | `4000-4100` |
-| `MINIO_URI` | MinIO URI | `http://localhost:9000` |
-| `MINIO_ACCESSKEY` | MinIO 访问密钥 / MinIO access key | `minioadmin` |
-| `MINIO_SECRETKEY` | MinIO 密钥 / MinIO secret key | `miniokey` |
-| `MINIO_BUCKET` | MinIO 存储桶 / MinIO bucket | `videos` |
-| `RUST_LOG` | 日志级别 / Log level | `info` |
-| `SEGMENT_TIME` | 分段时长 / Segment duration | `10` (sec) |
+### 配置结构 / Config schema
 
-### settings.json
+```toml
+[ingest]
+host = "0.0.0.0"
+port = 50051
+srtports = "4000-4100"
+duration = 10
+callback = ""
 
-```json
-{
-  "host": "live.example.local",
-  "srt_ports": "4000-4100",
-  "grpc_callback": "",
-  "cache_dir": "./cache",
-  "segment_time": 10
-}
+[publish]
+port = 1935
+appname = "lives"
+
+[minio]
+uri = "http://localhost:9000"
+accesskey = "minioadmin"
+secretkey = "miniokey"
+bucket = "videos"
 ```
 
-- `host`: 服务主机名 / Service hostname
-- `srt_ports`: SRT 监听端口范围 / SRT listening port range
-- `grpc_callback`: gRPC 回调地址 / gRPC callback address
-- `cache_dir`: 临时缓存目录 / Temporary cache directory
-- `segment_time`: 分段时长（秒）/ Segment duration (seconds)
+### 环境变量 / Environment variables
 
-## 运行 / Running
+| 变量名 | 说明 | 默认值 |
+|---|---|---|
+| `INGEST_HOST` | 返回给客户端的 SRT 主机地址 / host reported in stream info | `0.0.0.0` |
+| `INGEST_PORT` | gRPC 监听端口 | `50051` |
+| `INGEST_SRTPORTS` | SRT 端口范围（`start-end`） | `4000-4100` |
+| `INGEST_DURATION` | 分段时长（秒） | `10` |
+| `INGEST_CALLBACK` | 回调 gRPC 地址（可选） | `""` |
+| `PUBLISH_PORT` | RTMP 监听端口 | `1935` |
+| `PUBLISH_APPNAME` | RTMP 应用名（路径段） | `lives` |
+| `MINIO_URI` | MinIO/S3 地址 | 必填 |
+| `MINIO_ACCESSKEY` | MinIO/S3 Access Key | 必填 |
+| `MINIO_SECRETKEY` | MinIO/S3 Secret Key | 必填 |
+| `MINIO_BUCKET` | MinIO/S3 Bucket | 必填 |
+| `RUST_LOG` | 日志过滤级别 | `info` |
+| `OTEL_SERVICE_NAME` | OTEL 服务名 | `livestream-rs` |
+
+> `minio` 配置缺失会导致程序启动失败。
+
+## 运行 / Run
 
 ```bash
-# Set environment variables
-export HOST=srt.example.local
-export GRPC_PORT=50051
-export RTMP_PORT=1935
-export SRT_PORTS=4000-4100
+export INGEST_HOST=0.0.0.0
+export INGEST_PORT=50051
+export INGEST_SRTPORTS=4000-4100
+export INGEST_DURATION=10
+export PUBLISH_PORT=1935
+export PUBLISH_APPNAME=lives
 export MINIO_URI=http://localhost:9000
 export MINIO_ACCESSKEY=minioadmin
 export MINIO_SECRETKEY=miniokey
 export MINIO_BUCKET=videos
 export RUST_LOG=info
-export SEGMENT_TIME=10
 
-# Run
 ./target/release/livestream-rs
 ```
 
-## API 使用 / API Usage
+## gRPC API
 
-服务提供以下 gRPC 接口 / The service provides the following gRPC interfaces:
+定义见 `proto/livestream.proto`：
 
-- `StartPullStream`: 开始拉取 SRT 流 / Start pulling SRT stream
-- `StopPullStream`: 停止拉取流 / Stop pulling stream
-- `ListActiveStreams`: 列出活动流 / List active streams
-- `GetStreamInfo`: 获取流信息 / Get stream information
+- `StartPullStream(live_id, passphrase)`
+- `StopPullStream(live_id)`
+- `ListActiveStreams()`
+- `GetStreamInfo(live_id)`
 
-## 许可证 / License
+`passphrase` 限制为 10~79 位字母数字（`^[a-zA-Z0-9]{10,79}$`）。
 
-See LICENSE file for details.
+## 推拉流说明 / Stream flow
+
+- 调用 `StartPullStream` 后，服务会分配一个 SRT 监听端口。
+- SRT 端使用 `live_id` 作为 `streamid`，`passphrase` 为加密口令。
+- RTMP 播放地址格式：`rtmp://<server>:<PUBLISH_PORT>/<PUBLISH_APPNAME>/<live_id>`。
+
+## 回调接口 / Callback API
+
+当设置 `INGEST_CALLBACK`（例如 `http://127.0.0.1:50052`）时，会调用 `proto/livestream_callback.proto` 中的回调方法：
+
+- `NotifyStreamStarted`
+- `NotifyStreamStopped`
+- `NotifyStreamRestarting`
+- `NotifyPullerStarted`
+- `NotifyPullerStopped`
+
+## Telemetry
+
+程序默认启用 OTLP（gRPC）导出器（日志/指标/追踪）。常见环境变量：
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT`（如 `http://localhost:4317`）
+- `OTEL_EXPORTER_OTLP_PROTOCOL`（通常为 `grpc`）
+
+## License
+
+See [LICENSE](LICENSE).
