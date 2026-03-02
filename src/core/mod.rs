@@ -12,18 +12,11 @@ use ffmpeg_sys_next::*;
 
 pub mod context;
 pub mod flv_parser;
+pub mod input;
 pub mod log;
 pub mod options;
 pub mod packet;
 mod stream;
-
-mod rtmp_input;
-mod srt_input;
-
-pub mod input {
-    pub use super::rtmp_input::*;
-    pub use super::srt_input::*;
-}
 
 mod flv_output;
 mod hls_output;

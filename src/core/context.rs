@@ -1,6 +1,7 @@
 //! Context trait and utilities for FFmpeg format contexts.
 
 use super::ffmpeg_error;
+pub use super::input::InputContext;
 use super::stream::Stream;
 
 use anyhow::Result;
@@ -8,10 +9,6 @@ use ffmpeg_sys_next::*;
 
 use std::ffi::{CString, c_int, c_void};
 use std::ptr::{null, null_mut};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use super::options::StreamOptions;
 
 /// Trait for accessing AVFormatContext functionality.
 ///
@@ -49,55 +46,6 @@ pub(crate) trait Context: Drop {
     /// Checks if the context is available (pointer is not null).
     fn available(&self) -> bool {
         !self.get_ctx().is_null()
-    }
-}
-
-pub trait InputContext: Context + Sized {
-    type Options: StreamOptions;
-
-    fn open(options: &Self::Options, stop_signal: Arc<AtomicBool>) -> Result<Self>;
-
-    fn alloc_context(stop_signal: Arc<AtomicBool>) -> Result<*mut AVFormatContext> {
-        let ctx = unsafe { avformat_alloc_context() };
-        if ctx.is_null() {
-            return Err(anyhow::anyhow!("Failed to alloc AVFormatContext"));
-        }
-
-        unsafe {
-            let stop_signal_ptr = Arc::into_raw(stop_signal) as *mut c_void;
-            (*ctx).interrupt_callback = AVIOInterruptCB {
-                callback: Some(interrupt_callback),
-                opaque: stop_signal_ptr,
-            };
-        }
-
-        Ok(ctx)
-    }
-
-    /// Frees the context and reclaims the interrupt callback Arc if present.
-    /// This should be used when initialization fails before the struct is created.
-    fn free_context(ctx: *mut AVFormatContext) {
-        if ctx.is_null() {
-            return;
-        }
-        unsafe {
-            if !(*ctx).interrupt_callback.opaque.is_null() {
-                let _ = Arc::from_raw((*ctx).interrupt_callback.opaque as *const AtomicBool);
-            }
-            avformat_close_input(&mut { ctx });
-        }
-    }
-}
-
-extern "C" fn interrupt_callback(opaque: *mut c_void) -> c_int {
-    if opaque.is_null() {
-        return 0;
-    }
-    let stop_flag = unsafe { &*(opaque as *const AtomicBool) };
-    if stop_flag.load(Ordering::Relaxed) {
-        1
-    } else {
-        0
     }
 }
 

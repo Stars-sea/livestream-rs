@@ -7,7 +7,6 @@ use super::events::*;
 use super::stream_info::{StreamInfo, StreamInputOptions};
 
 use crate::core::context::{Context, InputContext};
-use crate::core::input::{RtmpInputContext, SrtInputContext};
 use crate::core::output::{FlvOutputContext, FlvPacket, HlsOutputContext};
 use crate::core::packet::{Packet, PacketReadResult};
 use crate::otlp::metrics;
@@ -71,25 +70,6 @@ impl StreamPullerFactory {
 }
 
 #[derive(Debug)]
-enum IngestInputContext {
-    Srt(SrtInputContext),
-    Rtmp(RtmpInputContext),
-}
-
-impl Drop for IngestInputContext {
-    fn drop(&mut self) {}
-}
-
-impl Context for IngestInputContext {
-    fn get_ctx(&self) -> *mut ffmpeg_sys_next::AVFormatContext {
-        match self {
-            IngestInputContext::Srt(ctx) => ctx.get_ctx(),
-            IngestInputContext::Rtmp(ctx) => ctx.get_ctx(),
-        }
-    }
-}
-
-#[derive(Debug)]
 pub(super) struct StreamPuller {
     stream_info: Arc<StreamInfo>,
 
@@ -97,7 +77,7 @@ pub(super) struct StreamPuller {
     flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     stop_signal: Arc<AtomicBool>,
 
-    input_ctx: Option<IngestInputContext>,
+    input_ctx: Option<InputContext>,
     flv_output: Option<FlvOutputContext>,
     hls_output: Option<HlsOutputContext>,
 
@@ -130,7 +110,7 @@ impl StreamPuller {
         }
     }
 
-    fn input_ctx(&self) -> Result<&IngestInputContext> {
+    fn input_ctx(&self) -> Result<&InputContext> {
         self.input_ctx
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Input context not initialized"))
@@ -320,7 +300,7 @@ impl StreamPuller {
         info!(live_id = %self.stream_info.live_id(), "Stream puller loop exited");
     }
 
-    /// Main loop for pulling SRT stream, segmenting, and writing to disk.
+    /// Main loop for pulling stream, segmenting, and writing to disk.
     #[instrument(name = "ingest.puller.loop", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
     fn start_impl(&mut self, input_connected: &mut bool) -> Result<()> {
         let live_id = self.stream_info.live_id().to_string();
@@ -330,10 +310,10 @@ impl StreamPuller {
 
         self.input_ctx = Some(match self.stream_info.input_options() {
             StreamInputOptions::Srt(options) => {
-                IngestInputContext::Srt(SrtInputContext::open(options, self.stop_signal.clone())?)
+                InputContext::open(options, self.stop_signal.clone())?
             }
             StreamInputOptions::Rtmp(options) => {
-                IngestInputContext::Rtmp(RtmpInputContext::open(options, self.stop_signal.clone())?)
+                InputContext::open(options, self.stop_signal.clone())?
             }
         });
 
