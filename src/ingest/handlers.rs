@@ -11,14 +11,14 @@ use tracing::{Span, event};
 use super::events::*;
 use super::grpc::*;
 use crate::ingest::factory::GrpcClientFactory;
-use crate::ingest::puller::StreamPullerFactory;
+use crate::ingest::srt_worker::SrtWorkerFactory;
 use crate::services::MinioClient;
 
 pub(super) async fn stream_message_handler(
     rx: mpsc::UnboundedReceiver<(StreamMessage, Span)>,
     client_factory: GrpcClientFactory,
     minio: MinioClient,
-    factory: Arc<StreamPullerFactory>,
+    factory: Arc<SrtWorkerFactory>,
 ) {
     let mut stream = UnboundedReceiverStream::new(rx);
 
@@ -47,13 +47,13 @@ pub(super) async fn stream_message_handler(
                     .instrument(span)
                     .await;
             }
-            StreamMessage::PullerStarted { live_id } => {
-                puller_started_handler(live_id, &client_factory)
+            StreamMessage::IngestWorkerStarted { live_id } => {
+                ingest_worker_started_handler(live_id, &client_factory)
                     .instrument(span)
                     .await;
             }
-            StreamMessage::PullerStopped { live_id } => {
-                puller_stopped_handler(live_id, &client_factory)
+            StreamMessage::IngestWorkerStopped { live_id } => {
+                ingest_worker_stopped_handler(live_id, &client_factory)
                     .instrument(span)
                     .await;
             }
@@ -108,7 +108,7 @@ async fn stream_stopped_handler(
     live_id: String,
     error_message: Option<String>,
     client_factory: &GrpcClientFactory,
-    factory: &Arc<StreamPullerFactory>,
+    factory: &Arc<SrtWorkerFactory>,
 ) {
     event!(
         Level::INFO,
@@ -157,26 +157,26 @@ async fn stream_restarting_handler(
     }
 }
 
-async fn puller_started_handler(live_id: String, client_factory: &GrpcClientFactory) {
-    event!(Level::INFO, "Puller started: live_id={}", live_id);
+async fn ingest_worker_started_handler(live_id: String, client_factory: &GrpcClientFactory) {
+    event!(Level::INFO, "Ingest worker started: live_id={}", live_id);
 
     if let Ok(Some(mut client)) = client_factory.build().await {
-        let req = NotifyPullerStartedRequest { live_id };
-        if let Err(e) = client.notify_puller_started(req).await {
-            warn!(error = %e, "Failed to notify puller started");
+        let req = NotifyIngestWorkerStartedRequest { live_id };
+        if let Err(e) = client.notify_ingest_worker_started(req).await {
+            warn!(error = %e, "Failed to notify ingest worker started");
         }
     } else {
         warn!(client = %client_factory, "Failed to connect to gRPC callback");
     }
 }
 
-async fn puller_stopped_handler(live_id: String, client_factory: &GrpcClientFactory) {
-    event!(Level::INFO, "Puller stopped: live_id={}", live_id);
+async fn ingest_worker_stopped_handler(live_id: String, client_factory: &GrpcClientFactory) {
+    event!(Level::INFO, "Ingest worker stopped: live_id={}", live_id);
 
     if let Ok(Some(mut client)) = client_factory.build().await {
-        let req = NotifyPullerStoppedRequest { live_id };
-        if let Err(e) = client.notify_puller_stopped(req).await {
-            warn!(error = %e, "Failed to notify puller stopped");
+        let req = NotifyIngestWorkerStoppedRequest { live_id };
+        if let Err(e) = client.notify_ingest_worker_stopped(req).await {
+            warn!(error = %e, "Failed to notify ingest worker stopped");
         }
     } else {
         warn!(client = %client_factory, "Failed to connect to gRPC callback");

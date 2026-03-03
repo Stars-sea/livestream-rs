@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::{future::Future, pin::Pin};
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -10,38 +11,42 @@ use tracing::{Span, error, info, instrument, warn};
 use super::factory::GrpcClientFactory;
 use super::handlers;
 use super::port_allocator::PortAllocator;
-use super::puller::StreamPullerFactory;
+use super::srt_worker::SrtWorkerFactory;
 use super::stream_info::StreamInfo;
 
 use crate::core::output::FlvPacket;
-use crate::core::options::StreamOptions;
 use crate::otlp::metrics;
+use crate::server::contracts::StreamRegistry;
 use crate::services::MemoryCache;
 use crate::services::MinioClient;
 
 #[derive(Debug)]
 pub struct StreamManager {
-    puller_factory: Arc<StreamPullerFactory>,
+    srt_worker_factory: Arc<SrtWorkerFactory>,
     stream_info_cache: MemoryCache<Arc<StreamInfo>>,
     port_allocator: PortAllocator,
 }
 
 impl StreamManager {
-    pub fn new(minio_client: MinioClient, flv_packet_tx: mpsc::UnboundedSender<FlvPacket>) -> Self {
-        let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_channel();
-        let puller_factory = Arc::new(StreamPullerFactory::new(stream_msg_tx, flv_packet_tx));
+    pub fn new(
+        minio_client: MinioClient,
+        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
+        stream_msg_tx: mpsc::UnboundedSender<(super::events::StreamMessage, Span)>,
+        stream_msg_rx: mpsc::UnboundedReceiver<(super::events::StreamMessage, Span)>,
+    ) -> Self {
+        let srt_worker_factory = Arc::new(SrtWorkerFactory::new(stream_msg_tx, flv_packet_tx));
 
         tokio::spawn(handlers::stream_message_handler(
             stream_msg_rx,
             GrpcClientFactory::default(),
             minio_client,
-            puller_factory.clone(),
+            srt_worker_factory.clone(),
         ));
 
         let port_allocator = PortAllocator::default();
 
         Self {
-            puller_factory,
+            srt_worker_factory,
             stream_info_cache: MemoryCache::new(),
             port_allocator,
         }
@@ -91,13 +96,28 @@ impl StreamManager {
         self.stream_info_cache.remove(info.live_id()).await;
     }
 
-    #[instrument(name = "ingest.stream.start", skip(self, stream_info), fields(stream.live_id = %stream_info.live_id()))]
-    pub async fn start_stream(self: &Arc<Self>, stream_info: Arc<StreamInfo>) -> Result<()> {
+    async fn release_stream_by_id(&self, live_id: &str) -> bool {
+        if let Some(info) = self.get_stream_info(live_id).await {
+            self.release_stream_resources(info).await;
+            return true;
+        }
+        false
+    }
+
+    #[instrument(name = "ingest.manager.start", skip(self, stream_info), fields(stream.live_id = %stream_info.live_id()))]
+    pub async fn start_srt_stream(self: &Arc<Self>, stream_info: Arc<StreamInfo>) -> Result<()> {
         let live_id = stream_info.live_id().to_string();
 
-        if !self.puller_factory.can_create(&stream_info).await {
-            warn!(live_id = %live_id, "Cannot create stream puller");
-            anyhow::bail!("Failed to create stream puller for live_id: {live_id}");
+        if stream_info.srt_options().is_none() {
+            anyhow::bail!(
+                "RTMP ingest stream '{}' is handled by server RTMP worker, not FFmpeg SRT worker",
+                live_id
+            );
+        }
+
+        if !self.srt_worker_factory.can_create(&stream_info).await {
+            warn!(live_id = %live_id, "Cannot create SRT worker");
+            anyhow::bail!("Failed to create SRT worker for live_id: {live_id}");
         }
 
         if let Some(options) = stream_info.srt_options() {
@@ -105,12 +125,6 @@ impl StreamManager {
                 live_id = %live_id,
                 port = options.port(),
                 "Starting stream process with SRT input"
-            );
-        } else if let Some(options) = stream_info.rtmp_options() {
-            info!(
-                live_id = %live_id,
-                rtmp_url = %options.filename(),
-                "Starting stream process with RTMP input"
             );
         }
 
@@ -122,11 +136,11 @@ impl StreamManager {
             let handle = tokio::runtime::Handle::current();
 
             let _stream_guard =
-                metrics::MetricGuard::new(&metrics::get_metrics().online_streams, vec![]);
+                metrics::MetricGuard::new(&metrics::get_metrics().ingest_streams, vec![]);
 
-            match handle.block_on(arc_self.puller_factory.create(cloned_info.clone())) {
-                Ok(mut puller) => puller.start(),
-                Err(e) => error!(error = %e, "Failed to create stream puller"),
+            match handle.block_on(arc_self.srt_worker_factory.create(cloned_info.clone())) {
+                Ok(mut worker) => worker.start(),
+                Err(e) => error!(error = %e, "Failed to create SRT worker"),
             }
 
             handle.block_on(async {
@@ -144,42 +158,59 @@ impl StreamManager {
         Ok(())
     }
 
-    #[instrument(name = "ingest.stream.stop", skip(self), fields(stream.live_id = %live_id))]
+    #[instrument(name = "ingest.manager.stop", skip(self), fields(stream.live_id = %live_id))]
     pub async fn stop_stream(&self, live_id: &str) -> Result<()> {
         info!(live_id = %live_id, "Stopping stream request");
-        if let Some(signal) = self.puller_factory.get_signal(live_id).await {
+        if let Some(signal) = self.srt_worker_factory.get_signal(live_id).await {
             signal.store(true, Ordering::SeqCst);
-        } else {
-            error!(live_id = %live_id, "No active stream found to stop");
-            anyhow::bail!("No active stream found for live_id: {}", live_id);
+            return Ok(());
         }
-        Ok(())
+
+        if self.release_stream_by_id(live_id).await {
+            self.srt_worker_factory.send_end_of_stream(live_id);
+            return Ok(());
+        }
+
+        error!(live_id = %live_id, "No active stream found to stop");
+        anyhow::bail!("No active stream found for live_id: {}", live_id);
     }
 
-    #[instrument(name = "ingest.stream.shutdown", skip(self))]
+    #[instrument(name = "ingest.manager.shutdown", skip(self))]
     pub async fn shutdown(&self) {
-        for signal in self.puller_factory.get_signals().await {
+        for signal in self.srt_worker_factory.get_signals().await {
             signal.store(true, Ordering::SeqCst);
+        }
+
+        for live_id in self.stream_info_cache.keys().await {
+            if !self.srt_worker_factory.has_signal(&live_id).await {
+                let _ = self.release_stream_by_id(&live_id).await;
+            }
         }
     }
 
-    #[instrument(name = "ingest.stream.list_active", skip(self))]
+    #[instrument(name = "ingest.manager.list_active", skip(self))]
     pub async fn list_active_streams(&self) -> Result<Vec<String>> {
         Ok(self.stream_info_cache.keys().await)
     }
 
-    #[instrument(name = "ingest.stream.is_empty", skip(self))]
+    #[instrument(name = "ingest.manager.is_empty", skip(self))]
     pub async fn is_streams_empty(&self) -> bool {
         self.stream_info_cache.keys().await.is_empty()
     }
 
-    #[instrument(name = "ingest.stream.exists", skip(self), fields(stream.live_id = %live_id))]
+    #[instrument(name = "ingest.manager.exists", skip(self), fields(stream.live_id = %live_id))]
     pub async fn has_stream(&self, live_id: &str) -> bool {
         self.stream_info_cache.contains_key(live_id).await
     }
 
-    #[instrument(name = "ingest.stream.get_info", skip(self), fields(stream.live_id = %live_id))]
+    #[instrument(name = "ingest.manager.get_info", skip(self), fields(stream.live_id = %live_id))]
     pub async fn get_stream_info(&self, live_id: &str) -> Option<Arc<StreamInfo>> {
         self.stream_info_cache.get(live_id).await
+    }
+}
+
+impl StreamRegistry for StreamManager {
+    fn has_stream<'a>(&'a self, live_id: &'a str) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move { self.has_stream(live_id).await })
     }
 }

@@ -1,16 +1,12 @@
 use std::fmt::Display;
-use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::signal;
-use tonic::transport::{Channel, Server};
-use tonic::{Request, Status};
-use tracing::{info, instrument};
+use tonic::transport::Channel;
 
 #[cfg(feature = "opentelemetry")]
 use opentelemetry::global;
 #[cfg(feature = "opentelemetry")]
-use opentelemetry::propagation::{Extractor, Injector};
+use opentelemetry::propagation::Injector;
 #[cfg(feature = "opentelemetry")]
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 #[cfg(feature = "opentelemetry")]
@@ -18,14 +14,15 @@ use tonic::service::Interceptor;
 #[cfg(feature = "opentelemetry")]
 use tonic::service::interceptor::InterceptedService;
 #[cfg(feature = "opentelemetry")]
+use tonic::{Request, Status};
+#[cfg(feature = "opentelemetry")]
 use tracing::Span;
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::settings::{IngestConfig, load_settings};
+use crate::settings::load_settings;
 
 use super::grpc::livestream_callback_client::LivestreamCallbackClient;
-use super::{LivestreamServer, LivestreamService, StreamManager};
 
 #[cfg(feature = "opentelemetry")]
 struct MetadataInjector<'a>(&'a mut MetadataMap);
@@ -41,26 +38,6 @@ impl Injector for MetadataInjector<'_> {
         };
 
         self.0.insert(metadata_key, metadata_value);
-    }
-}
-
-#[cfg(feature = "opentelemetry")]
-struct MetadataExtractor<'a>(&'a MetadataMap);
-
-#[cfg(feature = "opentelemetry")]
-impl Extractor for MetadataExtractor<'_> {
-    fn get(&self, key: &str) -> Option<&str> {
-        self.0.get(key).and_then(|v| v.to_str().ok())
-    }
-
-    fn keys(&self) -> Vec<&str> {
-        self.0
-            .keys()
-            .map(|key| match key {
-                tonic::metadata::KeyRef::Ascii(k) => k.as_str(),
-                tonic::metadata::KeyRef::Binary(k) => k.as_str(),
-            })
-            .collect()
     }
 }
 
@@ -114,124 +91,12 @@ impl GrpcClientFactory {
 
 impl Default for GrpcClientFactory {
     fn default() -> Self {
-        Self::new(load_settings().ingest.callback.clone())
+        Self::new(load_settings().grpc.callback.clone())
     }
 }
 
 impl Display for GrpcClientFactory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("GrpcClientFactory {{ {} }}", &self.url))
-    }
-}
-
-pub struct GrpcServerFactory {
-    livestream_service: Option<LivestreamService>,
-    manger: Option<Arc<StreamManager>>,
-    config: Option<IngestConfig>,
-}
-
-impl GrpcServerFactory {
-    pub fn new() -> Self {
-        Self {
-            livestream_service: None,
-            manger: None,
-            config: None,
-        }
-    }
-
-    pub fn with_service(mut self, service: LivestreamService) -> Self {
-        self.livestream_service = Some(service);
-        self
-    }
-
-    pub fn with_manager(mut self, manager: Arc<StreamManager>) -> Self {
-        self.manger = Some(manager);
-        self
-    }
-
-    pub fn with_config(mut self, config: IngestConfig) -> Self {
-        self.config = Some(config);
-        self
-    }
-
-    pub fn with_default_config(self) -> Self {
-        self.with_config(load_settings().ingest.clone())
-    }
-
-    #[instrument(name = "ingest.grpc.serve", skip(self), fields(server.port = %self.config.as_ref().map(|c| c.grpcport).unwrap_or_default()))]
-    pub async fn serve(self) -> Result<()> {
-        let service = self
-            .livestream_service
-            .ok_or_else(|| anyhow::anyhow!("LivestreamService is required"))?;
-
-        let manager = self
-            .manger
-            .ok_or_else(|| anyhow::anyhow!("StreamManager is required"))?;
-
-        let config = self
-            .config
-            .ok_or_else(|| anyhow::anyhow!("IngestConfig is required"))?;
-
-        let grpc_addr = format!("0.0.0.0:{}", config.grpcport);
-        info!(address = %grpc_addr, "gRPC Server will listen");
-
-        Server::builder()
-            .add_service(LivestreamServer::with_interceptor(
-                service,
-                Self::server_trace_interceptor,
-            ))
-            .serve_with_shutdown(grpc_addr.parse()?, shutdown_signal(manager))
-            .await?;
-
-        Ok(())
-    }
-
-    fn server_trace_interceptor(request: Request<()>) -> Result<Request<()>, Status> {
-        #[cfg(feature = "opentelemetry")]
-        {
-            let parent_cx = global::get_text_map_propagator(|prop| {
-                prop.extract(&MetadataExtractor(request.metadata()))
-            });
-
-            // Set parent context for the trace, linking it with incoming grpc calls
-            let _ = Span::current().set_parent(parent_cx);
-        }
-
-        Ok(request)
-    }
-}
-
-/// Handles graceful shutdown on SIGINT (Ctrl+C) or SIGTERM
-async fn shutdown_signal(manager: Arc<StreamManager>) {
-    let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {
-            info!("Received Ctrl+C signal, shutting down gracefully");
-        },
-        _ = terminate => {
-            info!("Received SIGTERM signal, shutting down gracefully");
-        },
-    }
-
-    manager.shutdown().await;
-
-    while !manager.is_streams_empty().await {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }

@@ -8,11 +8,11 @@ pub enum StreamMessage {
         path: PathBuf,
     },
 
-    PullerStarted {
+    IngestWorkerStarted {
         live_id: String,
     },
 
-    PullerStopped {
+    IngestWorkerStopped {
         live_id: String,
     },
 
@@ -41,14 +41,14 @@ impl StreamMessage {
         }
     }
 
-    pub fn puller_started(live_id: &str) -> Self {
-        StreamMessage::PullerStarted {
+    pub fn ingest_worker_started(live_id: &str) -> Self {
+        StreamMessage::IngestWorkerStarted {
             live_id: live_id.to_string(),
         }
     }
 
-    pub fn puller_stopped(live_id: &str) -> Self {
-        StreamMessage::PullerStopped {
+    pub fn ingest_worker_stopped(live_id: &str) -> Self {
+        StreamMessage::IngestWorkerStopped {
             live_id: live_id.to_string(),
         }
     }
@@ -80,11 +80,11 @@ impl Display for StreamMessage {
             StreamMessage::SegmentComplete { live_id, .. } => {
                 write!(f, "SegmentComplete: live_id={}", live_id)
             }
-            StreamMessage::PullerStarted { live_id } => {
-                write!(f, "PullerStarted: live_id={}", live_id)
+            StreamMessage::IngestWorkerStarted { live_id } => {
+                write!(f, "IngestWorkerStarted: live_id={}", live_id)
             }
-            StreamMessage::PullerStopped { live_id } => {
-                write!(f, "PullerStopped: live_id={}", live_id)
+            StreamMessage::IngestWorkerStopped { live_id } => {
+                write!(f, "IngestWorkerStopped: live_id={}", live_id)
             }
             StreamMessage::StreamStarted { live_id } => {
                 write!(f, "StreamStarted: live_id={}", live_id)
@@ -101,5 +101,45 @@ impl Display for StreamMessage {
                 write!(f, "StreamRestarting: live_id={}, error={}", live_id, error)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::StreamMessage;
+
+    #[test]
+    fn constructors_build_expected_variants() {
+        let segment = StreamMessage::segment_complete("live_1", &PathBuf::from("a.ts"));
+        let started = StreamMessage::stream_started("live_1");
+        let stopped = StreamMessage::stream_stopped("live_1", None);
+        let restarting = StreamMessage::stream_restarting("live_1", "err".to_string());
+        let worker_started = StreamMessage::ingest_worker_started("live_1");
+        let worker_stopped = StreamMessage::ingest_worker_stopped("live_1");
+
+        assert!(matches!(segment, StreamMessage::SegmentComplete { .. }));
+        assert!(matches!(started, StreamMessage::StreamStarted { .. }));
+        assert!(matches!(stopped, StreamMessage::StreamStopped { .. }));
+        assert!(matches!(restarting, StreamMessage::StreamRestarting { .. }));
+        assert!(matches!(
+            worker_started,
+            StreamMessage::IngestWorkerStarted { .. }
+        ));
+        assert!(matches!(
+            worker_stopped,
+            StreamMessage::IngestWorkerStopped { .. }
+        ));
+    }
+
+    #[test]
+    fn display_contains_variant_names() {
+        let msg = StreamMessage::stream_stopped("live_1", Some("boom".to_string()));
+        let text = msg.to_string();
+
+        assert!(text.contains("StreamStopped"));
+        assert!(text.contains("live_1"));
+        assert!(text.contains("boom"));
     }
 }

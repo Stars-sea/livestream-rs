@@ -19,13 +19,13 @@ use tokio::sync::mpsc;
 use tracing::{Span, debug, error, info, instrument, warn};
 
 #[derive(Debug)]
-pub(super) struct StreamPullerFactory {
+pub(super) struct SrtWorkerFactory {
     stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
     flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     signal_cache: MemoryCache<Arc<AtomicBool>>,
 }
 
-impl StreamPullerFactory {
+impl SrtWorkerFactory {
     pub fn new(
         stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
@@ -41,13 +41,13 @@ impl StreamPullerFactory {
         !self.signal_cache.contains_key(stream_info.live_id()).await
     }
 
-    pub async fn create(&self, stream_info: Arc<StreamInfo>) -> Result<StreamPuller> {
+    pub async fn create(&self, stream_info: Arc<StreamInfo>) -> Result<SrtWorker> {
         let live_id = stream_info.live_id().to_string();
-        info!(live_id = %live_id, "Creating stream puller");
+        info!(live_id = %live_id, "Creating SRT worker");
         let stop_signal = Arc::new(AtomicBool::new(false));
         self.signal_cache.set(live_id, stop_signal.clone()).await?;
 
-        Ok(StreamPuller::new(
+        Ok(SrtWorker::new(
             stream_info,
             self.stream_msg_tx.clone(),
             self.flv_packet_tx.clone(),
@@ -67,10 +67,22 @@ impl StreamPullerFactory {
     pub async fn get_signal(&self, live_id: &str) -> Option<Arc<AtomicBool>> {
         self.signal_cache.get(live_id).await
     }
+
+    pub async fn has_signal(&self, live_id: &str) -> bool {
+        self.signal_cache.contains_key(live_id).await
+    }
+
+    pub fn send_end_of_stream(&self, live_id: &str) {
+        if let Err(e) = self.flv_packet_tx.send(FlvPacket::EndOfStream {
+            live_id: live_id.to_string(),
+        }) {
+            warn!(error = %e, stream.live_id = %live_id, "Failed to send EOS packet");
+        }
+    }
 }
 
 #[derive(Debug)]
-pub(super) struct StreamPuller {
+pub(super) struct SrtWorker {
     stream_info: Arc<StreamInfo>,
 
     stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
@@ -90,7 +102,7 @@ enum ReadResult {
     Eof,
 }
 
-impl StreamPuller {
+impl SrtWorker {
     pub fn new(
         stream_info: Arc<StreamInfo>,
         stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
@@ -181,7 +193,7 @@ impl StreamPuller {
         None
     }
 
-    #[instrument(name = "ingest.puller.segment_complete", skip(self), fields(stream.live_id = %self.stream_info.live_id(), stream.segment_id = self.segment_id))]
+    #[instrument(name = "ingest.srt_worker.segment_complete", skip(self), fields(stream.live_id = %self.stream_info.live_id(), stream.segment_id = self.segment_id))]
     fn notify_segment_complete(&self) {
         let output_ctx = match self.hls_output() {
             Ok(ctx) => ctx,
@@ -198,7 +210,7 @@ impl StreamPuller {
         }
     }
 
-    #[instrument(name = "ingest.stream.notify_started", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
+    #[instrument(name = "ingest.srt_worker.stream.notify_started", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
     fn notify_stream_started(&self) {
         let live_id = self.stream_info.live_id();
         let event = (StreamMessage::stream_started(live_id), Span::current());
@@ -207,7 +219,7 @@ impl StreamPuller {
         }
     }
 
-    #[instrument(name = "ingest.stream.notify_stopped", skip(self), fields(stream.live_id = %self.stream_info.live_id(), error = ?error))]
+    #[instrument(name = "ingest.srt_worker.stream.notify_stopped", skip(self), fields(stream.live_id = %self.stream_info.live_id(), error = ?error))]
     fn notify_stream_stopped(&self, error: Option<String>) {
         let live_id = self.stream_info.live_id();
         let event = (
@@ -219,7 +231,7 @@ impl StreamPuller {
         }
     }
 
-    #[instrument(name = "ingest.stream.notify_restarting", skip(self), fields(stream.live_id = %self.stream_info.live_id(), error = %error))]
+    #[instrument(name = "ingest.srt_worker.stream.notify_restarting", skip(self), fields(stream.live_id = %self.stream_info.live_id(), error = %error))]
     fn notify_stream_restarting(&self, error: String) {
         let live_id = self.stream_info.live_id();
         let event = (
@@ -231,23 +243,23 @@ impl StreamPuller {
         }
     }
 
-    #[instrument(name = "ingest.puller.notify_started", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
-    fn notify_puller_started(&self) {
+    #[instrument(name = "ingest.srt_worker.notify_started", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
+    fn notify_ingest_worker_started(&self) {
         let live_id = self.stream_info.live_id();
 
-        let event = (StreamMessage::puller_started(live_id), Span::current());
+        let event = (StreamMessage::ingest_worker_started(live_id), Span::current());
         if let Err(e) = self.stream_msg_tx.send(event) {
-            warn!(error = %e, live_id = %live_id, "Failed to send puller started event");
+            warn!(error = %e, live_id = %live_id, "Failed to send ingest worker started event");
         }
     }
 
-    #[instrument(name = "ingest.puller.notify_stopped", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
-    fn notify_puller_stopped(&self) {
+    #[instrument(name = "ingest.srt_worker.notify_stopped", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
+    fn notify_ingest_worker_stopped(&self) {
         let live_id = self.stream_info.live_id();
 
-        let event = (StreamMessage::puller_stopped(live_id), Span::current());
+        let event = (StreamMessage::ingest_worker_stopped(live_id), Span::current());
         if let Err(e) = self.stream_msg_tx.send(event) {
-            warn!(error = %e, live_id = %live_id, "Failed to send puller stopped event");
+            warn!(error = %e, live_id = %live_id, "Failed to send ingest worker stopped event");
         }
 
         // TODO:
@@ -266,42 +278,42 @@ impl StreamPuller {
     }
 
     pub fn start(&mut self) {
-        self.notify_puller_started();
+        self.notify_ingest_worker_started();
 
-        let start_span = tracing::info_span!("ingest.puller.start", stream.live_id = %self.stream_info.live_id());
+        let start_span = tracing::info_span!("ingest.srt_worker.start", stream.live_id = %self.stream_info.live_id());
 
         start_span.in_scope(|| {
-            info!(live_id = %self.stream_info.live_id(), "Stream puller loop starting");
+            info!(live_id = %self.stream_info.live_id(), "SRT worker loop starting");
         });
 
-        'puller_loop: loop {
+        'worker_loop: loop {
             let mut delay = Exponential::from_millis(10).map(jitter).take(5);
 
             while let Some(duration) = delay.next() {
                 let mut recovered = false;
 
                 if let Err(e) = self.start_impl(&mut recovered) {
-                    error!(error = %e, live_id = %self.stream_info.live_id(), "Error in stream puller loop");
+                    error!(error = %e, live_id = %self.stream_info.live_id(), "Error in SRT worker loop");
                     self.notify_stream_restarting(e.to_string());
                 } else {
-                    break 'puller_loop;
+                    break 'worker_loop;
                 }
 
                 std::thread::sleep(duration);
 
                 if recovered {
                     delay = Exponential::from_millis(10).map(jitter).take(5);
-                    continue 'puller_loop;
+                    continue 'worker_loop;
                 }
             }
         }
 
-        self.notify_puller_stopped();
-        info!(live_id = %self.stream_info.live_id(), "Stream puller loop exited");
+        self.notify_ingest_worker_stopped();
+        info!(live_id = %self.stream_info.live_id(), "SRT worker loop exited");
     }
 
     /// Main loop for pulling stream, segmenting, and writing to disk.
-    #[instrument(name = "ingest.puller.loop", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
+    #[instrument(name = "ingest.srt_worker.loop", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
     fn start_impl(&mut self, input_connected: &mut bool) -> Result<()> {
         let live_id = self.stream_info.live_id().to_string();
         let cache_dir = self.stream_info.cache_dir().to_path_buf();
@@ -312,8 +324,11 @@ impl StreamPuller {
             StreamInputOptions::Srt(options) => {
                 InputContext::open(options, self.stop_signal.clone())?
             }
-            StreamInputOptions::Rtmp(options) => {
-                InputContext::open(options, self.stop_signal.clone())?
+            StreamInputOptions::Rtmp(_) => {
+                anyhow::bail!(
+                    "RTMP ingest stream '{}' must be handled by server RTMP worker, not FFmpeg SRT worker",
+                    live_id
+                );
             }
         });
 

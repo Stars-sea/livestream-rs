@@ -1,16 +1,16 @@
 pub struct OTelMetrics {
-    pub rtmp_connections: NoopCounter,
-    pub online_streams: NoopCounter,
-    pub pull_connections: NoopCounter,
+    pub rtmp_sessions: NoopCounter,
+    pub ingest_streams: NoopCounter,
+    pub egress_connections: NoopCounter,
 }
 
 pub struct NoopCounter;
 
 pub fn get_metrics() -> &'static OTelMetrics {
     static METRICS: OTelMetrics = OTelMetrics {
-        rtmp_connections: NoopCounter,
-        online_streams: NoopCounter,
-        pull_connections: NoopCounter,
+        rtmp_sessions: NoopCounter,
+        ingest_streams: NoopCounter,
+        egress_connections: NoopCounter,
     };
 
     &METRICS

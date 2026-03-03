@@ -9,13 +9,17 @@ use serde::Deserialize;
 /// Application settings loaded from configuration files and environment variables.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Settings {
-    /// gRPC & SRT Puller Configuration
+    /// Ingest Configuration
     #[serde(default)]
     pub ingest: IngestConfig,
 
-    /// RTMP Configuration
+    /// gRPC Configuration
     #[serde(default)]
-    pub publish: PublishConfig,
+    pub grpc: GrpcConfig,
+
+    /// Egress Configuration
+    #[serde(default)]
+    pub egress: EgressConfig,
 
     /// Minio Configuration
     pub minio: Option<MinioConfig>,
@@ -27,14 +31,6 @@ pub struct IngestConfig {
     #[serde(default = "default_ingest_host")]
     pub host: String,
 
-    /// Port for gRPC server to listen on
-    #[serde(default = "default_ingest_grpcport")]
-    pub grpcport: u16,
-
-    /// Port for RTMP server to listen on (for pull mode)
-    #[serde(default = "default_ingest_rtmpport")]
-    pub rtmpport: u16,
-
     /// Port range for SRT listeners (format: "start-end", e.g., "4000-5000")
     #[serde(default = "default_ingest_srtports")]
     pub srtports: String,
@@ -43,19 +39,27 @@ pub struct IngestConfig {
     #[serde(default = "default_ingest_duration")]
     pub duration: i32,
 
-    /// Callback URL (gRPC) for stream events (e.g., stream start/stop) --- IGNORE ---
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GrpcConfig {
+    /// Port for gRPC server to listen on
+    #[serde(default = "default_grpc_port")]
+    pub port: u16,
+
+    /// Callback URL (gRPC) for stream events (e.g., stream start/stop)
     #[serde(default)]
     pub callback: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct PublishConfig {
+pub struct EgressConfig {
     /// Port for RTMP server to listen on
-    #[serde(default = "default_publish_port")]
+    #[serde(default = "default_egress_port")]
     pub port: u16,
 
     /// RTMP application name (e.g., "live" for rtmp://host/live/streamkey)
-    #[serde(default = "default_publish_appname")]
+    #[serde(default = "default_egress_appname")]
     pub appname: String,
 }
 
@@ -78,12 +82,8 @@ fn default_ingest_host() -> String {
     "0.0.0.0".to_string()
 }
 
-fn default_ingest_grpcport() -> u16 {
+fn default_grpc_port() -> u16 {
     50051
-}
-
-fn default_ingest_rtmpport() -> u16 {
-    1936
 }
 
 fn default_ingest_srtports() -> String {
@@ -94,11 +94,11 @@ fn default_ingest_duration() -> i32 {
     10
 }
 
-fn default_publish_port() -> u16 {
+fn default_egress_port() -> u16 {
     1935
 }
 
-fn default_publish_appname() -> String {
+fn default_egress_appname() -> String {
     "lives".to_string()
 }
 
@@ -138,20 +138,26 @@ impl Default for IngestConfig {
     fn default() -> Self {
         Self {
             host: default_ingest_host(),
-            grpcport: default_ingest_grpcport(),
-            rtmpport: default_ingest_rtmpport(),
             srtports: default_ingest_srtports(),
             duration: default_ingest_duration(),
+        }
+    }
+}
+
+impl Default for GrpcConfig {
+    fn default() -> Self {
+        Self {
+            port: default_grpc_port(),
             callback: "".to_string(),
         }
     }
 }
 
-impl Default for PublishConfig {
+impl Default for EgressConfig {
     fn default() -> Self {
         Self {
-            port: default_publish_port(),
-            appname: default_publish_appname(),
+            port: default_egress_port(),
+            appname: default_egress_appname(),
         }
     }
 }
@@ -187,10 +193,6 @@ impl Settings {
 
         if self.ingest.duration <= 0 {
             anyhow::bail!("Segment duration must be positive");
-        }
-
-        if self.publish.port == self.ingest.rtmpport {
-            anyhow::bail!("RTMP publish port must be different from RTMP port");
         }
 
         if self.minio.is_none() {

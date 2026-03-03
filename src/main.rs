@@ -1,7 +1,4 @@
-use std::sync::Arc;
-
 use anyhow::Result;
-use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, Layer, fmt};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -15,13 +12,13 @@ use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetryLayer;
 
-use crate::ingest::{GrpcServerFactory, LivestreamService, StreamManager};
-use crate::publish::RtmpServer;
+use crate::server::AppServer;
 
 mod core;
+mod egress;
 mod ingest;
 mod otlp;
-mod publish;
+mod server;
 mod services;
 mod settings;
 
@@ -82,36 +79,9 @@ async fn main() -> Result<()> {
 
     core::init();
 
-    let (tx, rx) = mpsc::unbounded_channel();
-    let (shutdown_tx, _) = broadcast::channel::<()>(1);
-
-    let minio_client = services::MinioClient::create_default().await?;
-    let manager = Arc::new(StreamManager::new(minio_client, tx));
-
-    // Start RTMP server
-    let server = RtmpServer::new(manager.clone());
-
-    let shutdown_rx = shutdown_tx.subscribe();
-    tokio::spawn(async move {
-        if let Err(e) = server.start(rx, shutdown_rx).await {
-            tracing::error!(error = %e, "RTMP server failed");
-        }
-    });
-
-    // Start GRPC Server & SRT Stream Puller
-    let grpc_future = GrpcServerFactory::new()
-        .with_service(LivestreamService::new(manager.clone()))
-        .with_manager(manager)
-        .with_default_config()
-        .serve();
-
-    // Wait for gRPC server (which listens for Ctrl+C)
-    if let Err(e) = grpc_future.await {
-        error!(error = %e, "gRPC server error");
+    if let Err(e) = AppServer::run().await {
+        error!(error = %e, "Server runtime error");
     }
-
-    // Signal other components to shutdown
-    let _ = shutdown_tx.send(());
 
     #[cfg(feature = "opentelemetry")]
     if let Some((logger_provider, tracer_provider, meter_provider)) = providers {

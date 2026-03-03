@@ -5,7 +5,7 @@ option csharp_namespace = "LiveService.Protos";
 package livestream;
 
 // Callback service used by livestream-rs to notify external systems
-// about stream and puller lifecycle events.
+// about stream and ingest worker lifecycle events.
 service LivestreamCallback {
   // Called when a stream starts successfully.
   rpc NotifyStreamStarted (NotifyStreamStartedRequest) returns (NotifyResponse);
@@ -16,11 +16,11 @@ service LivestreamCallback {
   // Called when a stream is about to restart due to a recoverable error.
   rpc NotifyStreamRestarting (NotifyStreamRestartingRequest) returns (NotifyResponse);
 
-  // Called when a puller worker starts.
-  rpc NotifyPullerStarted (NotifyPullerStartedRequest) returns (NotifyResponse);
+  // Called when an ingest worker starts.
+  rpc NotifyIngestWorkerStarted (NotifyIngestWorkerStartedRequest) returns (NotifyResponse);
 
-  // Called when a puller worker stops.
-  rpc NotifyPullerStopped (NotifyPullerStoppedRequest) returns (NotifyResponse);
+  // Called when an ingest worker stops.
+  rpc NotifyIngestWorkerStopped (NotifyIngestWorkerStoppedRequest) returns (NotifyResponse);
 }
 
 // Notification payload for stream started event.
@@ -45,14 +45,14 @@ message NotifyStreamRestartingRequest {
   string error_message = 2;
 }
 
-// Notification payload for puller started event.
-message NotifyPullerStartedRequest {
+// Notification payload for ingest worker started event.
+message NotifyIngestWorkerStartedRequest {
   // Unique live stream identifier.
   string live_id = 1;
 }
 
-// Notification payload for puller stopped event.
-message NotifyPullerStoppedRequest {
+// Notification payload for ingest worker stopped event.
+message NotifyIngestWorkerStoppedRequest {
   // Unique live stream identifier.
   string live_id = 1;
 }

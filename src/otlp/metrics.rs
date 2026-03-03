@@ -8,9 +8,9 @@ use std::thread;
 use std::time::Duration;
 
 pub struct OTelMetrics {
-    pub rtmp_connections: UpDownCounter<i64>,
-    pub online_streams: UpDownCounter<i64>,
-    pub pull_connections: UpDownCounter<i64>,
+    pub rtmp_sessions: UpDownCounter<i64>,
+    pub ingest_streams: UpDownCounter<i64>,
+    pub egress_connections: UpDownCounter<i64>,
     pub network_bytes_in: Counter<u64>,
     pub network_bytes_out: Counter<u64>,
     pub ingest_packets_total: Counter<u64>,
@@ -66,17 +66,17 @@ pub fn get_metrics() -> &'static OTelMetrics {
         let ingest_packets_rate_state = rate_state.clone();
 
         OTelMetrics {
-            rtmp_connections: meter
-                .i64_up_down_counter("rtmp_connections")
-                .with_description("Active RTMP connections")
+            rtmp_sessions: meter
+                .i64_up_down_counter("rtmp_sessions")
+                .with_description("Active RTMP sessions")
                 .build(),
-            online_streams: meter
-                .i64_up_down_counter("online_streams")
+            ingest_streams: meter
+                .i64_up_down_counter("ingest_streams")
                 .with_description("Active streaming ingestions")
                 .build(),
-            pull_connections: meter
-                .i64_up_down_counter("pull_connections")
-                .with_description("Active stream consumers")
+            egress_connections: meter
+                .i64_up_down_counter("egress_connections")
+                .with_description("Active egress stream consumers")
                 .build(),
             network_bytes_in: meter
                 .u64_counter("network_bytes_in")
