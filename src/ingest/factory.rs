@@ -2,15 +2,24 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use anyhow::Result;
-use opentelemetry::global;
-use opentelemetry::propagation::{Extractor, Injector};
 use tokio::signal;
-use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
-use tonic::service::Interceptor;
-use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Status};
-use tracing::{Span, info, instrument};
+use tracing::{info, instrument};
+
+#[cfg(feature = "opentelemetry")]
+use opentelemetry::global;
+#[cfg(feature = "opentelemetry")]
+use opentelemetry::propagation::{Extractor, Injector};
+#[cfg(feature = "opentelemetry")]
+use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
+#[cfg(feature = "opentelemetry")]
+use tonic::service::Interceptor;
+#[cfg(feature = "opentelemetry")]
+use tonic::service::interceptor::InterceptedService;
+#[cfg(feature = "opentelemetry")]
+use tracing::Span;
+#[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::settings::{IngestConfig, load_settings};
@@ -18,8 +27,10 @@ use crate::settings::{IngestConfig, load_settings};
 use super::grpc::livestream_callback_client::LivestreamCallbackClient;
 use super::{LivestreamServer, LivestreamService, StreamManager};
 
+#[cfg(feature = "opentelemetry")]
 struct MetadataInjector<'a>(&'a mut MetadataMap);
 
+#[cfg(feature = "opentelemetry")]
 impl Injector for MetadataInjector<'_> {
     fn set(&mut self, key: &str, value: String) {
         let Ok(metadata_key) = MetadataKey::from_bytes(key.as_bytes()) else {
@@ -33,8 +44,10 @@ impl Injector for MetadataInjector<'_> {
     }
 }
 
+#[cfg(feature = "opentelemetry")]
 struct MetadataExtractor<'a>(&'a MetadataMap);
 
+#[cfg(feature = "opentelemetry")]
 impl Extractor for MetadataExtractor<'_> {
     fn get(&self, key: &str) -> Option<&str> {
         self.0.get(key).and_then(|v| v.to_str().ok())
@@ -51,11 +64,14 @@ impl Extractor for MetadataExtractor<'_> {
     }
 }
 
+#[cfg(feature = "opentelemetry")]
 #[derive(Clone, Default)]
 pub(crate) struct TraceContextInterceptor;
 
+#[cfg(feature = "opentelemetry")]
 impl Interceptor for TraceContextInterceptor {
-    fn call(&mut self, mut request: Request<()>) -> std::result::Result<Request<()>, Status> {
+    fn call(&mut self, request: Request<()>) -> std::result::Result<Request<()>, Status> {
+        let mut request = request;
         let context = Span::current().context();
         global::get_text_map_propagator(|propagator| {
             propagator.inject_context(&context, &mut MetadataInjector(request.metadata_mut()));
@@ -65,8 +81,11 @@ impl Interceptor for TraceContextInterceptor {
     }
 }
 
+#[cfg(feature = "opentelemetry")]
 pub(crate) type CallbackClient =
     LivestreamCallbackClient<InterceptedService<Channel, TraceContextInterceptor>>;
+#[cfg(not(feature = "opentelemetry"))]
+pub(crate) type CallbackClient = LivestreamCallbackClient<Channel>;
 
 pub struct GrpcClientFactory {
     url: String,
@@ -83,8 +102,11 @@ impl GrpcClientFactory {
         }
 
         let channel = Channel::from_shared(self.url.clone())?.connect().await?;
+        #[cfg(feature = "opentelemetry")]
         let client =
             LivestreamCallbackClient::with_interceptor(channel, TraceContextInterceptor::default());
+        #[cfg(not(feature = "opentelemetry"))]
+        let client = LivestreamCallbackClient::new(channel);
 
         Ok(Some(client))
     }
@@ -165,12 +187,15 @@ impl GrpcServerFactory {
     }
 
     fn server_trace_interceptor(request: Request<()>) -> Result<Request<()>, Status> {
-        let parent_cx = global::get_text_map_propagator(|prop| {
-            prop.extract(&MetadataExtractor(request.metadata()))
-        });
+        #[cfg(feature = "opentelemetry")]
+        {
+            let parent_cx = global::get_text_map_propagator(|prop| {
+                prop.extract(&MetadataExtractor(request.metadata()))
+            });
 
-        // Set parent context for the trace, linking it with incoming grpc calls
-        let _ = Span::current().set_parent(parent_cx);
+            // Set parent context for the trace, linking it with incoming grpc calls
+            let _ = Span::current().set_parent(parent_cx);
+        }
 
         Ok(request)
     }

@@ -13,6 +13,10 @@ use opentelemetry_sdk::{
 
 const OTEL_SERVICE_NAME: &str = "OTEL_SERVICE_NAME";
 
+pub fn otlp_enabled() -> bool {
+    std::env::vars_os().any(|(key, _)| key.to_string_lossy().starts_with("OTEL_"))
+}
+
 pub fn resource() -> Resource {
     static RESOURCE: OnceLock<Resource> = OnceLock::new();
 
@@ -54,10 +58,7 @@ fn init_tracer() -> Result<SdkTracerProvider> {
 }
 
 fn init_metrics() -> Result<SdkMeterProvider> {
-    let exporter = MetricExporter::builder()
-        .with_tonic()
-        .build()
-        .expect("Failed to create metric exporter");
+    let exporter = MetricExporter::builder().with_tonic().build()?;
 
     let provider = SdkMeterProvider::builder()
         .with_periodic_exporter(exporter)
@@ -68,6 +69,10 @@ fn init_metrics() -> Result<SdkMeterProvider> {
 }
 
 pub fn init_otlp() -> Result<(SdkLoggerProvider, SdkTracerProvider, SdkMeterProvider)> {
+    if !otlp_enabled() {
+        anyhow::bail!("OpenTelemetry disabled: no OTEL_* environment variables found")
+    }
+
     let logger_provider = init_logs()?;
     let tracer_provider = init_tracer()?;
     let meter_provider = init_metrics()?;

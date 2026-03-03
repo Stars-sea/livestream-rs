@@ -1,14 +1,19 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use opentelemetry::global;
-use opentelemetry::trace::TracerProvider;
-use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info};
-use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{EnvFilter, Layer, fmt};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+#[cfg(feature = "opentelemetry")]
+use opentelemetry::global;
+#[cfg(feature = "opentelemetry")]
+use opentelemetry::trace::TracerProvider;
+#[cfg(feature = "opentelemetry")]
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+#[cfg(feature = "opentelemetry")]
+use tracing_opentelemetry::OpenTelemetryLayer;
 
 use crate::ingest::{GrpcServerFactory, LivestreamService, StreamManager};
 use crate::publish::RtmpServer;
@@ -22,29 +27,53 @@ mod settings;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (logger_provider, tracer_provider, meter_provider) = otlp::init_otlp()?;
-    let tracer = tracer_provider.tracer("livestream-rs");
+    #[cfg(feature = "opentelemetry")]
+    let mut providers = None;
 
-    let otel_layer = OpenTelemetryTracingBridge::new(&logger_provider)
-        .with_filter(EnvFilter::from_default_env());
+    #[cfg(feature = "opentelemetry")]
+    if otlp::otlp_enabled() {
+        let (logger_provider, tracer_provider, meter_provider) = otlp::init_otlp()?;
+        let tracer = tracer_provider.tracer("livestream-rs");
 
-    let otel_trace_layer =
-        OpenTelemetryLayer::new(tracer).with_filter(EnvFilter::from_default_env());
+        let fmt_layer = fmt::layer()
+            .compact()
+            .with_target(false)
+            .with_filter(EnvFilter::from_default_env());
 
-    let fmt_layer = fmt::layer()
-        .compact()
-        .with_target(false)
-        .with_filter(EnvFilter::from_default_env());
+        let otel_layer = OpenTelemetryTracingBridge::new(&logger_provider)
+            .with_filter(EnvFilter::from_default_env());
 
-    tracing_subscriber::registry()
-        .with(otel_layer)
-        .with(otel_trace_layer)
-        .with(fmt_layer)
-        .init();
+        let otel_trace_layer =
+            OpenTelemetryLayer::new(tracer).with_filter(EnvFilter::from_default_env());
 
-    global::set_tracer_provider(tracer_provider.clone());
+        tracing_subscriber::registry()
+            .with(otel_layer)
+            .with(otel_trace_layer)
+            .with(fmt_layer)
+            .init();
 
-    global::set_meter_provider(meter_provider.clone());
+        global::set_tracer_provider(tracer_provider.clone());
+        global::set_meter_provider(meter_provider.clone());
+
+        providers = Some((logger_provider, tracer_provider, meter_provider));
+    } else {
+        let fmt_layer = fmt::layer()
+            .compact()
+            .with_target(false)
+            .with_filter(EnvFilter::from_default_env());
+
+        tracing_subscriber::registry().with(fmt_layer).init();
+    }
+
+    #[cfg(not(feature = "opentelemetry"))]
+    {
+        let fmt_layer = fmt::layer()
+            .compact()
+            .with_target(false)
+            .with_filter(EnvFilter::from_default_env());
+
+        tracing_subscriber::registry().with(fmt_layer).init();
+    }
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -84,9 +113,12 @@ async fn main() -> Result<()> {
     // Signal other components to shutdown
     let _ = shutdown_tx.send(());
 
-    let _ = logger_provider.shutdown();
-    let _ = tracer_provider.shutdown();
-    let _ = meter_provider.shutdown();
+    #[cfg(feature = "opentelemetry")]
+    if let Some((logger_provider, tracer_provider, meter_provider)) = providers {
+        let _ = logger_provider.shutdown();
+        let _ = tracer_provider.shutdown();
+        let _ = meter_provider.shutdown();
+    }
 
     Ok(())
 }
