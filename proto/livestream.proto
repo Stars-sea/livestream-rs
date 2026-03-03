@@ -4,13 +4,18 @@ option csharp_namespace = "LiveService.Protos";
 
 package livestream;
 
+// Livestream control plane for creating/stopping/querying stream sessions.
 service Livestream {
+  // Start a pull-stream session and return structured endpoint info.
   rpc StartPullStream (StartPullStreamRequest) returns (StreamInfoResponse);
 
+  // Stop an active pull-stream session by live_id.
   rpc StopPullStream (StopPullStreamRequest) returns (StopPullStreamResponse);
 
+  // List all active live_ids currently managed by the service.
   rpc ListActiveStreams (ListActiveStreamsRequest) returns (ListActiveStreamsResponse);
 
+  // Query endpoint info for an existing live_id.
   rpc GetStreamInfo (GetStreamInfoRequest) returns (StreamInfoResponse);
 }
 
@@ -19,18 +24,50 @@ enum InputProtocol {
   INPUT_PROTOCOL_RTMP = 1;
 }
 
+// Request to start stream pulling.
 message StartPullStreamRequest {
+  // Business stream identifier.
   string live_id = 1;
-  string passphrase = 2;
+  // Optional for RTMP, required for SRT according to server-side validation.
+  optional string passphrase = 2;
+  // Ingest protocol expected by this stream.
   InputProtocol input_protocol = 3;
 }
 
+// Structured endpoint info for gateway-side URL composition.
+//
+// Example (SRT):
+// {
+//   "live_id": "live_1001",
+//   "host": "ingest.example.com",
+//   "port": 4001,
+//   "passphrase": "abc123def456",
+//   "input_protocol": "INPUT_PROTOCOL_SRT"
+// }
+//
+// Example (RTMP):
+// {
+//   "live_id": "live_1001",
+//   "host": "ingest.example.com",
+//   "port": 1936,
+//   "rtmp_appname": "lives",
+//   "input_protocol": "INPUT_PROTOCOL_RTMP"
+// }
 message StreamInfoResponse {
+  // Business stream identifier.
   string live_id = 1;
+  // Host reported by ingest service for selected input protocol.
   string host = 2;
-  uint32 srt_port = 3;
-  string rtmp_url = 4;
-  string passphrase = 5;
+  // Port reported by ingest service for selected input protocol.
+  uint32 port = 3;
+  
+  // RTMP app name (path segment), present only when input_protocol is RTMP.
+  optional string rtmp_appname = 4;
+  // SRT passphrase, present only when input_protocol is SRT.
+  optional string passphrase = 5;
+
+  // Protocol used for this stream endpoint.
+  InputProtocol input_protocol = 6;
 }
 
 message StopPullStreamRequest {

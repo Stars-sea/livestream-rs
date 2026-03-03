@@ -1,6 +1,6 @@
 //! Live stream service managing SRT stream pulling and processing.
 
-use crate::otlp::metrics;
+use crate::{ingest::stream_info::StreamInputOptions, otlp::metrics};
 
 use super::grpc::livestream_server::Livestream;
 use super::grpc::*;
@@ -14,8 +14,6 @@ use regex::Regex;
 use std::sync::OnceLock;
 use tonic::{Request, Response, Status};
 use tracing::instrument;
-
-use crate::settings::load_settings;
 
 pub use super::grpc::livestream_server::LivestreamServer;
 
@@ -42,7 +40,8 @@ impl Livestream for LivestreamService {
     ) -> Result<Response<StreamInfoResponse>, Status> {
         let mut grpc_guard = metrics::get_metrics().grpc_call("start_pull_stream");
         let request = request.into_inner();
-        let protocol = InputProtocol::try_from(request.input_protocol).unwrap_or(InputProtocol::Srt);
+        let protocol =
+            InputProtocol::try_from(request.input_protocol).unwrap_or(InputProtocol::Srt);
 
         // Validate input
         if request.live_id.is_empty() {
@@ -50,21 +49,22 @@ impl Livestream for LivestreamService {
         }
         let stream_info = match protocol {
             InputProtocol::Srt => {
-                if request.passphrase.is_empty() {
+                if request.passphrase.as_ref().is_none_or(|p| p.is_empty()) {
                     return Err(Status::invalid_argument("passphrase cannot be empty"));
                 }
 
+                let passphrase = request.passphrase.as_ref().unwrap();
                 let re = PASSPHRASE_REGEX.get_or_init(|| {
                     Regex::new(r"^[a-zA-Z0-9]{10,79}$").expect("invalid regex pattern")
                 });
 
-                re.is_match(&request.passphrase).then_some(()).ok_or_else(|| {
+                re.is_match(passphrase).then_some(()).ok_or_else(|| {
                     Status::invalid_argument("passphrase must be 10-79 alphanumeric characters")
                 })?;
 
                 match self
                     .manager
-                    .make_srt_stream_info(&request.live_id, &request.passphrase)
+                    .make_srt_stream_info(&request.live_id, passphrase)
                     .await
                 {
                     Ok(info) => info,
@@ -155,32 +155,23 @@ impl Livestream for LivestreamService {
 
 impl Into<StreamInfoResponse> for Arc<StreamInfo> {
     fn into(self) -> StreamInfoResponse {
-        let settings = load_settings();
-
-        let (host, srt_port, passphrase) = if let Some(options) = self.srt_options() {
-            (
-                options.host().to_string(),
-                options.port() as u32,
-                options.passphrase().to_string(),
-            )
-        } else {
-            ("".to_string(), 0, "".to_string())
-        };
-
-        let rtmp_url = format!(
-            "rtmp://{}:{}/{}/{}",
-            settings.ingest.host.as_str(),
-            settings.publish.port,
-            settings.publish.appname.as_str(),
-            self.live_id()
-        );
-
-        StreamInfoResponse {
-            live_id: self.live_id().to_string(),
-            host,
-            srt_port,
-            rtmp_url,
-            passphrase,
+        match self.input_options() {
+            StreamInputOptions::Srt(options) => StreamInfoResponse {
+                live_id: self.live_id().to_string(),
+                host: options.host().to_string(),
+                port: options.port() as u32,
+                rtmp_appname: None,
+                passphrase: Some(options.passphrase().to_string()),
+                input_protocol: InputProtocol::Srt as i32,
+            },
+            StreamInputOptions::Rtmp(options) => StreamInfoResponse {
+                live_id: self.live_id().to_string(),
+                host: options.host().to_string(),
+                port: options.port() as u32,
+                rtmp_appname: Some(options.appname().to_string()),
+                passphrase: None,
+                input_protocol: InputProtocol::Rtmp as i32,
+            },
         }
     }
 }
