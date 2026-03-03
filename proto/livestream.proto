@@ -41,6 +41,8 @@ message StartPullStreamRequest {
 //   "live_id": "live_1001",
 //   "host": "ingest.example.com",
 //   "port": 4001,
+//   "pull_port": 1935,
+//   "rtmp_appname": "lives",
 //   "passphrase": "abc123def456",
 //   "input_protocol": "INPUT_PROTOCOL_SRT"
 // }
@@ -50,6 +52,7 @@ message StartPullStreamRequest {
 //   "live_id": "live_1001",
 //   "host": "ingest.example.com",
 //   "port": 1936,
+//   "pull_port": 1935,
 //   "rtmp_appname": "lives",
 //   "input_protocol": "INPUT_PROTOCOL_RTMP"
 // }
@@ -61,13 +64,16 @@ message StreamInfoResponse {
   // Port reported by ingest service for selected input protocol.
   uint32 port = 3;
   
-  // RTMP app name (path segment), present only when input_protocol is RTMP.
-  optional string rtmp_appname = 4;
+  // RTMP pulling port (for publish)
+  uint32 pull_port = 4;
+  // RTMP app name (for ingest & publish)
+  string rtmp_appname = 5;
+
   // SRT passphrase, present only when input_protocol is SRT.
-  optional string passphrase = 5;
+  optional string passphrase = 6;
 
   // Protocol used for this stream endpoint.
-  InputProtocol input_protocol = 6;
+  InputProtocol input_protocol = 7;
 }
 
 message StopPullStreamRequest {

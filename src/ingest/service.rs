@@ -1,6 +1,6 @@
 //! Live stream service managing SRT stream pulling and processing.
 
-use crate::{ingest::stream_info::StreamInputOptions, otlp::metrics};
+use crate::{ingest::stream_info::StreamInputOptions, otlp::metrics, settings::load_settings};
 
 use super::grpc::livestream_server::Livestream;
 use super::grpc::*;
@@ -155,12 +155,15 @@ impl Livestream for LivestreamService {
 
 impl Into<StreamInfoResponse> for Arc<StreamInfo> {
     fn into(self) -> StreamInfoResponse {
+        let settings = load_settings();
+
         match self.input_options() {
             StreamInputOptions::Srt(options) => StreamInfoResponse {
                 live_id: self.live_id().to_string(),
                 host: options.host().to_string(),
                 port: options.port() as u32,
-                rtmp_appname: None,
+                pull_port: settings.publish.port as u32,
+                rtmp_appname: settings.publish.appname.clone(),
                 passphrase: Some(options.passphrase().to_string()),
                 input_protocol: InputProtocol::Srt as i32,
             },
@@ -168,7 +171,8 @@ impl Into<StreamInfoResponse> for Arc<StreamInfo> {
                 live_id: self.live_id().to_string(),
                 host: options.host().to_string(),
                 port: options.port() as u32,
-                rtmp_appname: Some(options.appname().to_string()),
+                pull_port: settings.publish.port as u32,
+                rtmp_appname: settings.publish.appname.clone(),
                 passphrase: None,
                 input_protocol: InputProtocol::Rtmp as i32,
             },
