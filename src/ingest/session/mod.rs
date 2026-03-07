@@ -8,6 +8,9 @@ use crate::ingest::session::lifecycle::WorkerLifecycle;
 use crate::ingest::stream_info::StreamInfo;
 use crate::media::output::FlvPacket;
 
+/// Holds the essential shared state, communication channels, and configuration parameters
+/// for a running stream adapter instance. Serves as the primary mechanism for adapters
+/// to emit events, push finalized media packets, and check cancellation status.
 pub struct WorkerContext {
     pub live_id: String,
     pub stop_signal: Arc<std::sync::atomic::AtomicBool>,
@@ -41,6 +44,9 @@ pub trait StreamAdapter: Send + Sync {
     async fn run(&mut self, ctx: &mut WorkerContext) -> anyhow::Result<()>;
 }
 
+/// A wrapper around a concrete `StreamAdapter` implementation and its corresponding context.
+/// Ensures standard lifecycle notification constraints (start/stop/error bounds) are handled
+/// uniformly regardless of the underlying stream protocol (RTMP/SRT).
 pub struct IngestSession<T: StreamAdapter> {
     pub ctx: WorkerContext,
     pub adapter: T,

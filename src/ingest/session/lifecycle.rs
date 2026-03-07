@@ -5,6 +5,7 @@ use crate::media::output::FlvPacket;
 
 use crate::ingest::events::StreamMessage;
 
+/// Tracks the internal execution state machine of a worker managing an ingest stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WorkerState {
     Created,
@@ -13,6 +14,9 @@ pub(super) enum WorkerState {
     Stopped,
 }
 
+/// Encapsulates the tracking and dispatching logic for stream life-cycle events.
+/// Ensures that transitions like start, stop, or End of Stream (EOS) are emitted exactly once
+/// per worker session, eliminating duplicated event triggering.
 #[derive(Debug)]
 pub struct WorkerLifecycle {
     live_id: String,

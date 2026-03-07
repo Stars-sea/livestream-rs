@@ -24,13 +24,19 @@ use crate::ingest::session;
 use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
 
+/// Context for an active stream, holding its configuration, life-cycle controls,
+/// and protocol-specific communication channels.
 #[derive(Debug)]
 pub struct StreamContext {
+    /// Information and configuration (e.g., live ID, ports) of the current stream.
     pub info: Arc<StreamInfo>,
+    /// Signal used to indicate that the stream should be stopped.
     pub stop_signal: Arc<AtomicBool>,
+    /// Optional transmitter for routing RTMP media tags, if the stream uses the RTMP protocol.
     pub rtmp_tx: Option<mpsc::UnboundedSender<RtmpTag>>,
 }
 
+/// Internal commands sent to the `ManagerActor` to control and manage the lifecycle of media streams.
 enum ManagerCommand {
     MakeSrtStreamInfo {
         live_id: String,
@@ -80,6 +86,9 @@ enum ManagerCommand {
     },
 }
 
+/// A cloneable handle to interact with the backend `ManagerActor`.
+/// This struct acts as a client interface, translating async method calls into `ManagerCommand`s
+/// that are processed sequentially by the dedicated actor.
 #[derive(Clone, Debug)]
 pub struct StreamManager {
     cmd_tx: mpsc::Sender<ManagerCommand>,
@@ -275,6 +284,9 @@ impl StreamRegistry for StreamManager {
     }
 }
 
+/// The stateful actor responsible for keeping track of active streams and executing commands.
+/// By running in its own asynchronous loop, it ensures all stream management tasks 
+/// are processed sequentially, eliminating the need for shared state locks (like DashMap).
 struct ManagerActor {
     rx: mpsc::Receiver<ManagerCommand>,
     stream_contexts: HashMap<String, StreamContext>,

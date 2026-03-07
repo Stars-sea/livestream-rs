@@ -1,30 +1,39 @@
 use std::{fmt::Display, path::PathBuf};
 
+/// Represents significant lifecycle and operational events originating from active streams.
+/// Handlers process these events to trigger side-effects like callbacks, cache updates, 
+/// and telemetry observations.
 #[derive(Clone, Debug)]
 pub enum StreamMessage {
+    /// A media segment (e.g., an HLS chunk) has finished writing to disk.
     SegmentComplete {
         live_id: String,
         // segment_id: String,
         path: PathBuf,
     },
 
+    /// The background worker thread managing stream ingest has begun processing.
     IngestWorkerStarted {
         live_id: String,
     },
 
+    /// The background worker thread managing stream ingest has cleanly terminated.
     IngestWorkerStopped {
         live_id: String,
     },
 
+    /// Media data is actively flowing for the given stream.
     StreamStarted {
         live_id: String,
     },
 
+    /// The media flow has ceased, either cleanly or due to an error.
     StreamStopped {
         live_id: String,
         error: Option<String>,
     },
 
+    /// The stream encountered an error and is attempting to reconnect / restart.
     StreamRestarting {
         live_id: String,
         error: String,

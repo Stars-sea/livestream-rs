@@ -8,6 +8,8 @@ use crate::ingest::session::{StreamAdapter, WorkerContext};
 use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
 
+/// Represents different types of FLV/RTMP tags parsed from the incoming stream.
+/// These tags encapsulate media payload and timestamp data for multiplexing.
 pub enum RtmpTag {
     Audio {
         tag: bytes::Bytes,
@@ -25,6 +27,9 @@ pub enum RtmpTag {
     PublishFinished,
 }
 
+/// The RTMP adapter implementation of `StreamAdapter`.
+/// Responsible for receiving `RtmpTag` inputs and converting them into stream events 
+/// to be broadcast over the shared worker context.
 pub struct RtmpAdapter {
     rx: mpsc::UnboundedReceiver<RtmpTag>,
 }
@@ -190,6 +195,8 @@ pub fn make_rtmp_tag(tag_type: u8, timestamp: u32, payload: &[u8]) -> bytes::Byt
     bytes::Bytes::from(out)
 }
 
+/// Coordinates multiplexing of continuous stream data into discrete chunks or packets.
+/// Utilizes a `FlvSegmenter` under the hood to break the stream into manageable segments.
 struct StreamMuxer {
     segmenter: FlvSegmenter,
 }
@@ -202,6 +209,8 @@ impl StreamMuxer {
     }
 }
 
+/// Breaks down an ongoing FLV stream into sequential segments based on a set duration.
+/// Caches the segment bytes temporarily until they are finalized and flushed.
 struct FlvSegmenter {
     cache_dir: PathBuf,
     segment_duration_ms: u32,

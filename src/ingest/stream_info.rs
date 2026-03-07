@@ -6,12 +6,18 @@ use tempfile::TempDir;
 use crate::config::load_config;
 use crate::media::options::{RtmpInputStreamOptions, SrtInputStreamOptions};
 
+/// Provides the connection and configuration details specific to the protocol
+/// selected for media ingest.
 #[derive(Debug)]
 pub enum StreamInputOptions {
+    /// Settings to establish and read from an SRT connection.
     Srt(SrtInputStreamOptions),
+    /// Settings bound to an RTMP media stream.
     Rtmp(RtmpInputStreamOptions),
 }
 
+/// Contains identifying information, configuration, and transient disk states 
+/// utilized during a media stream's reception and processing phase.
 #[derive(Debug)]
 pub struct StreamInfo {
     live_id: String,

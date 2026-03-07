@@ -18,6 +18,9 @@ use retry::delay::{Exponential, jitter};
 use tokio::sync::mpsc;
 use tracing::{Span, debug, error, info, instrument, warn};
 
+/// The SRT adapter implementation of `StreamAdapter`.
+/// Responsible for interfacing with SRT-based streams, wrapping the blocking
+/// media decoding operations executed by a background thread.
 #[derive(Debug, Default)]
 pub struct SrtAdapter {}
 
@@ -27,11 +30,16 @@ impl SrtAdapter {
     }
 }
 
+/// Represents the possible outcomes from attempting to read a packet from the media stream.
 enum ReadResult {
+    /// Packet read was successful and processing can continue.
     Ok,
+    /// Reached the End of File (or end of stream), signifying transmission has finished.
     Eof,
 }
 
+/// A dedicated worker executing synchronous or blocking I/O tasks.
+/// Extracts media packets from an input context and writes them to appropriate output containers (FLV/HLS).
 struct BlockingWorker {
     stream_info: Arc<StreamInfo>,
     stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
