@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::error::Elapsed;
 use tokio::time::timeout;
 use tracing::{Span, instrument};
 
@@ -19,13 +20,14 @@ use super::stream_info::StreamInfo;
 use crate::api::grpc::contracts::StreamRegistry;
 use crate::infra::GrpcClientFactory;
 use crate::infra::MinioClient;
+use crate::ingest::session;
 use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
 
 #[derive(Debug)]
 pub struct StreamContext {
     pub info: Arc<StreamInfo>,
-    pub stop_signal: Arc<std::sync::atomic::AtomicBool>,
+    pub stop_signal: Arc<AtomicBool>,
     pub rtmp_tx: Option<mpsc::UnboundedSender<RtmpTag>>,
 }
 
@@ -309,211 +311,249 @@ impl ManagerActor {
 
     async fn run(mut self) {
         while let Some(cmd) = self.rx.recv().await {
-            match cmd {
-                ManagerCommand::MakeSrtStreamInfo {
-                    live_id,
-                    passphrase,
-                    reply,
-                } => {
-                    let port_opt = self.port_allocator.allocate_safe_port().await;
-                    if let Some(port) = port_opt {
-                        let info = StreamInfo::new_srt(live_id.clone(), port, passphrase);
-                        match info {
-                            Ok(info) => {
-                                let info = Arc::new(info);
-                                let ctx = StreamContext {
-                                    info: info.clone(),
-                                    stop_signal: Arc::new(std::sync::atomic::AtomicBool::new(
-                                        false,
-                                    )),
-                                    rtmp_tx: None,
-                                };
-                                self.stream_contexts.insert(live_id, ctx);
-                                let _ = reply.send(Ok(info));
-                            }
-                            Err(e) => {
-                                self.port_allocator.release_port(port).await;
-                                let _ = reply.send(Err(anyhow::anyhow!(
-                                    "Failed to create stream info: {}",
-                                    e
-                                )));
-                            }
-                        }
-                    } else {
-                        let _ = reply.send(Err(anyhow::anyhow!(
-                            "No available ports to allocate for SRT stream"
-                        )));
-                    }
-                }
-                ManagerCommand::MakeRtmpStreamInfo { live_id, reply } => {
-                    match StreamInfo::new_rtmp(live_id.clone()) {
-                        Ok(info) => {
-                            let info = Arc::new(info);
-                            let ctx = StreamContext {
-                                info: info.clone(),
-                                stop_signal: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                                rtmp_tx: None,
-                            };
-                            self.stream_contexts.insert(live_id, ctx);
-                            let _ = reply.send(Ok(info));
-                        }
-                        Err(e) => {
-                            let _ = reply
-                                .send(Err(anyhow::anyhow!("Failed to create stream info: {}", e)));
-                        }
-                    }
-                }
-                ManagerCommand::StartSrtStream { info, reply } => {
-                    let live_id = info.live_id().to_string();
-                    if info.srt_options().is_none() {
-                        let _ = reply.send(Err(anyhow::anyhow!("RTMP ingest stream '{}' is handled by server RTMP worker, not FFmpeg SRT worker", live_id)));
-                        continue;
-                    }
+            self.handle_command(cmd).await;
+        }
+    }
 
-                    let stop_signal = self
-                        .stream_contexts
-                        .get(&live_id)
-                        .map(|ctx| ctx.stop_signal.clone())
-                        .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
-
-                    let ctx = crate::ingest::session::WorkerContext::new(
-                        info.clone(),
-                        stop_signal,
-                        self.stream_msg_tx.clone(),
-                        self.flv_packet_tx.clone(),
-                    );
-                    let adapter = SrtAdapter::new();
-                    let session = crate::ingest::session::IngestSession::new(ctx, adapter);
-
-                    let self_cmd_tx = self.self_cmd_tx.clone();
-                    let cloned_info = info.clone();
-                    let parent_span = Span::current();
-
-                    tokio::spawn(async move {
-                        let _entered = parent_span.enter();
-                        let _stream_guard = metrics::MetricGuard::new(
-                            &metrics::get_metrics().ingest_streams,
-                            vec![],
-                        );
-
-                        session.start().await;
-
-                        timeout(Duration::from_secs(3), async {
-                            while !cloned_info.is_cache_empty().unwrap_or(true) {
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                            }
-                        })
-                        .await
-                        .ok();
-
-                        let _ = self_cmd_tx
-                            .send(ManagerCommand::RemoveStream {
-                                live_id: cloned_info.live_id().to_string(),
-                                reply: oneshot::channel().0,
-                            })
-                            .await;
-                    });
-
-                    let _ = reply.send(Ok(()));
-                }
-                ManagerCommand::StartRtmpStream { info, reply } => {
-                    let live_id = info.live_id().to_string();
-                    let stop_signal = self
-                        .stream_contexts
-                        .get(&live_id)
-                        .map(|ctx| ctx.stop_signal.clone())
-                        .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
-
-                    let (rtmp_tx, rtmp_rx) = mpsc::unbounded_channel();
-                    if let Some(ctx) = self.stream_contexts.get_mut(&live_id) {
-                        ctx.rtmp_tx = Some(rtmp_tx);
-                    }
-
-                    let ctx = crate::ingest::session::WorkerContext::new(
-                        info.clone(),
-                        stop_signal,
-                        self.stream_msg_tx.clone(),
-                        self.flv_packet_tx.clone(),
-                    );
-                    let adapter = RtmpAdapter::new(rtmp_rx);
-                    let session = crate::ingest::session::IngestSession::new(ctx, adapter);
-
-                    let self_cmd_tx = self.self_cmd_tx.clone();
-                    let cloned_info = info.clone();
-
-                    tokio::spawn(async move {
-                        let _stream_guard = metrics::MetricGuard::new(
-                            &metrics::get_metrics().ingest_streams,
-                            vec![],
-                        );
-
-                        session.start().await;
-
-                        timeout(Duration::from_secs(3), async {
-                            while !cloned_info.is_cache_empty().unwrap_or(true) {
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                            }
-                        })
-                        .await
-                        .ok();
-
-                        let _ = self_cmd_tx
-                            .send(ManagerCommand::RemoveStream {
-                                live_id: cloned_info.live_id().to_string(),
-                                reply: oneshot::channel().0,
-                            })
-                            .await;
-                    });
-
-                    let _ = reply.send(Ok(()));
-                }
-                ManagerCommand::StopStream { live_id, reply } => {
-                    if let Some(ctx) = self.stream_contexts.get(&live_id) {
-                        ctx.stop_signal.store(true, Ordering::SeqCst);
-                    }
-                    self.handle_remove_stream(&live_id).await;
-                    let _ = self.flv_packet_tx.send(FlvPacket::EndOfStream {
-                        live_id: live_id.clone(),
-                    });
-                    let _ = reply.send(Ok(()));
-                }
-                ManagerCommand::RemoveStream { live_id, reply } => {
-                    self.handle_remove_stream(&live_id).await;
-                    let _ = reply.send(());
-                }
-                ManagerCommand::Shutdown { reply } => {
-                    for ctx in self.stream_contexts.values() {
-                        ctx.stop_signal.store(true, Ordering::SeqCst);
-                    }
-                    let keys: Vec<String> = self.stream_contexts.keys().cloned().collect();
-                    for key in keys {
-                        self.handle_remove_stream(&key).await;
-                    }
-                    let _ = reply.send(());
-                }
-                ManagerCommand::ListActiveStreams { reply } => {
-                    let keys = self.stream_contexts.keys().cloned().collect();
-                    let _ = reply.send(Ok(keys));
-                }
-                ManagerCommand::IsStreamsEmpty { reply } => {
-                    let _ = reply.send(self.stream_contexts.is_empty());
-                }
-                ManagerCommand::HasStream { live_id, reply } => {
-                    let _ = reply.send(self.stream_contexts.contains_key(&live_id));
-                }
-                ManagerCommand::GetStreamInfo { live_id, reply } => {
-                    let info = self.stream_contexts.get(&live_id).map(|c| c.info.clone());
-                    let _ = reply.send(info);
-                }
-                ManagerCommand::GetRtmpTx { live_id, reply } => {
-                    let tx = self
-                        .stream_contexts
-                        .get(&live_id)
-                        .and_then(|c| c.rtmp_tx.clone());
-                    let _ = reply.send(tx);
-                }
+    async fn handle_command(&mut self, cmd: ManagerCommand) {
+        match cmd {
+            ManagerCommand::MakeSrtStreamInfo {
+                live_id,
+                passphrase,
+                reply,
+            } => {
+                self.handle_make_srt_stream_info(live_id, passphrase, reply)
+                    .await;
+            }
+            ManagerCommand::MakeRtmpStreamInfo { live_id, reply } => {
+                self.handle_make_rtmp_stream_info(live_id, reply);
+            }
+            ManagerCommand::StartSrtStream { info, reply } => {
+                self.handle_start_srt_stream(info, reply);
+            }
+            ManagerCommand::StartRtmpStream { info, reply } => {
+                self.handle_start_rtmp_stream(info, reply);
+            }
+            ManagerCommand::StopStream { live_id, reply } => {
+                self.handle_stop_stream(live_id, reply).await;
+            }
+            ManagerCommand::RemoveStream { live_id, reply } => {
+                self.handle_remove_stream(&live_id).await;
+                let _ = reply.send(());
+            }
+            ManagerCommand::Shutdown { reply } => {
+                self.handle_shutdown(reply).await;
+            }
+            ManagerCommand::ListActiveStreams { reply } => {
+                let keys = self.stream_contexts.keys().cloned().collect();
+                let _ = reply.send(Ok(keys));
+            }
+            ManagerCommand::IsStreamsEmpty { reply } => {
+                let _ = reply.send(self.stream_contexts.is_empty());
+            }
+            ManagerCommand::HasStream { live_id, reply } => {
+                let _ = reply.send(self.stream_contexts.contains_key(&live_id));
+            }
+            ManagerCommand::GetStreamInfo { live_id, reply } => {
+                let info = self.stream_contexts.get(&live_id).map(|c| c.info.clone());
+                let _ = reply.send(info);
+            }
+            ManagerCommand::GetRtmpTx { live_id, reply } => {
+                let tx = self
+                    .stream_contexts
+                    .get(&live_id)
+                    .and_then(|c| c.rtmp_tx.clone());
+                let _ = reply.send(tx);
             }
         }
+    }
+
+    async fn handle_make_srt_stream_info(
+        &mut self,
+        live_id: String,
+        passphrase: String,
+        reply: oneshot::Sender<Result<Arc<StreamInfo>>>,
+    ) {
+        if let Some(port) = self.port_allocator.allocate_safe_port().await {
+            match StreamInfo::new_srt(live_id.clone(), port, passphrase) {
+                Ok(info) => {
+                    let info = Arc::new(info);
+                    let ctx = StreamContext {
+                        info: info.clone(),
+                        stop_signal: Arc::new(AtomicBool::new(false)),
+                        rtmp_tx: None,
+                    };
+                    self.stream_contexts.insert(live_id, ctx);
+                    let _ = reply.send(Ok(info));
+                }
+                Err(e) => {
+                    self.port_allocator.release_port(port).await;
+                    let _ = reply.send(Err(anyhow::anyhow!("Failed to create stream info: {}", e)));
+                }
+            }
+        } else {
+            let _ = reply.send(Err(anyhow::anyhow!(
+                "No available ports to allocate for SRT stream"
+            )));
+        }
+    }
+
+    fn handle_make_rtmp_stream_info(
+        &mut self,
+        live_id: String,
+        reply: oneshot::Sender<Result<Arc<StreamInfo>>>,
+    ) {
+        match StreamInfo::new_rtmp(live_id.clone()) {
+            Ok(info) => {
+                let info = Arc::new(info);
+                let ctx = StreamContext {
+                    info: info.clone(),
+                    stop_signal: Arc::new(AtomicBool::new(false)),
+                    rtmp_tx: None,
+                };
+                self.stream_contexts.insert(live_id, ctx);
+                let _ = reply.send(Ok(info));
+            }
+            Err(e) => {
+                let _ = reply.send(Err(anyhow::anyhow!("Failed to create stream info: {}", e)));
+            }
+        }
+    }
+
+    fn handle_start_srt_stream(
+        &mut self,
+        info: Arc<StreamInfo>,
+        reply: oneshot::Sender<Result<()>>,
+    ) {
+        let live_id = info.live_id().to_string();
+        if info.srt_options().is_none() {
+            let _ = reply.send(Err(anyhow::anyhow!(
+                "RTMP ingest stream '{}' is handled by server RTMP worker, not FFmpeg SRT worker",
+                live_id
+            )));
+            return;
+        }
+
+        let stop_signal = self
+            .stream_contexts
+            .get(&live_id)
+            .map(|ctx| ctx.stop_signal.clone())
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+
+        let ctx = session::WorkerContext::new(
+            info.clone(),
+            stop_signal,
+            self.stream_msg_tx.clone(),
+            self.flv_packet_tx.clone(),
+        );
+        let adapter = SrtAdapter::new();
+        let session = session::IngestSession::new(ctx, adapter);
+
+        let self_cmd_tx = self.self_cmd_tx.clone();
+        let cloned_info = info.clone();
+        let parent_span = Span::current();
+
+        tokio::spawn(async move {
+            let _entered = parent_span.enter();
+            let _stream_guard =
+                metrics::MetricGuard::new(&metrics::get_metrics().ingest_streams, vec![]);
+
+            session.start().await;
+
+            Self::wait_for_cache_dir_empty(&cloned_info).await.ok();
+
+            let _ = self_cmd_tx
+                .send(ManagerCommand::RemoveStream {
+                    live_id: cloned_info.live_id().to_string(),
+                    reply: oneshot::channel().0,
+                })
+                .await;
+        });
+
+        let _ = reply.send(Ok(()));
+    }
+
+    fn handle_start_rtmp_stream(
+        &mut self,
+        info: Arc<StreamInfo>,
+        reply: oneshot::Sender<Result<()>>,
+    ) {
+        let live_id = info.live_id().to_string();
+        let stop_signal = self
+            .stream_contexts
+            .get(&live_id)
+            .map(|ctx| ctx.stop_signal.clone())
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+
+        let (rtmp_tx, rtmp_rx) = mpsc::unbounded_channel();
+        if let Some(ctx) = self.stream_contexts.get_mut(&live_id) {
+            ctx.rtmp_tx = Some(rtmp_tx);
+        }
+
+        let ctx = session::WorkerContext::new(
+            info.clone(),
+            stop_signal,
+            self.stream_msg_tx.clone(),
+            self.flv_packet_tx.clone(),
+        );
+        let adapter = RtmpAdapter::new(rtmp_rx);
+        let session = session::IngestSession::new(ctx, adapter);
+
+        let self_cmd_tx = self.self_cmd_tx.clone();
+        let cloned_info = info.clone();
+
+        tokio::spawn(async move {
+            let _stream_guard =
+                metrics::MetricGuard::new(&metrics::get_metrics().ingest_streams, vec![]);
+
+            session.start().await;
+
+            Self::wait_for_cache_dir_empty(&cloned_info).await.ok();
+
+            let _ = self_cmd_tx
+                .send(ManagerCommand::RemoveStream {
+                    live_id: cloned_info.live_id().to_string(),
+                    reply: oneshot::channel().0,
+                })
+                .await;
+        });
+
+        let _ = reply.send(Ok(()));
+    }
+
+    async fn handle_stop_stream(
+        &mut self,
+        live_id: String,
+        reply: oneshot::Sender<Result<()>>,
+    ) {
+        if let Some(ctx) = self.stream_contexts.get(&live_id) {
+            ctx.stop_signal.store(true, Ordering::SeqCst);
+        }
+        self.handle_remove_stream(&live_id).await;
+        let _ = self.flv_packet_tx.send(FlvPacket::EndOfStream {
+            live_id: live_id.clone(),
+        });
+        let _ = reply.send(Ok(()));
+    }
+
+    async fn handle_shutdown(&mut self, reply: oneshot::Sender<()>) {
+        for ctx in self.stream_contexts.values() {
+            ctx.stop_signal.store(true, Ordering::SeqCst);
+        }
+        let keys: Vec<String> = self.stream_contexts.keys().cloned().collect();
+        for key in keys {
+            self.handle_remove_stream(&key).await;
+        }
+        let _ = reply.send(());
+    }
+
+    async fn wait_for_cache_dir_empty(info: &Arc<StreamInfo>) -> std::result::Result<(), Elapsed> {
+        timeout(Duration::from_secs(3), async {
+            while !info.is_cache_empty().unwrap_or(true) {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }).await?;
+        Ok(())
     }
 }
 
