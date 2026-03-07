@@ -42,7 +42,7 @@ impl RtmpEgressHandler {
         request_id: u32,
         stream_id: u32,
     ) -> Result<Vec<ServerSessionResult>> {
-        if self.stream_registry.has_stream(&stream_key).await {
+        if self.stream_registry.get_stream(&stream_key).await.is_some() {
             self.current_stream_id = stream_id;
 
             let (rx, state) = self.dispatcher.subscribe(&stream_key).await;

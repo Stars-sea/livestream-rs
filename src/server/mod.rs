@@ -21,7 +21,8 @@ pub struct AppServer;
 impl AppServer {
     pub async fn run() -> Result<()> {
         let (media_bus, flv_rx) = FlvPacketBus::new();
-        let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_channel::<(StreamMessage, tracing::Span)>();
+        let (stream_msg_tx, stream_msg_rx) =
+            mpsc::unbounded_channel::<(StreamMessage, tracing::Span)>();
         let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
         let minio_client = MinioClient::create_default().await?;
@@ -32,11 +33,7 @@ impl AppServer {
             stream_msg_rx,
         ));
 
-        let server = RtmpServer::new(
-            manager.clone(),
-            media_bus.sender(),
-            stream_msg_tx,
-        );
+        let server = RtmpServer::new(manager.clone(), media_bus.sender(), stream_msg_tx);
 
         let shutdown_rx = shutdown_tx.subscribe();
         tokio::spawn(async move {

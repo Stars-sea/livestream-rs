@@ -1,14 +1,10 @@
-pub(crate) mod events;
-mod factory;
+pub mod events;
 mod handlers;
+mod lifecycle;
 mod manager;
 mod port_allocator;
+pub mod rtmp_worker;
 mod srt_worker;
-pub(crate) mod rtmp_worker;
-pub(crate) mod stream_info;
-
-mod grpc {
-    tonic::include_proto!("livestream");
-}
+pub mod stream_info;
 
 pub use manager::StreamManager;

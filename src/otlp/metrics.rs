@@ -177,6 +177,10 @@ impl OTelMetrics {
     }
 }
 
+pub fn protocol_labels(protocol: &'static str) -> Vec<KeyValue> {
+    vec![KeyValue::new("stream.protocol", protocol)]
+}
+
 pub struct GrpcCallGuard {
     metrics: &'static OTelMetrics,
     method: &'static str,

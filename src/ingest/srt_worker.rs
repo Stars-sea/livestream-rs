@@ -4,82 +4,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::events::*;
+use super::lifecycle;
 use super::stream_info::{StreamInfo, StreamInputOptions};
 
 use crate::core::context::{Context, InputContext};
 use crate::core::output::{FlvOutputContext, FlvPacket, HlsOutputContext};
 use crate::core::packet::{Packet, PacketReadResult};
 use crate::otlp::metrics;
-use crate::services::MemoryCache;
 
 use anyhow::Result;
 use retry::OperationResult;
 use retry::delay::{Exponential, jitter};
 use tokio::sync::mpsc;
 use tracing::{Span, debug, error, info, instrument, warn};
-
-#[derive(Debug)]
-pub(super) struct SrtWorkerFactory {
-    stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
-    flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-    signal_cache: MemoryCache<Arc<AtomicBool>>,
-}
-
-impl SrtWorkerFactory {
-    pub fn new(
-        stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
-        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-    ) -> Self {
-        Self {
-            stream_msg_tx,
-            flv_packet_tx,
-            signal_cache: MemoryCache::new(),
-        }
-    }
-
-    pub async fn can_create(&self, stream_info: &StreamInfo) -> bool {
-        !self.signal_cache.contains_key(stream_info.live_id()).await
-    }
-
-    pub async fn create(&self, stream_info: Arc<StreamInfo>) -> Result<SrtWorker> {
-        let live_id = stream_info.live_id().to_string();
-        info!(live_id = %live_id, "Creating SRT worker");
-        let stop_signal = Arc::new(AtomicBool::new(false));
-        self.signal_cache.set(live_id, stop_signal.clone()).await?;
-
-        Ok(SrtWorker::new(
-            stream_info,
-            self.stream_msg_tx.clone(),
-            self.flv_packet_tx.clone(),
-            stop_signal,
-        ))
-    }
-
-    pub async fn remove_signal(&self, live_id: &str) {
-        debug!(live_id = %live_id, "Removing signal");
-        self.signal_cache.remove(live_id).await;
-    }
-
-    pub async fn get_signals(&self) -> Vec<Arc<AtomicBool>> {
-        self.signal_cache.values().await
-    }
-
-    pub async fn get_signal(&self, live_id: &str) -> Option<Arc<AtomicBool>> {
-        self.signal_cache.get(live_id).await
-    }
-
-    pub async fn has_signal(&self, live_id: &str) -> bool {
-        self.signal_cache.contains_key(live_id).await
-    }
-
-    pub fn send_end_of_stream(&self, live_id: &str) {
-        if let Err(e) = self.flv_packet_tx.send(FlvPacket::EndOfStream {
-            live_id: live_id.to_string(),
-        }) {
-            warn!(error = %e, stream.live_id = %live_id, "Failed to send EOS packet");
-        }
-    }
-}
 
 #[derive(Debug)]
 pub(super) struct SrtWorker {
@@ -95,6 +32,7 @@ pub(super) struct SrtWorker {
 
     segment_id: u64,
     last_start_pts: i64,
+    lifecycle: lifecycle::WorkerLifecycle,
 }
 
 enum ReadResult {
@@ -109,6 +47,7 @@ impl SrtWorker {
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
         stop_signal: Arc<AtomicBool>,
     ) -> Self {
+        let lifecycle = lifecycle::WorkerLifecycle::new(stream_info.live_id());
         Self {
             stream_info,
             stream_msg_tx,
@@ -119,6 +58,7 @@ impl SrtWorker {
             hls_output: None,
             segment_id: 1,
             last_start_pts: 0,
+            lifecycle,
         }
     }
 
@@ -193,7 +133,7 @@ impl SrtWorker {
         None
     }
 
-    #[instrument(name = "ingest.srt_worker.segment_complete", skip(self), fields(stream.live_id = %self.stream_info.live_id(), stream.segment_id = self.segment_id))]
+    #[instrument(name = "ingest.srt_worker.segment_complete", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id(), stream.segment_id = self.segment_id))]
     fn notify_segment_complete(&self) {
         let output_ctx = match self.hls_output() {
             Ok(ctx) => ctx,
@@ -210,77 +150,48 @@ impl SrtWorker {
         }
     }
 
-    #[instrument(name = "ingest.srt_worker.stream.notify_started", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
-    fn notify_stream_started(&self) {
-        let live_id = self.stream_info.live_id();
-        let event = (StreamMessage::stream_started(live_id), Span::current());
-        if let Err(e) = self.stream_msg_tx.send(event) {
-            warn!(error = %e, live_id = %live_id, "Failed to send stream started event");
-        }
+    #[instrument(name = "ingest.srt_worker.stream.notify_started", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id()))]
+    fn notify_stream_started(&mut self) {
+        self.lifecycle.notify_stream_started(&self.stream_msg_tx);
     }
 
-    #[instrument(name = "ingest.srt_worker.stream.notify_stopped", skip(self), fields(stream.live_id = %self.stream_info.live_id(), error = ?error))]
-    fn notify_stream_stopped(&self, error: Option<String>) {
-        let live_id = self.stream_info.live_id();
-        let event = (
-            StreamMessage::stream_stopped(live_id, error.clone()),
-            Span::current(),
-        );
-        if let Err(e) = self.stream_msg_tx.send(event) {
-            warn!(error = %e, live_id = %live_id, "Failed to send stream stopped event");
-        }
+    #[instrument(name = "ingest.srt_worker.stream.notify_stopped", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id(), error = ?error))]
+    fn notify_stream_stopped(&mut self, error: Option<String>) {
+        self.lifecycle
+            .notify_stream_stopped(&self.stream_msg_tx, error);
     }
 
-    #[instrument(name = "ingest.srt_worker.stream.notify_restarting", skip(self), fields(stream.live_id = %self.stream_info.live_id(), error = %error))]
-    fn notify_stream_restarting(&self, error: String) {
-        let live_id = self.stream_info.live_id();
-        let event = (
-            StreamMessage::stream_restarting(live_id, error),
-            Span::current(),
-        );
-        if let Err(e) = self.stream_msg_tx.send(event) {
-            warn!(error = %e, live_id = %live_id, "Failed to send stream restarting event");
-        }
+    #[instrument(name = "ingest.srt_worker.stream.notify_restarting", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id(), error = %error))]
+    fn notify_stream_restarting(&mut self, error: String) {
+        self.lifecycle
+            .notify_stream_restarting(&self.stream_msg_tx, error);
     }
 
-    #[instrument(name = "ingest.srt_worker.notify_started", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
-    fn notify_ingest_worker_started(&self) {
-        let live_id = self.stream_info.live_id();
-
-        let event = (StreamMessage::ingest_worker_started(live_id), Span::current());
-        if let Err(e) = self.stream_msg_tx.send(event) {
-            warn!(error = %e, live_id = %live_id, "Failed to send ingest worker started event");
-        }
+    #[instrument(name = "ingest.srt_worker.notify_started", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id()))]
+    fn notify_ingest_worker_started(&mut self) {
+        self.lifecycle
+            .notify_ingest_worker_started(&self.stream_msg_tx);
     }
 
-    #[instrument(name = "ingest.srt_worker.notify_stopped", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
-    fn notify_ingest_worker_stopped(&self) {
-        let live_id = self.stream_info.live_id();
-
-        let event = (StreamMessage::ingest_worker_stopped(live_id), Span::current());
-        if let Err(e) = self.stream_msg_tx.send(event) {
-            warn!(error = %e, live_id = %live_id, "Failed to send ingest worker stopped event");
-        }
-
-        // TODO:
-        let flv_output = self
+    #[instrument(name = "ingest.srt_worker.notify_stopped", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id()))]
+    fn finalize_lifecycle(&mut self, error: Option<String>) {
+        let eos_tx = self
             .flv_output
             .as_ref()
-            .map(|o| o.get_flv_packet_sender())
-            .flatten();
-        if let Some(tx) = flv_output {
-            if let Err(e) = tx.send(FlvPacket::EndOfStream {
-                live_id: live_id.to_string(),
-            }) {
-                warn!(error = %e, live_id = %live_id, "Failed to send end of stream packet");
-            }
-        }
+            .and_then(|output| output.get_flv_packet_sender())
+            .unwrap_or_else(|| self.flv_packet_tx.clone());
+
+        self.lifecycle
+            .notify_stream_stopped(&self.stream_msg_tx, error);
+        self.lifecycle.send_end_of_stream_once(&eos_tx);
+        self.lifecycle
+            .notify_ingest_worker_stopped(&self.stream_msg_tx);
     }
 
     pub fn start(&mut self) {
         self.notify_ingest_worker_started();
 
-        let start_span = tracing::info_span!("ingest.srt_worker.start", stream.live_id = %self.stream_info.live_id());
+        let start_span = tracing::info_span!("ingest.srt_worker.start", stream.protocol = "srt", stream.live_id = %self.stream_info.live_id());
 
         start_span.in_scope(|| {
             info!(live_id = %self.stream_info.live_id(), "SRT worker loop starting");
@@ -308,15 +219,16 @@ impl SrtWorker {
             }
         }
 
-        self.notify_ingest_worker_stopped();
+        self.finalize_lifecycle(None);
         info!(live_id = %self.stream_info.live_id(), "SRT worker loop exited");
     }
 
     /// Main loop for pulling stream, segmenting, and writing to disk.
-    #[instrument(name = "ingest.srt_worker.loop", skip(self), fields(stream.live_id = %self.stream_info.live_id()))]
+    #[instrument(name = "ingest.srt_worker.loop", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id()))]
     fn start_impl(&mut self, input_connected: &mut bool) -> Result<()> {
         let live_id = self.stream_info.live_id().to_string();
         let cache_dir = self.stream_info.cache_dir().to_path_buf();
+        let metric_labels = metrics::protocol_labels("srt");
 
         let mut stream_started_notified = false;
 
@@ -358,8 +270,8 @@ impl SrtWorker {
                 }
             }
 
-            metrics::get_metrics().add_network_bytes_in(packet.size() as u64, &[]);
-            metrics::get_metrics().add_ingest_packets(1, &[]);
+            metrics::get_metrics().add_network_bytes_in(packet.size() as u64, &metric_labels);
+            metrics::get_metrics().add_ingest_packets(1, &metric_labels);
 
             if !stream_started_notified {
                 self.notify_stream_started();
@@ -402,3 +314,4 @@ impl SrtWorker {
         Ok(())
     }
 }
+

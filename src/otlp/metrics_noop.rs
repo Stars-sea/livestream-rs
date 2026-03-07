@@ -45,3 +45,7 @@ impl MetricGuard {
         Self
     }
 }
+
+pub fn protocol_labels(_protocol: &'static str) -> Vec<()> {
+    vec![]
+}

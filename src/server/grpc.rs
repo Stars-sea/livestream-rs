@@ -20,13 +20,8 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use crate::ingest::StreamManager;
 use crate::ingest::stream_info::{StreamInfo, StreamInputOptions};
 use crate::otlp::metrics;
+use crate::services::api;
 use crate::settings::load_settings;
-
-pub mod api {
-    tonic::include_proto!("livestream");
-}
-
-pub use api::livestream_server::LivestreamServer;
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
 
@@ -81,16 +76,25 @@ impl api::livestream_server::Livestream for IngestGrpcService {
                     Err(e) => return Err(Status::resource_exhausted(e.to_string())),
                 }
             }
-            api::InputProtocol::Rtmp => match self.manager.make_rtmp_stream_info(&request.live_id).await {
-                Ok(info) => info,
-                Err(e) => return Err(Status::internal(e.to_string())),
-            },
+            api::InputProtocol::Rtmp => {
+                match self.manager.make_rtmp_stream_info(&request.live_id).await {
+                    Ok(info) => info,
+                    Err(e) => return Err(Status::internal(e.to_string())),
+                }
+            }
         };
 
-        if matches!(protocol, api::InputProtocol::Srt)
-            && let Err(e) = self.manager.start_srt_stream(stream_info.clone()).await
-        {
-            return Err(Status::internal(e.to_string()));
+        match protocol {
+            api::InputProtocol::Srt => {
+                if let Err(e) = self.manager.start_srt_stream(stream_info.clone()).await {
+                    return Err(Status::internal(e.to_string()));
+                }
+            }
+            api::InputProtocol::Rtmp => {
+                if let Err(e) = self.manager.start_rtmp_stream(stream_info.clone()).await {
+                    return Err(Status::internal(e.to_string()));
+                }
+            }
         }
 
         let resp: api::StreamInfoResponse = stream_info.into();
@@ -224,7 +228,7 @@ impl GrpcServer {
 
         let service = IngestGrpcService::new(self.manager.clone());
         Server::builder()
-            .add_service(LivestreamServer::with_interceptor(
+            .add_service(api::livestream_server::LivestreamServer::with_interceptor(
                 service,
                 Self::server_trace_interceptor,
             ))

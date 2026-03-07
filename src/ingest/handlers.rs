@@ -9,16 +9,19 @@ use tracing::{Instrument, Level, debug, warn};
 use tracing::{Span, event};
 
 use super::events::*;
-use super::grpc::*;
-use crate::ingest::factory::GrpcClientFactory;
-use crate::ingest::srt_worker::SrtWorkerFactory;
+use crate::ingest::manager::StreamContext;
+use crate::ingest::port_allocator::PortAllocator;
+use dashmap::DashMap;
+use crate::services::GrpcClientFactory;
 use crate::services::MinioClient;
+use crate::services::api::*;
 
 pub(super) async fn stream_message_handler(
     rx: mpsc::UnboundedReceiver<(StreamMessage, Span)>,
     client_factory: GrpcClientFactory,
     minio: MinioClient,
-    factory: Arc<SrtWorkerFactory>,
+    stream_contexts: Arc<DashMap<String, StreamContext>>,
+    port_allocator: Arc<PortAllocator>,
 ) {
     let mut stream = UnboundedReceiverStream::new(rx);
 
@@ -38,9 +41,15 @@ pub(super) async fn stream_message_handler(
                     .await;
             }
             StreamMessage::StreamStopped { live_id, error } => {
-                stream_stopped_handler(live_id, error, &client_factory, &factory)
-                    .instrument(span)
-                    .await;
+                stream_stopped_handler(
+                    live_id,
+                    error,
+                    &client_factory,
+                    &stream_contexts,
+                    &port_allocator,
+                )
+                .instrument(span)
+                .await;
             }
             StreamMessage::StreamRestarting { live_id, error } => {
                 stream_restarting_handler(live_id, error, &client_factory)
@@ -108,7 +117,8 @@ async fn stream_stopped_handler(
     live_id: String,
     error_message: Option<String>,
     client_factory: &GrpcClientFactory,
-    factory: &Arc<SrtWorkerFactory>,
+    stream_contexts: &Arc<DashMap<String, StreamContext>>,
+    port_allocator: &Arc<PortAllocator>,
 ) {
     event!(
         Level::INFO,
@@ -117,7 +127,12 @@ async fn stream_stopped_handler(
         error_message.as_deref().unwrap_or("None")
     );
 
-    factory.remove_signal(&live_id).await;
+    if let Some((_, ctx)) = stream_contexts.remove(&live_id) {
+        if let Some(srt_options) = ctx.info.srt_options() {
+            port_allocator.release_port(srt_options.port()).await;
+        }
+        debug!(live_id = %live_id, "Cleaned up stream from contexts and released ports");
+    }
 
     if let Ok(Some(mut client)) = client_factory.build().await {
         let req = NotifyStreamStoppedRequest {

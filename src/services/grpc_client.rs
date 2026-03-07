@@ -22,7 +22,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::settings::load_settings;
 
-use super::grpc::livestream_callback_client::LivestreamCallbackClient;
+use super::api::livestream_callback_client::LivestreamCallbackClient;
 
 #[cfg(feature = "opentelemetry")]
 struct MetadataInjector<'a>(&'a mut MetadataMap);
@@ -59,10 +59,10 @@ impl Interceptor for TraceContextInterceptor {
 }
 
 #[cfg(feature = "opentelemetry")]
-pub(crate) type CallbackClient =
+pub type CallbackClient =
     LivestreamCallbackClient<InterceptedService<Channel, TraceContextInterceptor>>;
 #[cfg(not(feature = "opentelemetry"))]
-pub(crate) type CallbackClient = LivestreamCallbackClient<Channel>;
+pub type CallbackClient = LivestreamCallbackClient<Channel>;
 
 pub struct GrpcClientFactory {
     url: String,

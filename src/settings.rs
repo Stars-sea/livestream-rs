@@ -38,7 +38,6 @@ pub struct IngestConfig {
     /// Segment duration in seconds for HLS/TS output
     #[serde(default = "default_ingest_duration")]
     pub duration: i32,
-
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -47,6 +47,21 @@ impl StreamInfo {
         })
     }
 
+    #[cfg(test)]
+    pub fn new_test(live_id: String, duration: i32) -> Self {
+        StreamInfo {
+            live_id: live_id.clone(),
+            input_options: StreamInputOptions::Rtmp(RtmpInputStreamOptions::new(
+                "localhost".to_string(),
+                1935,
+                "app".to_string(),
+                live_id,
+            )),
+            cache_dir: tempfile::tempdir().unwrap(),
+            segment_duration: duration,
+        }
+    }
+
     pub fn new_rtmp(live_id: String) -> Result<Self> {
         let settings = load_settings();
         let host = settings.ingest.host.clone();

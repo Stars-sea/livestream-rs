@@ -8,6 +8,7 @@ pub struct MemoryCache<T> {
     cache: Arc<RwLock<HashMap<String, T>>>,
 }
 
+#[allow(dead_code)]
 impl<T> MemoryCache<T>
 where
     T: Clone,

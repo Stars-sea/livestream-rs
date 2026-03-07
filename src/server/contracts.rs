@@ -2,15 +2,26 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 
 use crate::core::output::FlvPacket;
+use crate::ingest::rtmp_worker::RtmpTag;
+use crate::ingest::stream_info::StreamInfo;
 
 pub trait StreamRegistry: Debug + Send + Sync {
-    fn has_stream<'a>(
+    fn get_stream<'a>(
         &'a self,
         live_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Option<Arc<StreamInfo>>> + Send + 'a>>;
+
+    fn get_rtmp_tx<'a>(
+        &'a self,
+        _live_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<mpsc::UnboundedSender<RtmpTag>>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
 }
 
 pub trait MediaBus: Debug + Send + Sync {
