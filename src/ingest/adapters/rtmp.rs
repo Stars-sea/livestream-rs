@@ -1,13 +1,11 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tracing::{Span, instrument, warn};
 
-use crate::media::output::FlvPacket;
 use crate::ingest::events::StreamMessage;
-use crate::ingest::lifecycle;
-use crate::ingest::stream_info::StreamInfo;
+use crate::ingest::session::{StreamAdapter, WorkerContext};
+use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
 
 pub enum RtmpTag {
@@ -27,50 +25,96 @@ pub enum RtmpTag {
     PublishFinished,
 }
 
-pub struct RtmpWorker {
-    live_id: String,
-    #[allow(dead_code)]
-    stream_info: Arc<StreamInfo>,
-    flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-    stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
-    stop_signal: Arc<std::sync::atomic::AtomicBool>,
+pub struct RtmpAdapter {
     rx: mpsc::UnboundedReceiver<RtmpTag>,
 }
 
-impl RtmpWorker {
-    pub fn new(
-        stream_info: Arc<StreamInfo>,
-        stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
-        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-        stop_signal: Arc<std::sync::atomic::AtomicBool>,
-        rx: mpsc::UnboundedReceiver<RtmpTag>,
-    ) -> Self {
-        Self {
-            live_id: stream_info.live_id().to_string(),
-            stream_info,
-            stream_msg_tx,
-            flv_packet_tx,
-            stop_signal,
-            rx,
+impl RtmpAdapter {
+    pub fn new(rx: mpsc::UnboundedReceiver<RtmpTag>) -> Self {
+        Self { rx }
+    }
+
+    #[instrument(name = "ingest.rtmp_worker.audio_data", skip(self, ctx, muxer, tag), fields(stream.protocol = "rtmp", stream.live_id = %ctx.live_id, stream.timestamp = timestamp, media.bytes = data_len))]
+    fn on_audio_data(
+        &mut self,
+        ctx: &mut WorkerContext,
+        muxer: &mut StreamMuxer,
+        timestamp: u32,
+        tag: bytes::Bytes,
+        data_len: usize,
+    ) {
+        let mut completed_segment: Option<(String, PathBuf)> = None;
+
+        let labels = metrics::protocol_labels("rtmp");
+        metrics::get_metrics().add_network_bytes_in(data_len as u64, &labels);
+        metrics::get_metrics().add_ingest_packets(1, &labels);
+
+        if let Some(path) = muxer.segmenter.on_audio_tag(&tag, timestamp) {
+            completed_segment = Some((ctx.live_id.clone(), path));
+        }
+        let _ = ctx.flv_packet_tx.send(FlvPacket::Data {
+            live_id: ctx.live_id.clone(),
+            data: tag,
+        });
+
+        if let Some((live_id, path)) = completed_segment {
+            self.notify_segment_complete(ctx, &live_id, path);
         }
     }
 
-    #[instrument(name = "ingest.rtmp_worker.run", skip(self), fields(stream.live_id = %self.live_id))]
-    pub async fn run(mut self) {
-        let segment_duration_ms = (self.stream_info.segment_duration().max(1) * 1000) as u32;
-        let mut muxer = StreamMuxer::new(self.live_id.clone(), segment_duration_ms);
+    #[instrument(name = "ingest.rtmp_worker.video_data", skip(self, ctx, muxer, tag, payload), fields(stream.protocol = "rtmp", stream.live_id = %ctx.live_id, stream.timestamp = timestamp, media.bytes = payload.len()))]
+    fn on_video_data(
+        &mut self,
+        ctx: &mut WorkerContext,
+        muxer: &mut StreamMuxer,
+        timestamp: u32,
+        tag: bytes::Bytes,
+        payload: &[u8],
+    ) {
+        let mut completed_segment: Option<(String, PathBuf)> = None;
 
-        muxer
-            .lifecycle
-            .notify_ingest_worker_started(&self.stream_msg_tx);
-        muxer.lifecycle.notify_stream_started(&self.stream_msg_tx);
+        let labels = metrics::protocol_labels("rtmp");
+        metrics::get_metrics().add_network_bytes_in(payload.len() as u64, &labels);
+        metrics::get_metrics().add_ingest_packets(1, &labels);
+
+        if let Some(path) = muxer.segmenter.on_video_tag(&tag, timestamp, payload) {
+            completed_segment = Some((ctx.live_id.clone(), path));
+        }
+        let _ = ctx.flv_packet_tx.send(FlvPacket::Data {
+            live_id: ctx.live_id.clone(),
+            data: tag,
+        });
+
+        if let Some((live_id, path)) = completed_segment {
+            self.notify_segment_complete(ctx, &live_id, path);
+        }
+    }
+
+    fn notify_segment_complete(&self, ctx: &mut WorkerContext, live_id: &str, path: PathBuf) {
+        let event = (
+            StreamMessage::segment_complete(live_id, &path),
+            Span::current(),
+        );
+        if let Err(err) = ctx.stream_msg_tx.send(event) {
+            warn!(error = %err, stream.live_id = %live_id, "Failed to emit RTMP segment_complete event");
+        }
+    }
+}
+
+impl StreamAdapter for RtmpAdapter {
+    #[instrument(name = "ingest.rtmp_worker.run", skip(self, ctx), fields(stream.live_id = %ctx.live_id))]
+    async fn run(&mut self, ctx: &mut WorkerContext) -> anyhow::Result<()> {
+        let segment_duration_ms = (ctx.stream_info.segment_duration().max(1) * 1000) as u32;
+        let mut muxer = StreamMuxer::new(segment_duration_ms);
+
+        ctx.lifecycle.notify_stream_started(&ctx.stream_msg_tx);
 
         let mut check_interval = tokio::time::interval(std::time::Duration::from_millis(100));
 
         loop {
             tokio::select! {
                 _ = check_interval.tick() => {
-                    if self.stop_signal.load(std::sync::atomic::Ordering::SeqCst) {
+                    if ctx.stop_signal.load(std::sync::atomic::Ordering::SeqCst) {
                         tracing::info!("Stop signal received, exiting rtmp worker loop");
                         break;
                     }
@@ -80,8 +124,8 @@ impl RtmpWorker {
                         Some(tag) => {
                             match tag {
                                 RtmpTag::Header { tag } => {
-                                    let _ = self.flv_packet_tx.send(FlvPacket::Data {
-                                        live_id: self.live_id.clone(),
+                                    let _ = ctx.flv_packet_tx.send(FlvPacket::Data {
+                                        live_id: ctx.live_id.clone(),
                                         data: tag,
                                     });
                                 }
@@ -90,14 +134,14 @@ impl RtmpWorker {
                                     timestamp,
                                     data_len,
                                 } => {
-                                    self.on_audio_data(&mut muxer, timestamp, tag, data_len);
+                                    self.on_audio_data(ctx, &mut muxer, timestamp, tag, data_len);
                                 }
                                 RtmpTag::Video {
                                     tag,
                                     timestamp,
                                     payload,
                                 } => {
-                                    self.on_video_data(&mut muxer, timestamp, tag, &payload);
+                                    self.on_video_data(ctx, &mut muxer, timestamp, tag, &payload);
                                 }
                                 RtmpTag::PublishFinished => {
                                     break;
@@ -112,81 +156,11 @@ impl RtmpWorker {
             }
         }
 
-        self.finalize_stream(muxer, None);
-    }
-
-    #[instrument(name = "ingest.rtmp_worker.audio_data", skip(self, muxer, tag), fields(stream.protocol = "rtmp", stream.live_id = %self.live_id, stream.timestamp = timestamp, media.bytes = data_len))]
-    fn on_audio_data(
-        &mut self,
-        muxer: &mut StreamMuxer,
-        timestamp: u32,
-        tag: bytes::Bytes,
-        data_len: usize,
-    ) {
-        let mut completed_segment: Option<(String, PathBuf)> = None;
-
-        let labels = metrics::protocol_labels("rtmp");
-        metrics::get_metrics().add_network_bytes_in(data_len as u64, &labels);
-        metrics::get_metrics().add_ingest_packets(1, &labels);
-
-        if let Some(path) = muxer.segmenter.on_audio_tag(&tag, timestamp) {
-            completed_segment = Some((muxer.live_id.clone(), path));
-        }
-        let _ = self.flv_packet_tx.send(FlvPacket::Data {
-            live_id: muxer.live_id.clone(),
-            data: tag,
-        });
-
-        if let Some((live_id, path)) = completed_segment {
-            self.notify_segment_complete(&live_id, path);
-        }
-    }
-
-    #[instrument(name = "ingest.rtmp_worker.video_data", skip(self, muxer, tag, payload), fields(stream.protocol = "rtmp", stream.live_id = %self.live_id, stream.timestamp = timestamp, media.bytes = payload.len()))]
-    fn on_video_data(
-        &mut self,
-        muxer: &mut StreamMuxer,
-        timestamp: u32,
-        tag: bytes::Bytes,
-        payload: &[u8],
-    ) {
-        let mut completed_segment: Option<(String, PathBuf)> = None;
-
-        let labels = metrics::protocol_labels("rtmp");
-        metrics::get_metrics().add_network_bytes_in(payload.len() as u64, &labels);
-        metrics::get_metrics().add_ingest_packets(1, &labels);
-
-        if let Some(path) = muxer.segmenter.on_video_tag(&tag, timestamp, payload) {
-            completed_segment = Some((muxer.live_id.clone(), path));
-        }
-        let _ = self.flv_packet_tx.send(FlvPacket::Data {
-            live_id: muxer.live_id.clone(),
-            data: tag,
-        });
-
-        if let Some((live_id, path)) = completed_segment {
-            self.notify_segment_complete(&live_id, path);
-        }
-    }
-
-    fn finalize_stream(&mut self, mut muxer: StreamMuxer, error: Option<String>) {
         if let Some(path) = muxer.segmenter.flush_final_segment() {
-            self.notify_segment_complete(&muxer.live_id, path);
+            self.notify_segment_complete(ctx, &ctx.live_id.clone(), path);
         }
 
-        muxer
-            .lifecycle
-            .finalize(&self.stream_msg_tx, &self.flv_packet_tx, error);
-    }
-
-    fn notify_segment_complete(&self, live_id: &str, path: PathBuf) {
-        let event = (
-            StreamMessage::segment_complete(live_id, &path),
-            Span::current(),
-        );
-        if let Err(err) = self.stream_msg_tx.send(event) {
-            warn!(error = %err, stream.live_id = %live_id, "Failed to emit RTMP segment_complete event");
-        }
+        Ok(())
     }
 }
 
@@ -217,17 +191,13 @@ pub fn make_rtmp_tag(tag_type: u8, timestamp: u32, payload: &[u8]) -> bytes::Byt
 }
 
 struct StreamMuxer {
-    live_id: String,
-    lifecycle: lifecycle::WorkerLifecycle,
     segmenter: FlvSegmenter,
 }
 
 impl StreamMuxer {
-    fn new(live_id: String, segment_duration_ms: u32) -> Self {
+    fn new(segment_duration_ms: u32) -> Self {
         Self {
-            lifecycle: lifecycle::WorkerLifecycle::new(&live_id),
             segmenter: FlvSegmenter::new(segment_duration_ms),
-            live_id,
         }
     }
 }

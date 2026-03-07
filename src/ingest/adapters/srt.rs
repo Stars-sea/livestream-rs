@@ -3,9 +3,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::events::*;
-use super::lifecycle;
-use super::stream_info::{StreamInfo, StreamInputOptions};
+use crate::ingest::events::*;
+use crate::ingest::session::{StreamAdapter, WorkerContext};
+use crate::ingest::stream_info::{StreamInfo, StreamInputOptions};
 
 use crate::media::context::{Context, InputContext};
 use crate::media::output::{FlvOutputContext, FlvPacket, HlsOutputContext};
@@ -18,10 +18,22 @@ use retry::delay::{Exponential, jitter};
 use tokio::sync::mpsc;
 use tracing::{Span, debug, error, info, instrument, warn};
 
-#[derive(Debug)]
-pub(super) struct SrtWorker {
-    stream_info: Arc<StreamInfo>,
+#[derive(Debug, Default)]
+pub struct SrtAdapter {}
 
+impl SrtAdapter {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+enum ReadResult {
+    Ok,
+    Eof,
+}
+
+struct BlockingWorker {
+    stream_info: Arc<StreamInfo>,
     stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
     flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     stop_signal: Arc<AtomicBool>,
@@ -32,36 +44,9 @@ pub(super) struct SrtWorker {
 
     segment_id: u64,
     last_start_pts: i64,
-    lifecycle: lifecycle::WorkerLifecycle,
 }
 
-enum ReadResult {
-    Ok,
-    Eof,
-}
-
-impl SrtWorker {
-    pub fn new(
-        stream_info: Arc<StreamInfo>,
-        stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
-        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-        stop_signal: Arc<AtomicBool>,
-    ) -> Self {
-        let lifecycle = lifecycle::WorkerLifecycle::new(stream_info.live_id());
-        Self {
-            stream_info,
-            stream_msg_tx,
-            flv_packet_tx,
-            stop_signal,
-            input_ctx: None,
-            flv_output: None,
-            hls_output: None,
-            segment_id: 1,
-            last_start_pts: 0,
-            lifecycle,
-        }
-    }
-
+impl BlockingWorker {
     fn input_ctx(&self) -> Result<&InputContext> {
         self.input_ctx
             .as_ref()
@@ -150,79 +135,6 @@ impl SrtWorker {
         }
     }
 
-    #[instrument(name = "ingest.srt_worker.stream.notify_started", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id()))]
-    fn notify_stream_started(&mut self) {
-        self.lifecycle.notify_stream_started(&self.stream_msg_tx);
-    }
-
-    #[instrument(name = "ingest.srt_worker.stream.notify_stopped", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id(), error = ?error))]
-    fn notify_stream_stopped(&mut self, error: Option<String>) {
-        self.lifecycle
-            .notify_stream_stopped(&self.stream_msg_tx, error);
-    }
-
-    #[instrument(name = "ingest.srt_worker.stream.notify_restarting", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id(), error = %error))]
-    fn notify_stream_restarting(&mut self, error: String) {
-        self.lifecycle
-            .notify_stream_restarting(&self.stream_msg_tx, error);
-    }
-
-    #[instrument(name = "ingest.srt_worker.notify_started", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id()))]
-    fn notify_ingest_worker_started(&mut self) {
-        self.lifecycle
-            .notify_ingest_worker_started(&self.stream_msg_tx);
-    }
-
-    #[instrument(name = "ingest.srt_worker.notify_stopped", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id()))]
-    fn finalize_lifecycle(&mut self, error: Option<String>) {
-        let eos_tx = self
-            .flv_output
-            .as_ref()
-            .and_then(|output| output.get_flv_packet_sender())
-            .unwrap_or_else(|| self.flv_packet_tx.clone());
-
-        self.lifecycle
-            .notify_stream_stopped(&self.stream_msg_tx, error);
-        self.lifecycle.send_end_of_stream_once(&eos_tx);
-        self.lifecycle
-            .notify_ingest_worker_stopped(&self.stream_msg_tx);
-    }
-
-    pub fn start(&mut self) {
-        self.notify_ingest_worker_started();
-
-        let start_span = tracing::info_span!("ingest.srt_worker.start", stream.protocol = "srt", stream.live_id = %self.stream_info.live_id());
-
-        start_span.in_scope(|| {
-            info!(live_id = %self.stream_info.live_id(), "SRT worker loop starting");
-        });
-
-        'worker_loop: loop {
-            let mut delay = Exponential::from_millis(10).map(jitter).take(5);
-
-            while let Some(duration) = delay.next() {
-                let mut recovered = false;
-
-                if let Err(e) = self.start_impl(&mut recovered) {
-                    error!(error = %e, live_id = %self.stream_info.live_id(), "Error in SRT worker loop");
-                    self.notify_stream_restarting(e.to_string());
-                } else {
-                    break 'worker_loop;
-                }
-
-                std::thread::sleep(duration);
-
-                if recovered {
-                    delay = Exponential::from_millis(10).map(jitter).take(5);
-                    continue 'worker_loop;
-                }
-            }
-        }
-
-        self.finalize_lifecycle(None);
-        info!(live_id = %self.stream_info.live_id(), "SRT worker loop exited");
-    }
-
     /// Main loop for pulling stream, segmenting, and writing to disk.
     #[instrument(name = "ingest.srt_worker.loop", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id()))]
     fn start_impl(&mut self, input_connected: &mut bool) -> Result<()> {
@@ -274,7 +186,10 @@ impl SrtWorker {
             metrics::get_metrics().add_ingest_packets(1, &metric_labels);
 
             if !stream_started_notified {
-                self.notify_stream_started();
+                // Here we notify stream started manually if needed, wait, lifecycle handles 
+                // but stream_started goes over stream_msg_tx manually now
+                let evt = (StreamMessage::stream_started(&live_id), Span::current());
+                let _ = self.stream_msg_tx.send(evt);
                 stream_started_notified = true;
             }
 
@@ -296,22 +211,77 @@ impl SrtWorker {
             packet.rescale_ts_for_ctx(self.input_ctx()?, self.flv_output()?)?;
             if let Err(e) = packet.write(self.flv_output()?) {
                 self.notify_segment_complete();
-                self.notify_stream_stopped(Some(format!("FLV output write failed: {}", e)));
+                // Send stream stopped
+                let _ = self.stream_msg_tx.send((StreamMessage::stream_stopped(&live_id, Some(format!("FLV output write failed: {}", e))), Span::current()));
                 anyhow::bail!("Failed to write packet to FLV output: {}", e);
             }
 
             cloned_packet.rescale_ts_for_ctx(self.input_ctx()?, self.hls_output()?)?;
             if let Err(e) = cloned_packet.write(self.hls_output()?) {
                 self.notify_segment_complete();
-                self.notify_stream_stopped(Some(format!("HLS output write failed: {}", e)));
+                let _ = self.stream_msg_tx.send((StreamMessage::stream_stopped(&live_id, Some(format!("HLS output write failed: {}", e))), Span::current()));
                 anyhow::bail!("Failed to write packet to TS output: {}", e);
             }
         }
 
         self.notify_segment_complete();
-        self.notify_stream_stopped(None);
+        let _ = self.stream_msg_tx.send((StreamMessage::stream_stopped(&live_id, None), Span::current()));
 
         Ok(())
     }
 }
 
+impl StreamAdapter for SrtAdapter {
+    async fn run(&mut self, ctx: &mut WorkerContext) -> Result<()> {
+        let stream_info = ctx.stream_info.clone();
+        let stream_msg_tx = ctx.stream_msg_tx.clone();
+        let flv_packet_tx = ctx.flv_packet_tx.clone();
+        let stop_signal = ctx.stop_signal.clone();
+        let live_id = ctx.live_id.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let mut worker = BlockingWorker {
+                stream_info,
+                stream_msg_tx: stream_msg_tx.clone(),
+                flv_packet_tx,
+                stop_signal,
+                input_ctx: None,
+                flv_output: None,
+                hls_output: None,
+                segment_id: 1,
+                last_start_pts: 0,
+            };
+
+            let start_span = tracing::info_span!("ingest.srt_worker.start", stream.protocol = "srt", stream.live_id = %worker.stream_info.live_id());
+
+            start_span.in_scope(|| {
+                info!(live_id = %worker.stream_info.live_id(), "SRT worker loop starting");
+            });
+
+            'worker_loop: loop {
+                let mut delay = Exponential::from_millis(10).map(jitter).take(5);
+
+                while let Some(duration) = delay.next() {
+                    let mut recovered = false;
+
+                    if let Err(e) = worker.start_impl(&mut recovered) {
+                        error!(error = %e, live_id = %worker.stream_info.live_id(), "Error in SRT worker loop");
+                        let _ = stream_msg_tx.send((StreamMessage::stream_restarting(&live_id, e.to_string()), Span::current()));
+                    } else {
+                        break 'worker_loop;
+                    }
+
+                    std::thread::sleep(duration);
+
+                    if recovered {
+                        delay = Exponential::from_millis(10).map(jitter).take(5);
+                        continue 'worker_loop;
+                    }
+                }
+            }
+
+            info!(live_id = %worker.stream_info.live_id(), "SRT worker loop exited");
+            Ok::<(), anyhow::Error>(())
+        }).await?
+    }
+}

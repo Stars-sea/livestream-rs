@@ -101,7 +101,7 @@ struct RtmpConnection {
     appname: String,
     session: Option<ServerSession>,
     stream_registry: Arc<dyn StreamRegistry>,
-    rtmp_tx: Option<mpsc::UnboundedSender<ingest::rtmp_worker::RtmpTag>>,
+    rtmp_tx: Option<mpsc::UnboundedSender<ingest::adapters::rtmp::RtmpTag>>,
     egress_handler: RtmpEgressHandler,
     _session_guard: metrics::MetricGuard,
 }
@@ -154,7 +154,7 @@ impl RtmpConnection {
                     let n = n?;
                     if n == 0 {
                         if let Some(tx) = self.rtmp_tx.take() {
-                            let _ = tx.send(ingest::rtmp_worker::RtmpTag::PublishFinished);
+                            let _ = tx.send(ingest::adapters::rtmp::RtmpTag::PublishFinished);
                         }
                         break;
                     }
@@ -162,7 +162,7 @@ impl RtmpConnection {
                     if let Err(e) = self.handle_input(&buffer[..n]).await {
                         warn!(remote_addr = ?addr, error = %e, "Failed to handle input");
                         if let Some(tx) = self.rtmp_tx.take() {
-                            let _ = tx.send(ingest::rtmp_worker::RtmpTag::PublishFinished);
+                            let _ = tx.send(ingest::adapters::rtmp::RtmpTag::PublishFinished);
                         }
                         break;
                     }
@@ -179,7 +179,7 @@ impl RtmpConnection {
                         if let Err(e) = egress_handler.handle_broadcast_tag(session, socket, tag).await {
                             warn!(remote_addr = ?addr, error = %e, "Failed to send tag to client");
                             if let Some(tx) = self.rtmp_tx.take() {
-                                let _ = tx.send(ingest::rtmp_worker::RtmpTag::PublishFinished);
+                                let _ = tx.send(ingest::adapters::rtmp::RtmpTag::PublishFinished);
                             }
                             break;
                         }
@@ -304,7 +304,7 @@ impl RtmpConnection {
                         let header = bytes::Bytes::from_static(&[
                             0x46, 0x4C, 0x56, 0x01, 0x05, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00,
                         ]);
-                        let _ = rtmp_tx.send(ingest::rtmp_worker::RtmpTag::Header { tag: header });
+                        let _ = rtmp_tx.send(ingest::adapters::rtmp::RtmpTag::Header { tag: header });
                         let res = session.accept_request(request_id)?;
                         self.write_response(res).await?;
                     } else {
@@ -318,7 +318,7 @@ impl RtmpConnection {
             }
             ServerSessionEvent::PublishStreamFinished { .. } => {
                 if let Some(tx) = self.rtmp_tx.take() {
-                    let _ = tx.send(ingest::rtmp_worker::RtmpTag::PublishFinished);
+                    let _ = tx.send(ingest::adapters::rtmp::RtmpTag::PublishFinished);
                 }
             }
             ServerSessionEvent::AudioDataReceived {
@@ -327,8 +327,8 @@ impl RtmpConnection {
                 ..
             } => {
                 if let Some(tx) = &mut self.rtmp_tx {
-                    let tag = ingest::rtmp_worker::make_rtmp_tag(8, timestamp.value, data.as_ref());
-                    let _ = tx.send(ingest::rtmp_worker::RtmpTag::Audio { tag, timestamp: timestamp.value, data_len: data.len() });
+                    let tag = ingest::adapters::rtmp::make_rtmp_tag(8, timestamp.value, data.as_ref());
+                    let _ = tx.send(ingest::adapters::rtmp::RtmpTag::Audio { tag, timestamp: timestamp.value, data_len: data.len() });
                 }
             }
             ServerSessionEvent::VideoDataReceived {
@@ -337,8 +337,8 @@ impl RtmpConnection {
                 ..
             } => {
                 if let Some(tx) = &mut self.rtmp_tx {
-                    let tag = ingest::rtmp_worker::make_rtmp_tag(9, timestamp.value, data.as_ref());
-                    let _ = tx.send(ingest::rtmp_worker::RtmpTag::Video { tag, timestamp: timestamp.value, payload: data.clone() });
+                    let tag = ingest::adapters::rtmp::make_rtmp_tag(9, timestamp.value, data.as_ref());
+                    let _ = tx.send(ingest::adapters::rtmp::RtmpTag::Video { tag, timestamp: timestamp.value, payload: data.clone() });
                 }
             }
             _ => {}

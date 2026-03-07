@@ -3,7 +3,7 @@ use tracing::Span;
 
 use crate::media::output::FlvPacket;
 
-use super::events::StreamMessage;
+use crate::ingest::events::StreamMessage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WorkerState {
@@ -14,7 +14,7 @@ pub(super) enum WorkerState {
 }
 
 #[derive(Debug)]
-pub(super) struct WorkerLifecycle {
+pub struct WorkerLifecycle {
     live_id: String,
     state: WorkerState,
     stream_started_notified: bool,
@@ -83,6 +83,7 @@ impl WorkerLifecycle {
         }
     }
 
+    #[allow(dead_code)]
     pub fn notify_stream_restarting(
         &self,
         stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
@@ -163,6 +164,7 @@ pub(super) fn notify_stream_stopped(
     ));
 }
 
+#[allow(dead_code)]
 pub(super) fn notify_stream_restarting(
     stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
     live_id: &str,

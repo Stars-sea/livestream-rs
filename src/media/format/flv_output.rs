@@ -152,6 +152,7 @@ impl OutputContext for FlvOutputContext {
 }
 
 impl FlvOutputContext {
+    #[allow(dead_code)]
     pub fn get_flv_packet_sender(&self) -> Option<mpsc::UnboundedSender<FlvPacket>> {
         if self.ctx.is_null() {
             return None;

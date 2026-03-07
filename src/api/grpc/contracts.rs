@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::media::output::FlvPacket;
-use crate::ingest::rtmp_worker::RtmpTag;
+use crate::ingest::adapters::rtmp::RtmpTag;
 use crate::ingest::stream_info::StreamInfo;
 
 pub trait StreamRegistry: Debug + Send + Sync {

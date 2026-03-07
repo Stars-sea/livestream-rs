@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use tokio::fs;
 use tokio::sync::mpsc;
@@ -8,20 +7,17 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{Instrument, Level, debug, warn};
 use tracing::{Span, event};
 
-use super::events::*;
-use crate::ingest::manager::StreamContext;
-use crate::ingest::port_allocator::PortAllocator;
-use dashmap::DashMap;
+use super::types::*;
 use crate::infra::GrpcClientFactory;
 use crate::infra::MinioClient;
 use crate::infra::api::*;
+use crate::ingest::manager::StreamManager;
 
-pub(super) async fn stream_message_handler(
+pub(crate) async fn stream_message_handler(
     rx: mpsc::UnboundedReceiver<(StreamMessage, Span)>,
     client_factory: GrpcClientFactory,
     minio: MinioClient,
-    stream_contexts: Arc<DashMap<String, StreamContext>>,
-    port_allocator: Arc<PortAllocator>,
+    stream_manager: StreamManager,
 ) {
     let mut stream = UnboundedReceiverStream::new(rx);
 
@@ -45,8 +41,7 @@ pub(super) async fn stream_message_handler(
                     live_id,
                     error,
                     &client_factory,
-                    &stream_contexts,
-                    &port_allocator,
+                    &stream_manager,
                 )
                 .instrument(span)
                 .await;
@@ -117,8 +112,7 @@ async fn stream_stopped_handler(
     live_id: String,
     error_message: Option<String>,
     client_factory: &GrpcClientFactory,
-    stream_contexts: &Arc<DashMap<String, StreamContext>>,
-    port_allocator: &Arc<PortAllocator>,
+    stream_manager: &StreamManager,
 ) {
     event!(
         Level::INFO,
@@ -127,12 +121,9 @@ async fn stream_stopped_handler(
         error_message.as_deref().unwrap_or("None")
     );
 
-    if let Some((_, ctx)) = stream_contexts.remove(&live_id) {
-        if let Some(srt_options) = ctx.info.srt_options() {
-            port_allocator.release_port(srt_options.port()).await;
-        }
-        debug!(live_id = %live_id, "Cleaned up stream from contexts and released ports");
-    }
+    // Replace the Map removal with a call to the new actor method
+    stream_manager.remove_stream(&live_id).await;
+    debug!(live_id = %live_id, "Cleaned up stream from manager");
 
     if let Ok(Some(mut client)) = client_factory.build().await {
         let req = NotifyStreamStoppedRequest {
