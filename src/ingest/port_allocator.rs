@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::settings::load_settings;
+use crate::config::load_settings;
 
 /// Manages allocation of ports within a specified range.
 /// Ensures ports are available before allocation by testing UDP and TCP binding.

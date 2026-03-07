@@ -19,9 +19,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::ingest::StreamManager;
 use crate::ingest::stream_info::{StreamInfo, StreamInputOptions};
-use crate::otlp::metrics;
-use crate::services::api;
-use crate::settings::load_settings;
+use crate::telemetry::metrics;
+use crate::infra::api;
+use crate::config::load_settings;
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
 

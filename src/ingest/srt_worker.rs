@@ -7,10 +7,10 @@ use super::events::*;
 use super::lifecycle;
 use super::stream_info::{StreamInfo, StreamInputOptions};
 
-use crate::core::context::{Context, InputContext};
-use crate::core::output::{FlvOutputContext, FlvPacket, HlsOutputContext};
-use crate::core::packet::{Packet, PacketReadResult};
-use crate::otlp::metrics;
+use crate::media::context::{Context, InputContext};
+use crate::media::output::{FlvOutputContext, FlvPacket, HlsOutputContext};
+use crate::media::packet::{Packet, PacketReadResult};
+use crate::telemetry::metrics;
 
 use anyhow::Result;
 use retry::OperationResult;

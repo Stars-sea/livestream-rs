@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::{Instrument, debug, info_span};
 
-use crate::settings::{MinioConfig, load_settings};
+use crate::config::{MinioConfig, load_settings};
 
 /// Client for interacting with MinIO or S3-compatible storage.
 #[derive(Debug, Clone)]

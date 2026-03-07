@@ -4,11 +4,11 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{Span, instrument, warn};
 
-use crate::core::output::FlvPacket;
+use crate::media::output::FlvPacket;
 use crate::ingest::events::StreamMessage;
 use crate::ingest::lifecycle;
 use crate::ingest::stream_info::StreamInfo;
-use crate::otlp::metrics;
+use crate::telemetry::metrics;
 
 pub enum RtmpTag {
     Audio {

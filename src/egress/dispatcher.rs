@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use tokio::sync::{RwLock, broadcast};
 
-use crate::core::flv_parser::FlvTag;
-use crate::services::MemoryCache;
+use crate::media::flv_parser::FlvTag;
+use crate::infra::MemoryCache;
 
 #[derive(Clone)]
 pub(crate) struct StreamState {
@@ -59,7 +59,7 @@ impl StreamDispatcher {
 mod tests {
     use std::sync::Arc;
 
-    use crate::core::flv_parser::FlvTag;
+    use crate::media::flv_parser::FlvTag;
 
     use super::StreamDispatcher;
 

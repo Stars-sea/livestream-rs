@@ -3,8 +3,8 @@ use std::path::Path;
 use anyhow::Result;
 use tempfile::TempDir;
 
-use crate::core::options::{RtmpInputStreamOptions, SrtInputStreamOptions};
-use crate::settings::load_settings;
+use crate::media::options::{RtmpInputStreamOptions, SrtInputStreamOptions};
+use crate::config::load_settings;
 
 #[derive(Debug)]
 pub enum StreamInputOptions {

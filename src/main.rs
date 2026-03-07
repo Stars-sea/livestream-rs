@@ -12,15 +12,15 @@ use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetryLayer;
 
-use crate::server::AppServer;
+use crate::api::AppServer;
 
-mod core;
+mod api;
+mod config;
 mod egress;
+mod infra;
 mod ingest;
-mod otlp;
-mod server;
-mod services;
-mod settings;
+mod media;
+mod telemetry;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -28,8 +28,8 @@ async fn main() -> Result<()> {
     let mut providers = None;
 
     #[cfg(feature = "opentelemetry")]
-    if otlp::otlp_enabled() {
-        let (logger_provider, tracer_provider, meter_provider) = otlp::init_otlp()?;
+    if telemetry::otlp_enabled() {
+        let (logger_provider, tracer_provider, meter_provider) = telemetry::init_otlp()?;
         let tracer = tracer_provider.tracer("livestream-rs");
 
         let fmt_layer = fmt::layer()
@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
         "Starting LiveStream server"
     );
 
-    core::init();
+    media::init();
 
     if let Err(e) = AppServer::run().await {
         error!(error = %e, "Server runtime error");

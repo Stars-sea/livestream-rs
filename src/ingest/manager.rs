@@ -14,11 +14,11 @@ use super::rtmp_worker::{RtmpTag, RtmpWorker};
 use super::srt_worker::SrtWorker;
 use super::stream_info::StreamInfo;
 
-use crate::core::output::FlvPacket;
-use crate::otlp::metrics;
-use crate::server::contracts::StreamRegistry;
-use crate::services::GrpcClientFactory;
-use crate::services::MinioClient;
+use crate::media::output::FlvPacket;
+use crate::telemetry::metrics;
+use crate::api::contracts::StreamRegistry;
+use crate::infra::GrpcClientFactory;
+use crate::infra::MinioClient;
 use dashmap::DashMap;
 
 #[derive(Debug)]

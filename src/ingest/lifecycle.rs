@@ -1,7 +1,7 @@
 use tokio::sync::mpsc;
 use tracing::Span;
 
-use crate::core::output::FlvPacket;
+use crate::media::output::FlvPacket;
 
 use super::events::StreamMessage;
 

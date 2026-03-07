@@ -20,7 +20,7 @@ use tracing::Span;
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::settings::load_settings;
+use crate::config::load_settings;
 
 use super::api::livestream_callback_client::LivestreamCallbackClient;
 

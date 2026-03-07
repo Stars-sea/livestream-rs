@@ -10,15 +10,15 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::{Duration, interval};
 use tracing::{Span, debug, error, info, instrument, warn};
 
-use crate::core::flv_parser::{FlvDemuxer, FlvTag};
-use crate::core::output::FlvPacket;
+use crate::media::flv_parser::{FlvDemuxer, FlvTag};
+use crate::media::output::FlvPacket;
 use crate::egress::dispatcher::StreamDispatcher;
 use crate::egress::rtmp_egress::RtmpEgressHandler;
 use crate::ingest::{self, events::StreamMessage};
-use crate::otlp::metrics;
-use crate::server::contracts::StreamRegistry;
-use crate::settings::EgressConfig;
-use crate::settings::load_settings;
+use crate::telemetry::metrics;
+use crate::api::contracts::StreamRegistry;
+use crate::config::EgressConfig;
+use crate::config::load_settings;
 
 #[derive(Debug)]
 pub struct RtmpServer {

@@ -10,8 +10,8 @@ use tracing::error;
 
 use crate::ingest::StreamManager;
 use crate::ingest::events::StreamMessage;
-use crate::server::contracts::{FlvPacketBus, MediaBus};
-use crate::services::MinioClient;
+use crate::api::contracts::{FlvPacketBus, MediaBus};
+use crate::infra::MinioClient;
 
 use self::grpc::GrpcServer;
 use self::rtmp::RtmpServer;

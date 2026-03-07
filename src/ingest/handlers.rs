@@ -12,9 +12,9 @@ use super::events::*;
 use crate::ingest::manager::StreamContext;
 use crate::ingest::port_allocator::PortAllocator;
 use dashmap::DashMap;
-use crate::services::GrpcClientFactory;
-use crate::services::MinioClient;
-use crate::services::api::*;
+use crate::infra::GrpcClientFactory;
+use crate::infra::MinioClient;
+use crate::infra::api::*;
 
 pub(super) async fn stream_message_handler(
     rx: mpsc::UnboundedReceiver<(StreamMessage, Span)>,
