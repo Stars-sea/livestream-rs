@@ -1,6 +1,6 @@
 //! MPEG-TS output context wrapper for FFmpeg.
 
-use super::context::{Context, OutputContext};
+use crate::media::context::{Context, OutputContext};
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;

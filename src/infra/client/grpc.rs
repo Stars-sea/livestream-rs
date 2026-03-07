@@ -22,7 +22,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::config::load_settings;
 
-use super::api::livestream_callback_client::LivestreamCallbackClient;
+use crate::infra::api::livestream_callback_client::LivestreamCallbackClient;
 
 #[cfg(feature = "opentelemetry")]
 struct MetadataInjector<'a>(&'a mut MetadataMap);

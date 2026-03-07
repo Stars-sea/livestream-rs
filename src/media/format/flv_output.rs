@@ -1,7 +1,7 @@
 //! FLV output context for streaming to RTMP servers.
 
-use super::context::{Context, OutputContext};
-use super::ffmpeg_error;
+use crate::media::context::{Context, OutputContext};
+use crate::media::ffmpeg_error;
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;

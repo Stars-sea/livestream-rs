@@ -1,11 +1,10 @@
-mod cache;
-mod grpc_client;
-mod minio;
+mod client;
+mod storage;
 
 pub mod api {
     tonic::include_proto!("livestream");
 }
 
-pub use cache::MemoryCache;
-pub use grpc_client::GrpcClientFactory;
-pub use minio::MinioClient;
+pub use client::grpc::GrpcClientFactory;
+pub use storage::cache::MemoryCache;
+pub use storage::minio::MinioClient;

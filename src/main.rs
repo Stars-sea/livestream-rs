@@ -21,6 +21,7 @@ mod infra;
 mod ingest;
 mod media;
 mod telemetry;
+mod transport;
 
 #[tokio::main]
 async fn main() -> Result<()> {

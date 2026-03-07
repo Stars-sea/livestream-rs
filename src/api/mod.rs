@@ -1,6 +1,4 @@
-pub mod contracts;
-mod grpc;
-mod rtmp;
+pub mod grpc;
 
 use std::sync::Arc;
 
@@ -8,13 +6,13 @@ use anyhow::Result;
 use tokio::sync::{broadcast, mpsc};
 use tracing::error;
 
+use crate::transport::RtmpServer;
 use crate::ingest::StreamManager;
 use crate::ingest::events::StreamMessage;
-use crate::api::contracts::{FlvPacketBus, MediaBus};
+use crate::api::grpc::contracts::{FlvPacketBus, MediaBus};
 use crate::infra::MinioClient;
 
-use self::grpc::GrpcServer;
-use self::rtmp::RtmpServer;
+use self::grpc::server::GrpcServer;
 
 pub struct AppServer;
 

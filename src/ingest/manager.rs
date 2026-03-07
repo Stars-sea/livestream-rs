@@ -16,7 +16,7 @@ use super::stream_info::StreamInfo;
 
 use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
-use crate::api::contracts::StreamRegistry;
+use crate::api::grpc::contracts::StreamRegistry;
 use crate::infra::GrpcClientFactory;
 use crate::infra::MinioClient;
 use dashmap::DashMap;

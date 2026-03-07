@@ -16,7 +16,7 @@ use crate::egress::dispatcher::StreamDispatcher;
 use crate::egress::rtmp_egress::RtmpEgressHandler;
 use crate::ingest::{self, events::StreamMessage};
 use crate::telemetry::metrics;
-use crate::api::contracts::StreamRegistry;
+use crate::api::grpc::contracts::StreamRegistry;
 use crate::config::EgressConfig;
 use crate::config::load_settings;
 

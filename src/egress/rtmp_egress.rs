@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 use crate::media::flv_parser::FlvTag;
 use crate::egress::dispatcher::{StreamDispatcher, StreamState};
 use crate::telemetry::metrics;
-use crate::api::contracts::StreamRegistry;
+use crate::api::grpc::contracts::StreamRegistry;
 
 pub struct RtmpEgressHandler {
     dispatcher: StreamDispatcher,
