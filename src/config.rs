@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 /// Application settings loaded from configuration files and environment variables.
 #[derive(Clone, Debug, Deserialize)]
-pub struct Settings {
+pub struct AppConfig {
     /// Ingest Configuration
     #[serde(default)]
     pub ingest: IngestConfig,
@@ -161,7 +161,7 @@ impl Default for EgressConfig {
     }
 }
 
-impl Settings {
+impl AppConfig {
     /// Loads settings from configuration files and environment variables.
     pub fn new() -> Result<Self> {
         let builder = Config::builder()
@@ -170,7 +170,7 @@ impl Settings {
 
         let config = builder.build().context("Failed to build configuration")?;
 
-        let settings: Settings = config
+        let settings: AppConfig = config
             .try_deserialize()
             .context("Failed to deserialize configuration")?;
 
@@ -204,8 +204,8 @@ impl Settings {
     }
 }
 
-pub fn load_settings() -> &'static Settings {
-    static SETTINGS: OnceLock<Settings> = OnceLock::new();
+pub fn load_config() -> &'static AppConfig {
+    static SETTINGS: OnceLock<AppConfig> = OnceLock::new();
 
-    &SETTINGS.get_or_init(|| Settings::new().expect("Failed to load application settings"))
+    &SETTINGS.get_or_init(|| AppConfig::new().expect("Failed to load application settings"))
 }

@@ -10,10 +10,10 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use tracing::{Span, instrument};
 
-use super::events::handlers;
-use super::port_allocator::PortAllocator;
 use super::adapters::rtmp::{RtmpAdapter, RtmpTag};
 use super::adapters::srt::SrtAdapter;
+use super::events::handlers;
+use super::port_allocator::PortAllocator;
 use super::stream_info::StreamInfo;
 
 use crate::api::grpc::contracts::StreamRegistry;
@@ -514,5 +514,40 @@ impl ManagerActor {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn test_manager_actor_flow() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(10);
+        let (flv_tx, _flv_rx) = mpsc::unbounded_channel();
+        let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
+
+        let actor = ManagerActor::new(cmd_rx, flv_tx, msg_tx, cmd_tx.clone());
+        tokio::spawn(actor.run());
+
+        let manager = StreamManager { cmd_tx };
+
+        let streams = manager.list_active_streams().await.unwrap();
+        assert!(streams.is_empty());
+        assert!(manager.is_streams_empty().await);
+
+        let info = manager.make_rtmp_stream_info("test_live").await.unwrap();
+        assert_eq!(info.live_id(), "test_live");
+
+        assert!(manager.has_stream("test_live").await);
+        let active = manager.list_active_streams().await.unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0], "test_live");
+
+        manager.stop_stream("test_live").await.unwrap();
+        assert!(!manager.has_stream("test_live").await);
+
+        manager.shutdown().await;
     }
 }

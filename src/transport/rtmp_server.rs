@@ -10,15 +10,15 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::{Duration, interval};
 use tracing::{Span, debug, error, info, instrument, warn};
 
-use crate::media::flv_parser::{FlvDemuxer, FlvTag};
-use crate::media::output::FlvPacket;
+use crate::api::grpc::contracts::StreamRegistry;
+use crate::config::EgressConfig;
+use crate::config::load_config;
 use crate::egress::dispatcher::StreamDispatcher;
 use crate::egress::rtmp_egress::RtmpEgressHandler;
 use crate::ingest::{self, events::StreamMessage};
+use crate::media::flv_parser::{FlvDemuxer, FlvTag};
+use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
-use crate::api::grpc::contracts::StreamRegistry;
-use crate::config::EgressConfig;
-use crate::config::load_settings;
 
 #[derive(Debug)]
 pub struct RtmpServer {
@@ -32,7 +32,7 @@ impl RtmpServer {
         _flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
         _stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
     ) -> Self {
-        let config = load_settings().egress.clone();
+        let config = load_config().egress.clone();
         Self {
             config,
             stream_registry,
@@ -302,17 +302,27 @@ impl RtmpConnection {
                     if let Some(rtmp_tx) = self.stream_registry.get_rtmp_tx(&stream_key).await {
                         self.rtmp_tx = Some(rtmp_tx.clone());
                         let header = bytes::Bytes::from_static(&[
-                            0x46, 0x4C, 0x56, 0x01, 0x05, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00,
+                            0x46, 0x4C, 0x56, 0x01, 0x05, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00,
+                            0x00,
                         ]);
-                        let _ = rtmp_tx.send(ingest::adapters::rtmp::RtmpTag::Header { tag: header });
+                        let _ =
+                            rtmp_tx.send(ingest::adapters::rtmp::RtmpTag::Header { tag: header });
                         let res = session.accept_request(request_id)?;
                         self.write_response(res).await?;
                     } else {
-                        let res = session.reject_request(request_id, "StreamNotFound", "Stream not found")?;
+                        let res = session.reject_request(
+                            request_id,
+                            "StreamNotFound",
+                            "Stream not found",
+                        )?;
                         self.write_response(res).await?;
                     }
                 } else {
-                    let res = session.reject_request(request_id, "AppNotFound", "Application not found")?;
+                    let res = session.reject_request(
+                        request_id,
+                        "AppNotFound",
+                        "Application not found",
+                    )?;
                     self.write_response(res).await?;
                 }
             }
@@ -322,23 +332,29 @@ impl RtmpConnection {
                 }
             }
             ServerSessionEvent::AudioDataReceived {
-                timestamp,
-                data,
-                ..
+                timestamp, data, ..
             } => {
                 if let Some(tx) = &mut self.rtmp_tx {
-                    let tag = ingest::adapters::rtmp::make_rtmp_tag(8, timestamp.value, data.as_ref());
-                    let _ = tx.send(ingest::adapters::rtmp::RtmpTag::Audio { tag, timestamp: timestamp.value, data_len: data.len() });
+                    let tag =
+                        ingest::adapters::rtmp::make_rtmp_tag(8, timestamp.value, data.as_ref());
+                    let _ = tx.send(ingest::adapters::rtmp::RtmpTag::Audio {
+                        tag,
+                        timestamp: timestamp.value,
+                        data_len: data.len(),
+                    });
                 }
             }
             ServerSessionEvent::VideoDataReceived {
-                timestamp,
-                data,
-                ..
+                timestamp, data, ..
             } => {
                 if let Some(tx) = &mut self.rtmp_tx {
-                    let tag = ingest::adapters::rtmp::make_rtmp_tag(9, timestamp.value, data.as_ref());
-                    let _ = tx.send(ingest::adapters::rtmp::RtmpTag::Video { tag, timestamp: timestamp.value, payload: data.clone() });
+                    let tag =
+                        ingest::adapters::rtmp::make_rtmp_tag(9, timestamp.value, data.as_ref());
+                    let _ = tx.send(ingest::adapters::rtmp::RtmpTag::Video {
+                        tag,
+                        timestamp: timestamp.value,
+                        payload: data.clone(),
+                    });
                 }
             }
             _ => {}
@@ -403,6 +419,3 @@ async fn process_flv_packets(
         }
     }
 }
-
-
-

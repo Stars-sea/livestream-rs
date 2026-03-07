@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::{Instrument, debug, info_span};
 
-use crate::config::{MinioConfig, load_settings};
+use crate::config::{MinioConfig, load_config};
 
 /// Client for interacting with MinIO or S3-compatible storage.
 #[derive(Debug, Clone)]
@@ -40,7 +40,7 @@ impl MinioClient {
     }
 
     pub async fn create_default() -> Result<Self> {
-        let config = load_settings()
+        let config = load_config()
             .minio
             .clone()
             .ok_or_else(|| anyhow!("Minio configuration not found in settings"))?;

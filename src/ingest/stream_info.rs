@@ -3,8 +3,8 @@ use std::path::Path;
 use anyhow::Result;
 use tempfile::TempDir;
 
+use crate::config::load_config;
 use crate::media::options::{RtmpInputStreamOptions, SrtInputStreamOptions};
-use crate::config::load_settings;
 
 #[derive(Debug)]
 pub enum StreamInputOptions {
@@ -26,9 +26,9 @@ pub struct StreamInfo {
 
 impl StreamInfo {
     pub fn new_srt(live_id: String, port: u16, passphrase: String) -> Result<Self> {
-        let settings = load_settings();
-        let host = settings.ingest.host.clone();
-        let segment_duration = settings.ingest.duration;
+        let config = load_config();
+        let host = config.ingest.host.clone();
+        let segment_duration = config.ingest.duration;
 
         let input_options = StreamInputOptions::Srt(SrtInputStreamOptions::new(
             host,
@@ -63,11 +63,11 @@ impl StreamInfo {
     }
 
     pub fn new_rtmp(live_id: String) -> Result<Self> {
-        let settings = load_settings();
-        let host = settings.ingest.host.clone();
-        let port = settings.egress.port;
-        let appname = settings.egress.appname.clone();
-        let segment_duration = settings.ingest.duration;
+        let config = load_config();
+        let host = config.ingest.host.clone();
+        let port = config.egress.port;
+        let appname = config.egress.appname.clone();
+        let segment_duration = config.ingest.duration;
 
         let input_options = StreamInputOptions::Rtmp(RtmpInputStreamOptions::new(
             host,

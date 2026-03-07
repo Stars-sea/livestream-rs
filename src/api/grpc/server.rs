@@ -17,11 +17,11 @@ use tracing::Span;
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+use crate::config::load_config;
+use crate::infra::api;
 use crate::ingest::StreamManager;
 use crate::ingest::stream_info::{StreamInfo, StreamInputOptions};
 use crate::telemetry::metrics;
-use crate::infra::api;
-use crate::config::load_settings;
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
 
@@ -167,15 +167,15 @@ impl api::livestream_server::Livestream for IngestGrpcService {
 
 impl Into<api::StreamInfoResponse> for Arc<StreamInfo> {
     fn into(self) -> api::StreamInfoResponse {
-        let settings = load_settings();
+        let config = load_config();
 
         match self.input_options() {
             StreamInputOptions::Srt(options) => api::StreamInfoResponse {
                 live_id: self.live_id().to_string(),
                 host: options.host().to_string(),
                 port: options.port() as u32,
-                pull_port: settings.egress.port as u32,
-                rtmp_appname: settings.egress.appname.clone(),
+                pull_port: config.egress.port as u32,
+                rtmp_appname: config.egress.appname.clone(),
                 passphrase: Some(options.passphrase().to_string()),
                 input_protocol: api::InputProtocol::Srt as i32,
             },
@@ -183,8 +183,8 @@ impl Into<api::StreamInfoResponse> for Arc<StreamInfo> {
                 live_id: self.live_id().to_string(),
                 host: options.host().to_string(),
                 port: options.port() as u32,
-                pull_port: settings.egress.port as u32,
-                rtmp_appname: settings.egress.appname.clone(),
+                pull_port: config.egress.port as u32,
+                rtmp_appname: config.egress.appname.clone(),
                 passphrase: None,
                 input_protocol: api::InputProtocol::Rtmp as i32,
             },
@@ -221,9 +221,9 @@ impl GrpcServer {
         Self { manager }
     }
 
-    #[instrument(name = "server.grpc.serve", skip(self), fields(server.port = load_settings().grpc.port))]
+    #[instrument(name = "server.grpc.serve", skip(self), fields(server.port = load_config().grpc.port))]
     pub async fn serve(self) -> Result<()> {
-        let grpc_addr = format!("0.0.0.0:{}", load_settings().grpc.port);
+        let grpc_addr = format!("0.0.0.0:{}", load_config().grpc.port);
         info!(address = %grpc_addr, "gRPC Server will listen");
 
         let service = IngestGrpcService::new(self.manager.clone());
