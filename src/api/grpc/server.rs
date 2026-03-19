@@ -17,7 +17,7 @@ use tracing::Span;
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::config::load_config;
+use crate::config::{EgressConfig, GrpcConfig};
 use crate::infra::api;
 use crate::ingest::StreamManager;
 use crate::ingest::stream_info::{StreamInfo, StreamInputOptions};
@@ -28,11 +28,35 @@ static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
 #[derive(Debug)]
 pub struct IngestGrpcService {
     manager: Arc<StreamManager>,
+    egress_config: EgressConfig,
 }
 
 impl IngestGrpcService {
-    pub fn new(manager: Arc<StreamManager>) -> Self {
-        Self { manager }
+    pub fn new(manager: Arc<StreamManager>, egress_config: EgressConfig) -> Self {
+        Self { manager, egress_config }
+    }
+
+    fn to_response(&self, info: Arc<StreamInfo>) -> api::StreamInfoResponse {
+        match info.input_options() {
+            StreamInputOptions::Srt(options) => api::StreamInfoResponse {
+                live_id: info.live_id().to_string(),
+                host: options.host().to_string(),
+                port: options.port() as u32,
+                pull_port: self.egress_config.port as u32,
+                rtmp_appname: self.egress_config.appname.clone(),
+                passphrase: Some(options.passphrase().to_string()),
+                input_protocol: api::InputProtocol::Srt as i32,
+            },
+            StreamInputOptions::Rtmp(options) => api::StreamInfoResponse {
+                live_id: info.live_id().to_string(),
+                host: options.host().to_string(),
+                port: options.port() as u32,
+                pull_port: self.egress_config.port as u32,
+                rtmp_appname: self.egress_config.appname.clone(),
+                passphrase: None,
+                input_protocol: api::InputProtocol::Rtmp as i32,
+            },
+        }
     }
 }
 
@@ -97,7 +121,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
             }
         }
 
-        let resp: api::StreamInfoResponse = stream_info.into();
+        let resp = self.to_response(stream_info);
         grpc_guard.success();
         Ok(Response::new(resp))
     }
@@ -156,38 +180,11 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         }
 
         if let Some(info) = self.manager.get_stream_info(&live_id).await {
-            let resp: api::StreamInfoResponse = info.into();
+            let resp = self.to_response(info);
             grpc_guard.success();
             Ok(Response::new(resp))
         } else {
             Err(Status::not_found("Stream not found"))
-        }
-    }
-}
-
-impl Into<api::StreamInfoResponse> for Arc<StreamInfo> {
-    fn into(self) -> api::StreamInfoResponse {
-        let config = load_config();
-
-        match self.input_options() {
-            StreamInputOptions::Srt(options) => api::StreamInfoResponse {
-                live_id: self.live_id().to_string(),
-                host: options.host().to_string(),
-                port: options.port() as u32,
-                pull_port: config.egress.port as u32,
-                rtmp_appname: config.egress.appname.clone(),
-                passphrase: Some(options.passphrase().to_string()),
-                input_protocol: api::InputProtocol::Srt as i32,
-            },
-            StreamInputOptions::Rtmp(options) => api::StreamInfoResponse {
-                live_id: self.live_id().to_string(),
-                host: options.host().to_string(),
-                port: options.port() as u32,
-                pull_port: config.egress.port as u32,
-                rtmp_appname: config.egress.appname.clone(),
-                passphrase: None,
-                input_protocol: api::InputProtocol::Rtmp as i32,
-            },
         }
     }
 }
@@ -214,19 +211,21 @@ impl Extractor for MetadataExtractor<'_> {
 
 pub struct GrpcServer {
     manager: Arc<StreamManager>,
+    grpc_config: GrpcConfig,
+    egress_config: EgressConfig,
 }
 
 impl GrpcServer {
-    pub fn new(manager: Arc<StreamManager>) -> Self {
-        Self { manager }
+    pub fn new(manager: Arc<StreamManager>, grpc_config: GrpcConfig, egress_config: EgressConfig) -> Self {
+        Self { manager, grpc_config, egress_config }
     }
 
-    #[instrument(name = "server.grpc.serve", skip(self), fields(server.port = load_config().grpc.port))]
+    #[instrument(name = "server.grpc.serve", skip(self), fields(server.port = self.grpc_config.port))]
     pub async fn serve(self) -> Result<()> {
-        let grpc_addr = format!("0.0.0.0:{}", load_config().grpc.port);
+        let grpc_addr = format!("0.0.0.0:{}", self.grpc_config.port);
         info!(address = %grpc_addr, "gRPC Server will listen");
 
-        let service = IngestGrpcService::new(self.manager.clone());
+        let service = IngestGrpcService::new(self.manager.clone(), self.egress_config);
         Server::builder()
             .add_service(api::livestream_server::LivestreamServer::with_interceptor(
                 service,

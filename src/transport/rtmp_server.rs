@@ -12,7 +12,6 @@ use tracing::{Span, debug, error, info, instrument, warn};
 
 use crate::api::grpc::contracts::StreamRegistry;
 use crate::config::EgressConfig;
-use crate::config::load_config;
 use crate::egress::dispatcher::StreamDispatcher;
 use crate::egress::rtmp_egress::RtmpEgressHandler;
 use crate::ingest::{self, events::StreamMessage};
@@ -28,11 +27,11 @@ pub struct RtmpServer {
 
 impl RtmpServer {
     pub fn new(
+        config: EgressConfig,
         stream_registry: Arc<dyn StreamRegistry>,
         _flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
         _stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
     ) -> Self {
-        let config = load_config().egress.clone();
         Self {
             config,
             stream_registry,

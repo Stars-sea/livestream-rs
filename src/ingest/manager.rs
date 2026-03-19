@@ -13,7 +13,7 @@ use tracing::{Span, instrument};
 
 use super::adapters::rtmp::{RtmpAdapter, RtmpTag};
 use super::adapters::srt::SrtAdapter;
-use super::events::handlers;
+use super::events::{handlers, StreamMessage};
 use super::port_allocator::PortAllocator;
 use super::stream_info::StreamInfo;
 
@@ -92,16 +92,17 @@ enum ManagerCommand {
 #[derive(Clone, Debug)]
 pub struct StreamManager {
     cmd_tx: mpsc::Sender<ManagerCommand>,
+    stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
 }
 
 impl StreamManager {
     pub fn new(
         minio_client: MinioClient,
+        grpc_client_factory: GrpcClientFactory,
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-        stream_msg_tx: mpsc::UnboundedSender<(crate::ingest::events::StreamMessage, Span)>,
-        stream_msg_rx: mpsc::UnboundedReceiver<(crate::ingest::events::StreamMessage, Span)>,
     ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel(128);
+        let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_channel();
 
         let actor = ManagerActor::new(
             cmd_rx,
@@ -111,16 +112,20 @@ impl StreamManager {
         );
         tokio::spawn(actor.run());
 
-        let manager = Self { cmd_tx };
+        let manager = Self { cmd_tx, stream_msg_tx };
 
         tokio::spawn(handlers::stream_message_handler(
             stream_msg_rx,
-            GrpcClientFactory::default(),
+            grpc_client_factory,
             minio_client,
             manager.clone(),
         ));
 
         manager
+    }
+
+    pub fn msg_tx(&self) -> mpsc::UnboundedSender<(StreamMessage, Span)> {
+        self.stream_msg_tx.clone()
     }
 
     pub async fn make_srt_stream_info(
@@ -292,7 +297,7 @@ struct ManagerActor {
     stream_contexts: HashMap<String, StreamContext>,
     port_allocator: Arc<PortAllocator>,
     flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-    stream_msg_tx: mpsc::UnboundedSender<(crate::ingest::events::StreamMessage, Span)>,
+    stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
     self_cmd_tx: mpsc::Sender<ManagerCommand>,
 }
 
@@ -300,7 +305,7 @@ impl ManagerActor {
     fn new(
         rx: mpsc::Receiver<ManagerCommand>,
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-        stream_msg_tx: mpsc::UnboundedSender<(crate::ingest::events::StreamMessage, Span)>,
+        stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
         self_cmd_tx: mpsc::Sender<ManagerCommand>,
     ) -> Self {
         Self {
@@ -580,10 +585,10 @@ mod tests {
         let (flv_tx, _flv_rx) = mpsc::unbounded_channel();
         let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
 
-        let actor = ManagerActor::new(cmd_rx, flv_tx, msg_tx, cmd_tx.clone());
+        let actor = ManagerActor::new(cmd_rx, flv_tx, msg_tx.clone(), cmd_tx.clone());
         tokio::spawn(actor.run());
 
-        let manager = StreamManager { cmd_tx };
+        let manager = StreamManager { cmd_tx, stream_msg_tx: msg_tx };
 
         let streams = manager.list_active_streams().await.unwrap();
         assert!(streams.is_empty());

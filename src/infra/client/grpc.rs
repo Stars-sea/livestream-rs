@@ -20,8 +20,6 @@ use tracing::Span;
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::config::load_config;
-
 use crate::infra::api::livestream_callback_client::LivestreamCallbackClient;
 
 #[cfg(feature = "opentelemetry")]
@@ -86,12 +84,6 @@ impl GrpcClientFactory {
         let client = LivestreamCallbackClient::new(channel);
 
         Ok(Some(client))
-    }
-}
-
-impl Default for GrpcClientFactory {
-    fn default() -> Self {
-        Self::new(load_config().grpc.callback.clone())
     }
 }
 

@@ -3,14 +3,13 @@ pub mod grpc;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 use tracing::error;
 
-use crate::transport::RtmpServer;
-use crate::ingest::StreamManager;
-use crate::ingest::events::StreamMessage;
 use crate::api::grpc::contracts::{FlvPacketBus, MediaBus};
-use crate::infra::MinioClient;
+use crate::infra::{GrpcClientFactory, MinioClient};
+use crate::ingest::StreamManager;
+use crate::transport::RtmpServer;
 
 use self::grpc::server::GrpcServer;
 
@@ -18,20 +17,31 @@ pub struct AppServer;
 
 impl AppServer {
     pub async fn run() -> Result<()> {
+        let config = crate::config::load_config();
+
         let (media_bus, flv_rx) = FlvPacketBus::new();
-        let (stream_msg_tx, stream_msg_rx) =
-            mpsc::unbounded_channel::<(StreamMessage, tracing::Span)>();
         let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
-        let minio_client = MinioClient::create_default().await?;
+        let minio_config = config
+            .minio
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Minio configuration not found"))?;
+        let minio_client = MinioClient::create(minio_config).await?;
+
+        let grpc_client_factory = GrpcClientFactory::new(config.grpc.callback.clone());
+
         let manager = Arc::new(StreamManager::new(
             minio_client,
+            grpc_client_factory,
             media_bus.sender(),
-            stream_msg_tx.clone(),
-            stream_msg_rx,
         ));
 
-        let server = RtmpServer::new(manager.clone(), media_bus.sender(), stream_msg_tx);
+        let server = RtmpServer::new(
+            config.egress.clone(),
+            manager.clone(),
+            media_bus.sender(),
+            manager.msg_tx(),
+        );
 
         let shutdown_rx = shutdown_tx.subscribe();
         tokio::spawn(async move {
@@ -40,7 +50,8 @@ impl AppServer {
             }
         });
 
-        let grpc_future = GrpcServer::new(manager).serve();
+        let grpc_future =
+            GrpcServer::new(manager, config.grpc.clone(), config.egress.clone()).serve();
 
         let grpc_result = grpc_future.await;
 

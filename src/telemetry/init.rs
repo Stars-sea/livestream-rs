@@ -2,6 +2,8 @@ use std::sync::OnceLock;
 
 use anyhow::Result;
 use opentelemetry::global;
+use opentelemetry::trace::TracerProvider;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{LogExporter, MetricExporter, SpanExporter};
 use opentelemetry_sdk::{
     Resource,
@@ -10,6 +12,8 @@ use opentelemetry_sdk::{
     propagation::TraceContextPropagator,
     trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
 };
+use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 const OTEL_SERVICE_NAME: &str = "OTEL_SERVICE_NAME";
 
@@ -78,4 +82,59 @@ pub fn init_otlp() -> Result<(SdkLoggerProvider, SdkTracerProvider, SdkMeterProv
     let meter_provider = init_metrics()?;
 
     Ok((logger_provider, tracer_provider, meter_provider))
+}
+
+pub struct OtelGuard {
+    logger: SdkLoggerProvider,
+    tracer: SdkTracerProvider,
+    meter: SdkMeterProvider,
+}
+
+impl OtelGuard {
+    pub fn shutdown(&self) {
+        let _ = self.logger.shutdown();
+        let _ = self.tracer.shutdown();
+        let _ = self.meter.shutdown();
+    }
+}
+
+pub fn setup_telemetry() -> Result<Option<OtelGuard>> {
+    if !otlp_enabled() {
+        let fmt_layer = fmt::layer()
+            .compact()
+            .with_target(false)
+            .with_filter(EnvFilter::from_default_env());
+
+        tracing_subscriber::registry().with(fmt_layer).init();
+        return Ok(None);
+    }
+
+    let (logger_provider, tracer_provider, meter_provider) = init_otlp()?;
+    let tracer = tracer_provider.tracer("livestream-rs");
+
+    let fmt_layer = fmt::layer()
+        .compact()
+        .with_target(false)
+        .with_filter(EnvFilter::from_default_env());
+
+    let otel_layer = OpenTelemetryTracingBridge::new(&logger_provider)
+        .with_filter(EnvFilter::from_default_env());
+
+    let otel_trace_layer =
+        OpenTelemetryLayer::new(tracer).with_filter(EnvFilter::from_default_env());
+
+    tracing_subscriber::registry()
+        .with(otel_layer)
+        .with(otel_trace_layer)
+        .with(fmt_layer)
+        .init();
+
+    global::set_tracer_provider(tracer_provider.clone());
+    global::set_meter_provider(meter_provider.clone());
+
+    Ok(Some(OtelGuard {
+        logger: logger_provider,
+        tracer: tracer_provider,
+        meter: meter_provider,
+    }))
 }

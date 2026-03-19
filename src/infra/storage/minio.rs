@@ -1,6 +1,6 @@
 //! MinIO/S3 client for uploading stream segments.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use minio::s3::Client;
 use minio::s3::builders::ObjectContent;
 use minio::s3::creds::StaticProvider;
@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::{Instrument, debug, info_span};
 
-use crate::config::{MinioConfig, load_config};
+use crate::config::MinioConfig;
 
 /// Client for interacting with MinIO or S3-compatible storage.
 #[derive(Debug, Clone)]
@@ -37,15 +37,6 @@ impl MinioClient {
             endpoint: config.uri.clone(),
             client: client.into(),
         })
-    }
-
-    pub async fn create_default() -> Result<Self> {
-        let config = load_config()
-            .minio
-            .clone()
-            .ok_or_else(|| anyhow!("Minio configuration not found in settings"))?;
-
-        Self::create(config).await
     }
 
     /// Uploads a file to MinIO storage.
