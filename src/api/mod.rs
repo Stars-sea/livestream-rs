@@ -3,11 +3,10 @@ pub mod grpc;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::sync::broadcast;
 use tracing::error;
 
 use crate::api::grpc::contracts::{FlvPacketBus, MediaBus};
-use crate::infra::{GrpcClientFactory, MinioClient};
+use crate::infra::{GrpcClientFactory, MinioClient, ShutdownManager};
 use crate::ingest::StreamManager;
 use crate::transport::RtmpServer;
 
@@ -20,11 +19,9 @@ impl AppServer {
         let config = crate::config::load_config();
 
         let (media_bus, flv_rx) = FlvPacketBus::new();
-        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let shutdown = ShutdownManager::new();
 
-        let minio_config = config
-            .minio
-            .clone()
+        let minio_config = config.minio.clone()
             .ok_or_else(|| anyhow::anyhow!("Minio configuration not found"))?;
         let minio_client = MinioClient::create(minio_config).await?;
 
@@ -36,26 +33,34 @@ impl AppServer {
             media_bus.sender(),
         ));
 
+        let server_shutdown = shutdown.token();
         let server = RtmpServer::new(
             config.egress.clone(),
             manager.clone(),
             media_bus.sender(),
-            manager.msg_tx(),
+            manager.msg_tx()
         );
 
-        let shutdown_rx = shutdown_tx.subscribe();
         tokio::spawn(async move {
-            if let Err(e) = server.start(flv_rx, shutdown_rx).await {
+            if let Err(e) = server.start(flv_rx, server_shutdown).await {
                 error!(error = %e, "RTMP server failed");
             }
         });
 
-        let grpc_future =
-            GrpcServer::new(manager, config.grpc.clone(), config.egress.clone()).serve();
+        let grpc_shutdown = shutdown.token();
+        let grpc_future = GrpcServer::new(
+            manager,
+            config.grpc.clone(),
+            config.egress.clone()
+        ).serve(grpc_shutdown);
+
+        // Spawn signal listener
+        let shutdown_manager = shutdown.clone();
+        tokio::spawn(async move {
+            shutdown_manager.wait_for_signal().await;
+        });
 
         let grpc_result = grpc_future.await;
-
-        let _ = shutdown_tx.send(());
 
         grpc_result
     }

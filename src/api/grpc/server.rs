@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use regex::Regex;
 use std::sync::OnceLock;
-use tokio::signal;
+use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use tracing::{info, instrument};
@@ -220,8 +220,8 @@ impl GrpcServer {
         Self { manager, grpc_config, egress_config }
     }
 
-    #[instrument(name = "server.grpc.serve", skip(self), fields(server.port = self.grpc_config.port))]
-    pub async fn serve(self) -> Result<()> {
+    #[instrument(name = "server.grpc.serve", skip(self, shutdown), fields(server.port = self.grpc_config.port))]
+    pub async fn serve(self, shutdown: CancellationToken) -> Result<()> {
         let grpc_addr = format!("0.0.0.0:{}", self.grpc_config.port);
         info!(address = %grpc_addr, "gRPC Server will listen");
 
@@ -231,7 +231,7 @@ impl GrpcServer {
                 service,
                 Self::server_trace_interceptor,
             ))
-            .serve_with_shutdown(grpc_addr.parse()?, shutdown_signal(self.manager))
+            .serve_with_shutdown(grpc_addr.parse()?, shutdown_signal(self.manager, shutdown))
             .await?;
 
         Ok(())
@@ -250,36 +250,14 @@ impl GrpcServer {
     }
 }
 
-async fn shutdown_signal(manager: Arc<StreamManager>) {
-    let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {
-            info!("Received Ctrl+C signal, shutting down gracefully");
-        },
-        _ = terminate => {
-            info!("Received SIGTERM signal, shutting down gracefully");
-        },
-    }
+async fn shutdown_signal(manager: Arc<StreamManager>, token: CancellationToken) {
+    token.cancelled().await;
+    info!("Shutdown signal received, draining streams...");
 
     manager.shutdown().await;
 
     while !manager.is_streams_empty().await {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
+    info!("All active streams stopped.");
 }

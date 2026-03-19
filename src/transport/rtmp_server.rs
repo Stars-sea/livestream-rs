@@ -5,8 +5,9 @@ use anyhow::Result;
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use tracing::{Span, debug, error, info, instrument, warn};
 
@@ -42,18 +43,18 @@ impl RtmpServer {
     pub async fn start(
         &self,
         flv_packet_rx: mpsc::UnboundedReceiver<FlvPacket>,
-        mut shutdown: broadcast::Receiver<()>,
+        shutdown: CancellationToken,
     ) -> Result<()> {
         let listener = TcpListener::bind(format!("0.0.0.0:{}", self.config.port)).await?;
         info!(port = self.config.port, app = %self.config.appname, "RTMP server listening");
 
         let dispatcher = StreamDispatcher::new();
-        let mut shutdown_clone = shutdown.resubscribe();
+        let shutdown_clone = shutdown.clone();
         let dispatcher_clone = dispatcher.clone();
         tokio::spawn(async move {
             tokio::select! {
                 _ = process_flv_packets(flv_packet_rx, dispatcher_clone) => {},
-                _ = shutdown_clone.recv() => {
+                _ = shutdown_clone.cancelled() => {
                     info!("RTMP FLV packet processor shutting down");
                 }
             }
@@ -61,7 +62,7 @@ impl RtmpServer {
 
         loop {
             tokio::select! {
-                _ = shutdown.recv() => {
+                _ = shutdown.cancelled() => {
                     info!("RTMP server received shutdown signal");
                     break;
                 }
