@@ -18,10 +18,12 @@ impl ShutdownManager {
         self.token.clone()
     }
 
+    #[allow(dead_code)]
     pub fn cancel(&self) {
         self.token.cancel();
     }
 
+    #[allow(dead_code)]
     pub fn is_cancelled(&self) -> bool {
         self.token.is_cancelled()
     }
@@ -68,4 +70,3 @@ impl Default for ShutdownManager {
         Self::new()
     }
 }
-

@@ -4,7 +4,7 @@ use anyhow::Result;
 use tempfile::TempDir;
 
 use crate::config::load_config;
-use crate::media::options::{RtmpInputStreamOptions, SrtInputStreamOptions};
+use crate::media::options::SrtInputStreamOptions;
 
 /// Provides the connection and configuration details specific to the protocol
 /// selected for media ingest.
@@ -13,10 +13,14 @@ pub enum StreamInputOptions {
     /// Settings to establish and read from an SRT connection.
     Srt(SrtInputStreamOptions),
     /// Settings bound to an RTMP media stream.
-    Rtmp(RtmpInputStreamOptions),
+    Rtmp {
+        host: String,
+        port: u16,
+        appname: String,
+    },
 }
 
-/// Contains identifying information, configuration, and transient disk states 
+/// Contains identifying information, configuration, and transient disk states
 /// utilized during a media stream's reception and processing phase.
 #[derive(Debug)]
 pub struct StreamInfo {
@@ -53,21 +57,6 @@ impl StreamInfo {
         })
     }
 
-    #[cfg(test)]
-    pub fn new_test(live_id: String, duration: i32) -> Self {
-        StreamInfo {
-            live_id: live_id.clone(),
-            input_options: StreamInputOptions::Rtmp(RtmpInputStreamOptions::new(
-                "localhost".to_string(),
-                1935,
-                "app".to_string(),
-                live_id,
-            )),
-            cache_dir: tempfile::tempdir().unwrap(),
-            segment_duration: duration,
-        }
-    }
-
     pub fn new_rtmp(live_id: String) -> Result<Self> {
         let config = load_config();
         let host = config.ingest.host.clone();
@@ -75,12 +64,11 @@ impl StreamInfo {
         let appname = config.egress.appname.clone();
         let segment_duration = config.ingest.duration;
 
-        let input_options = StreamInputOptions::Rtmp(RtmpInputStreamOptions::new(
+        let input_options = StreamInputOptions::Rtmp {
             host,
             port,
             appname,
-            live_id.clone(),
-        ));
+        };
 
         let cache_dir = tempfile::tempdir()?;
 
@@ -103,14 +91,7 @@ impl StreamInfo {
     pub fn srt_options(&self) -> Option<&SrtInputStreamOptions> {
         match &self.input_options {
             StreamInputOptions::Srt(options) => Some(options),
-            StreamInputOptions::Rtmp(_) => None,
-        }
-    }
-
-    pub fn rtmp_options(&self) -> Option<&RtmpInputStreamOptions> {
-        match &self.input_options {
-            StreamInputOptions::Srt(_) => None,
-            StreamInputOptions::Rtmp(options) => Some(options),
+            StreamInputOptions::Rtmp { .. } => None,
         }
     }
 

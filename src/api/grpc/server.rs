@@ -47,12 +47,16 @@ impl IngestGrpcService {
                 passphrase: Some(options.passphrase().to_string()),
                 input_protocol: api::InputProtocol::Srt as i32,
             },
-            StreamInputOptions::Rtmp(options) => api::StreamInfoResponse {
+            StreamInputOptions::Rtmp {
+                host,
+                port,
+                appname,
+            } => api::StreamInfoResponse {
                 live_id: info.live_id().to_string(),
-                host: options.host().to_string(),
-                port: options.port() as u32,
+                host: host.clone(),
+                port: *port as u32,
                 pull_port: self.egress_config.port as u32,
-                rtmp_appname: self.egress_config.appname.clone(),
+                rtmp_appname: appname.clone(),
                 passphrase: None,
                 input_protocol: api::InputProtocol::Rtmp as i32,
             },

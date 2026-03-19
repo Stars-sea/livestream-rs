@@ -156,7 +156,7 @@ impl BlockingWorker {
             StreamInputOptions::Srt(options) => {
                 InputContext::open(options, self.stop_signal.clone())?
             }
-            StreamInputOptions::Rtmp(_) => {
+            StreamInputOptions::Rtmp { .. } => {
                 anyhow::bail!(
                     "RTMP ingest stream '{}' must be handled by server RTMP worker, not FFmpeg SRT worker",
                     live_id
