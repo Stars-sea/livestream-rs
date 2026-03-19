@@ -1,0 +1,190 @@
+use std::path::PathBuf;
+
+use tokio::fs;
+use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing::{Instrument, Level, debug, warn};
+use tracing::{Span, event};
+
+use super::types::*;
+use crate::infra::GrpcClientFactory;
+use crate::infra::MinioClient;
+use crate::infra::api::*;
+use crate::ingest::manager::StreamManager;
+
+pub(crate) async fn stream_message_handler(
+    rx: mpsc::UnboundedReceiver<(StreamMessage, Span)>,
+    client_factory: GrpcClientFactory,
+    minio: MinioClient,
+    stream_manager: StreamManager,
+) {
+    let mut stream = UnboundedReceiverStream::new(rx);
+
+    while let Some((msg, span)) = stream.next().await {
+        debug!(msg = ?msg, "Received stream message event");
+
+        match msg {
+            StreamMessage::SegmentComplete { live_id, path } => {
+                segment_complete_handler(live_id, path, &minio)
+                    .instrument(span)
+                    .await
+                    .ok();
+            }
+            StreamMessage::StreamStarted { live_id } => {
+                stream_started_handler(live_id, &client_factory)
+                    .instrument(span)
+                    .await;
+            }
+            StreamMessage::StreamStopped { live_id, error } => {
+                stream_stopped_handler(
+                    live_id,
+                    error,
+                    &client_factory,
+                    &stream_manager,
+                )
+                .instrument(span)
+                .await;
+            }
+            StreamMessage::StreamRestarting { live_id, error } => {
+                stream_restarting_handler(live_id, error, &client_factory)
+                    .instrument(span)
+                    .await;
+            }
+            StreamMessage::IngestWorkerStarted { live_id } => {
+                ingest_worker_started_handler(live_id, &client_factory)
+                    .instrument(span)
+                    .await;
+            }
+            StreamMessage::IngestWorkerStopped { live_id } => {
+                ingest_worker_stopped_handler(live_id, &client_factory)
+                    .instrument(span)
+                    .await;
+            }
+        }
+    }
+}
+
+async fn segment_complete_handler(
+    live_id: String,
+    path: PathBuf,
+    minio: &MinioClient,
+) -> anyhow::Result<()> {
+    event!(Level::DEBUG, "Segment complete: live_id={}", live_id);
+
+    let filename = path
+        .file_name()
+        .ok_or(anyhow::anyhow!("Failed to get file name"))?;
+    let storage_key = format!("{}/{}", live_id, filename.to_string_lossy());
+
+    let upload_resp = minio
+        .upload_file(
+            storage_key.as_str(),
+            fs::canonicalize(&path).await?.as_path(),
+        )
+        .await;
+
+    if let Err(e) = upload_resp {
+        warn!(path = %path.display(), error = ?e, "Upload failed");
+        anyhow::bail!("Failed to upload file {}: {:?}", path.display(), e);
+    }
+
+    if fs::remove_file(&path).await.is_err() {
+        warn!("Failed to remove file {}", path.display());
+    }
+    Ok(())
+}
+
+async fn stream_started_handler(live_id: String, client_factory: &GrpcClientFactory) {
+    event!(Level::INFO, "Stream started: live_id={}", live_id);
+
+    if let Ok(Some(mut client)) = client_factory.build().await {
+        let req = NotifyStreamStartedRequest { live_id };
+        if let Err(e) = client.notify_stream_started(req).await {
+            warn!(error = %e, "Failed to notify stream started");
+        }
+    } else {
+        warn!(client = %client_factory, "Failed to connect to gRPC callback");
+    }
+}
+
+async fn stream_stopped_handler(
+    live_id: String,
+    error_message: Option<String>,
+    client_factory: &GrpcClientFactory,
+    stream_manager: &StreamManager,
+) {
+    event!(
+        Level::INFO,
+        "Stream stopped: live_id={}, error={}",
+        live_id,
+        error_message.as_deref().unwrap_or("None")
+    );
+
+    // Replace the Map removal with a call to the new actor method
+    stream_manager.remove_stream(&live_id).await;
+    debug!(live_id = %live_id, "Cleaned up stream from manager");
+
+    if let Ok(Some(mut client)) = client_factory.build().await {
+        let req = NotifyStreamStoppedRequest {
+            live_id,
+            error_message,
+        };
+        if let Err(e) = client.notify_stream_stopped(req).await {
+            warn!(error = %e, "Failed to notify stream stopped");
+        }
+    } else {
+        warn!(client = %client_factory, "Failed to connect to gRPC callback");
+    }
+}
+
+async fn stream_restarting_handler(
+    live_id: String,
+    error_message: String,
+    client_factory: &GrpcClientFactory,
+) {
+    event!(
+        Level::INFO,
+        "Stream restarting: live_id={}, error={}",
+        live_id,
+        error_message
+    );
+
+    if let Ok(Some(mut client)) = client_factory.build().await {
+        let req = NotifyStreamRestartingRequest {
+            live_id,
+            error_message,
+        };
+        if let Err(e) = client.notify_stream_restarting(req).await {
+            warn!(error = %e, "Failed to notify stream restarting");
+        }
+    } else {
+        warn!(client = %client_factory, "Failed to connect to gRPC callback");
+    }
+}
+
+async fn ingest_worker_started_handler(live_id: String, client_factory: &GrpcClientFactory) {
+    event!(Level::INFO, "Ingest worker started: live_id={}", live_id);
+
+    if let Ok(Some(mut client)) = client_factory.build().await {
+        let req = NotifyIngestWorkerStartedRequest { live_id };
+        if let Err(e) = client.notify_ingest_worker_started(req).await {
+            warn!(error = %e, "Failed to notify ingest worker started");
+        }
+    } else {
+        warn!(client = %client_factory, "Failed to connect to gRPC callback");
+    }
+}
+
+async fn ingest_worker_stopped_handler(live_id: String, client_factory: &GrpcClientFactory) {
+    event!(Level::INFO, "Ingest worker stopped: live_id={}", live_id);
+
+    if let Ok(Some(mut client)) = client_factory.build().await {
+        let req = NotifyIngestWorkerStoppedRequest { live_id };
+        if let Err(e) = client.notify_ingest_worker_stopped(req).await {
+            warn!(error = %e, "Failed to notify ingest worker stopped");
+        }
+    } else {
+        warn!(client = %client_factory, "Failed to connect to gRPC callback");
+    }
+}

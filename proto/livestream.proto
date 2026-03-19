@@ -6,17 +6,17 @@ package livestream;
 
 // Livestream control plane for creating/stopping/querying stream sessions.
 service Livestream {
-  // Start a pull-stream session and return structured endpoint info.
-  rpc StartPullStream (StartPullStreamRequest) returns (StreamInfoResponse);
+  // Start an ingest stream session and return structured endpoint info.
+  rpc StartIngestStream (StartIngestStreamRequest) returns (StreamInfoResponse);
 
-  // Stop an active pull-stream session by live_id.
-  rpc StopPullStream (StopPullStreamRequest) returns (StopPullStreamResponse);
+  // Stop an active ingest stream session by live_id.
+  rpc StopIngestStream (StopIngestStreamRequest) returns (StopIngestStreamResponse);
 
   // List all active live_ids currently managed by the service.
-  rpc ListActiveStreams (ListActiveStreamsRequest) returns (ListActiveStreamsResponse);
+  rpc ListIngestStreams (ListIngestStreamsRequest) returns (ListIngestStreamsResponse);
 
   // Query endpoint info for an existing live_id.
-  rpc GetStreamInfo (GetStreamInfoRequest) returns (StreamInfoResponse);
+  rpc GetIngestStreamInfo (GetIngestStreamInfoRequest) returns (StreamInfoResponse);
 }
 
 enum InputProtocol {
@@ -24,8 +24,8 @@ enum InputProtocol {
   INPUT_PROTOCOL_RTMP = 1;
 }
 
-// Request to start stream pulling.
-message StartPullStreamRequest {
+// Request to start stream ingest.
+message StartIngestStreamRequest {
   // Business stream identifier.
   string live_id = 1;
   // Optional for RTMP, required for SRT according to server-side validation.
@@ -76,21 +76,21 @@ message StreamInfoResponse {
   InputProtocol input_protocol = 7;
 }
 
-message StopPullStreamRequest {
+message StopIngestStreamRequest {
   string live_id = 1;
 }
 
-message StopPullStreamResponse {
+message StopIngestStreamResponse {
   bool is_success = 1;
 }
 
-message ListActiveStreamsRequest {
+message ListIngestStreamsRequest {
 }
 
-message ListActiveStreamsResponse {
+message ListIngestStreamsResponse {
   repeated string live_ids = 1;
 }
 
-message GetStreamInfoRequest {
+message GetIngestStreamInfoRequest {
   string live_id = 1;
 }

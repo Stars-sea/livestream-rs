@@ -36,6 +36,8 @@ opentelemetry_sdk = { version = "0.31.0", features = ["trace", "metrics", "logs"
 opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "trace", "metrics", "logs", "internal-logs"], optional = true }
 opentelemetry-appender-tracing = { version = "0.31.1", optional = true }
 retry = "2.2.0"
+dashmap = "6.1.0"
+tokio-util = { version = "0.7.18", features = ["full"] }
 
 [build-dependencies]
 tonic-prost-build = "0.14.5"

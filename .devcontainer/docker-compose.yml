@@ -10,19 +10,19 @@ services:
       MINIO_BUCKET: videos
 
       INGEST_HOST: 0.0.0.0
-      INGEST_GRPCPORT: 50051
-      INGEST_RTMPPORT: 1936
       INGEST_SRTPORTS: 4000-4100
       INGEST_DURATION: 10
 
-      PUBLISH_PORT: 1935
-      PUBLISH_APPNAME: lives
+      GRPC_PORT: 50051
+      GRPC_CALLBACK: ""
+
+      EGRESS_PORT: 1935
+      EGRESS_APPNAME: lives
 
       RUST_LOG: info
     ports:
       - "50051:50051"
       - "1935:1935"
-      - "1936:1936"
       - "4000-4100:4000-4100/udp"
     volumes:
       - ../..:/workspaces:cached

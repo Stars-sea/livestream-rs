@@ -3,15 +3,25 @@ use std::path::Path;
 use anyhow::Result;
 use tempfile::TempDir;
 
-use crate::core::options::{RtmpInputStreamOptions, SrtInputStreamOptions};
-use crate::settings::load_settings;
+use crate::config::load_config;
+use crate::media::options::SrtInputStreamOptions;
 
+/// Provides the connection and configuration details specific to the protocol
+/// selected for media ingest.
 #[derive(Debug)]
 pub enum StreamInputOptions {
+    /// Settings to establish and read from an SRT connection.
     Srt(SrtInputStreamOptions),
-    Rtmp(RtmpInputStreamOptions),
+    /// Settings bound to an RTMP media stream.
+    Rtmp {
+        host: String,
+        port: u16,
+        appname: String,
+    },
 }
 
+/// Contains identifying information, configuration, and transient disk states
+/// utilized during a media stream's reception and processing phase.
 #[derive(Debug)]
 pub struct StreamInfo {
     live_id: String,
@@ -26,9 +36,9 @@ pub struct StreamInfo {
 
 impl StreamInfo {
     pub fn new_srt(live_id: String, port: u16, passphrase: String) -> Result<Self> {
-        let settings = load_settings();
-        let host = settings.ingest.host.clone();
-        let segment_duration = settings.ingest.duration;
+        let config = load_config();
+        let host = config.ingest.host.clone();
+        let segment_duration = config.ingest.duration;
 
         let input_options = StreamInputOptions::Srt(SrtInputStreamOptions::new(
             host,
@@ -48,18 +58,17 @@ impl StreamInfo {
     }
 
     pub fn new_rtmp(live_id: String) -> Result<Self> {
-        let settings = load_settings();
-        let host = settings.ingest.host.clone();
-        let port = settings.ingest.rtmpport;
-        let appname = settings.publish.appname.clone();
-        let segment_duration = settings.ingest.duration;
+        let config = load_config();
+        let host = config.ingest.host.clone();
+        let port = config.egress.port;
+        let appname = config.egress.appname.clone();
+        let segment_duration = config.ingest.duration;
 
-        let input_options = StreamInputOptions::Rtmp(RtmpInputStreamOptions::new(
+        let input_options = StreamInputOptions::Rtmp {
             host,
             port,
             appname,
-            live_id.clone(),
-        ));
+        };
 
         let cache_dir = tempfile::tempdir()?;
 
@@ -82,14 +91,7 @@ impl StreamInfo {
     pub fn srt_options(&self) -> Option<&SrtInputStreamOptions> {
         match &self.input_options {
             StreamInputOptions::Srt(options) => Some(options),
-            StreamInputOptions::Rtmp(_) => None,
-        }
-    }
-
-    pub fn rtmp_options(&self) -> Option<&RtmpInputStreamOptions> {
-        match &self.input_options {
-            StreamInputOptions::Srt(_) => None,
-            StreamInputOptions::Rtmp(options) => Some(options),
+            StreamInputOptions::Rtmp { .. } => None,
         }
     }
 
