@@ -1,31 +1,21 @@
 use std::{fmt::Display, path::PathBuf};
 
 /// Represents significant lifecycle and operational events originating from active streams.
-/// Handlers process these events to trigger side-effects like callbacks, cache updates, 
+/// Handlers process these events to trigger side-effects like callbacks, cache updates,
 /// and telemetry observations.
 #[derive(Clone, Debug)]
 pub enum StreamMessage {
     /// A media segment (e.g., an HLS chunk) has finished writing to disk.
-    SegmentComplete {
-        live_id: String,
-        // segment_id: String,
-        path: PathBuf,
-    },
+    SegmentComplete { live_id: String, path: PathBuf },
 
     /// The background worker thread managing stream ingest has begun processing.
-    IngestWorkerStarted {
-        live_id: String,
-    },
+    IngestWorkerStarted { live_id: String },
 
     /// The background worker thread managing stream ingest has cleanly terminated.
-    IngestWorkerStopped {
-        live_id: String,
-    },
+    IngestWorkerStopped { live_id: String },
 
     /// Media data is actively flowing for the given stream.
-    StreamStarted {
-        live_id: String,
-    },
+    StreamStarted { live_id: String },
 
     /// The media flow has ceased, either cleanly or due to an error.
     StreamStopped {
@@ -34,10 +24,7 @@ pub enum StreamMessage {
     },
 
     /// The stream encountered an error and is attempting to reconnect / restart.
-    StreamRestarting {
-        live_id: String,
-        error: String,
-    },
+    StreamRestarting { live_id: String, error: String },
 }
 
 impl StreamMessage {
@@ -103,7 +90,7 @@ impl Display for StreamMessage {
                     f,
                     "StreamStopped: live_id={}, error={}",
                     live_id,
-                    error.as_ref().unwrap_or(&"None".to_string())
+                    error.as_deref().unwrap_or(&"None")
                 )
             }
             StreamMessage::StreamRestarting { live_id, error } => {

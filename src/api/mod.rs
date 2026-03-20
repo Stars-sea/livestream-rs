@@ -21,7 +21,9 @@ impl AppServer {
         let (media_bus, flv_rx) = FlvPacketBus::new();
         let shutdown = ShutdownManager::new();
 
-        let minio_config = config.minio.clone()
+        let minio_config = config
+            .minio
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("Minio configuration not found"))?;
         let minio_client = MinioClient::create(minio_config).await?;
 
@@ -34,12 +36,7 @@ impl AppServer {
         ));
 
         let server_shutdown = shutdown.token();
-        let server = RtmpServer::new(
-            config.egress.clone(),
-            manager.clone(),
-            media_bus.sender(),
-            manager.msg_tx()
-        );
+        let server = RtmpServer::new(config.egress.clone(), manager.clone());
 
         tokio::spawn(async move {
             if let Err(e) = server.start(flv_rx, server_shutdown).await {
@@ -48,11 +45,8 @@ impl AppServer {
         });
 
         let grpc_shutdown = shutdown.token();
-        let grpc_future = GrpcServer::new(
-            manager,
-            config.grpc.clone(),
-            config.egress.clone()
-        ).serve(grpc_shutdown);
+        let grpc_future = GrpcServer::new(manager, config.grpc.clone(), config.egress.clone())
+            .serve(grpc_shutdown);
 
         // Spawn signal listener
         let shutdown_manager = shutdown.clone();

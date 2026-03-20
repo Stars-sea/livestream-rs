@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use tokio::sync::mpsc;
+use tokio::task::block_in_place;
 use tracing::{Span, instrument, warn};
 
 use crate::ingest::events::StreamMessage;
@@ -28,7 +29,7 @@ pub enum RtmpTag {
 }
 
 /// The RTMP adapter implementation of `StreamAdapter`.
-/// Responsible for receiving `RtmpTag` inputs and converting them into stream events 
+/// Responsible for receiving `RtmpTag` inputs and converting them into stream events
 /// to be broadcast over the shared worker context.
 pub struct RtmpAdapter {
     rx: mpsc::UnboundedReceiver<RtmpTag>,
@@ -110,7 +111,7 @@ impl StreamAdapter for RtmpAdapter {
     #[instrument(name = "ingest.rtmp_worker.run", skip(self, ctx), fields(stream.live_id = %ctx.live_id))]
     async fn run(&mut self, ctx: &mut WorkerContext) -> anyhow::Result<()> {
         let segment_duration_ms = (ctx.stream_info.segment_duration().max(1) * 1000) as u32;
-        let mut muxer = StreamMuxer::new(segment_duration_ms);
+        let mut muxer = StreamMuxer::new(segment_duration_ms)?;
 
         ctx.lifecycle.notify_stream_started(&ctx.stream_msg_tx);
 
@@ -202,17 +203,17 @@ struct StreamMuxer {
 }
 
 impl StreamMuxer {
-    fn new(segment_duration_ms: u32) -> Self {
-        Self {
-            segmenter: FlvSegmenter::new(segment_duration_ms),
-        }
+    fn new(segment_duration_ms: u32) -> anyhow::Result<Self> {
+        Ok(Self {
+            segmenter: FlvSegmenter::new(segment_duration_ms)?,
+        })
     }
 }
 
 /// Breaks down an ongoing FLV stream into sequential segments based on a set duration.
 /// Caches the segment bytes temporarily until they are finalized and flushed.
 struct FlvSegmenter {
-    cache_dir: PathBuf,
+    temp_dir: tempfile::TempDir,
     segment_duration_ms: u32,
     segment_id: u64,
     segment_start_ts: Option<u32>,
@@ -220,31 +221,21 @@ struct FlvSegmenter {
 }
 
 impl FlvSegmenter {
-    fn new(segment_duration_ms: u32) -> Self {
-        let cache_dir = match tempfile::tempdir() {
-            Ok(dir) => dir.keep(),
-            Err(err) => {
-                let fallback = std::env::temp_dir().join("livestream-rs-rtmp-fallback");
-                if let Err(create_err) = std::fs::create_dir_all(&fallback) {
-                    warn!(error = %create_err, path = %fallback.display(), "Failed to create fallback RTMP segment cache dir");
-                }
-                warn!(error = %err, path = %fallback.display(), "Failed to create RTMP segment cache dir via tempfile, using fallback path");
-                fallback
-            }
-        };
+    fn new(segment_duration_ms: u32) -> anyhow::Result<Self> {
+        let temp_dir = tempfile::tempdir()?;
 
         let mut segment_bytes = Vec::with_capacity(256 * 1024);
         segment_bytes.extend_from_slice(&[
             0x46, 0x4C, 0x56, 0x01, 0x05, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00,
         ]);
 
-        Self {
-            cache_dir,
+        Ok(Self {
+            temp_dir,
             segment_duration_ms,
             segment_id: 1,
             segment_start_ts: None,
             segment_bytes,
-        }
+        })
     }
 
     fn on_audio_tag(&mut self, tag: &bytes::Bytes, timestamp: u32) -> Option<PathBuf> {
@@ -308,9 +299,9 @@ impl FlvSegmenter {
         }
 
         let file_name = format!("{:06}.flv", self.segment_id);
-        let path = self.cache_dir.join(file_name);
+        let path = self.temp_dir.path().join(file_name);
 
-        if let Err(err) = std::fs::write(&path, &self.segment_bytes) {
+        if let Err(err) = block_in_place(|| std::fs::write(&path, &self.segment_bytes)) {
             warn!(error = %err, path = %path.display(), "Failed to write RTMP segment file");
             return None;
         }

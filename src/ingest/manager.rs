@@ -13,7 +13,7 @@ use tracing::{Span, instrument};
 
 use super::adapters::rtmp::{RtmpAdapter, RtmpTag};
 use super::adapters::srt::SrtAdapter;
-use super::events::{handlers, StreamMessage};
+use super::events::{StreamMessage, handlers};
 use super::port_allocator::PortAllocator;
 use super::stream_info::StreamInfo;
 
@@ -92,7 +92,6 @@ enum ManagerCommand {
 #[derive(Clone, Debug)]
 pub struct StreamManager {
     cmd_tx: mpsc::Sender<ManagerCommand>,
-    stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
 }
 
 impl StreamManager {
@@ -104,15 +103,10 @@ impl StreamManager {
         let (cmd_tx, cmd_rx) = mpsc::channel(128);
         let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_channel();
 
-        let actor = ManagerActor::new(
-            cmd_rx,
-            flv_packet_tx.clone(),
-            stream_msg_tx.clone(),
-            cmd_tx.clone(),
-        );
+        let actor = ManagerActor::new(cmd_rx, flv_packet_tx, stream_msg_tx.clone(), cmd_tx.clone());
         tokio::spawn(actor.run());
 
-        let manager = Self { cmd_tx, stream_msg_tx };
+        let manager = Self { cmd_tx };
 
         tokio::spawn(handlers::stream_message_handler(
             stream_msg_rx,
@@ -122,10 +116,6 @@ impl StreamManager {
         ));
 
         manager
-    }
-
-    pub fn msg_tx(&self) -> mpsc::UnboundedSender<(StreamMessage, Span)> {
-        self.stream_msg_tx.clone()
     }
 
     pub async fn make_srt_stream_info(
@@ -290,7 +280,7 @@ impl StreamRegistry for StreamManager {
 }
 
 /// The stateful actor responsible for keeping track of active streams and executing commands.
-/// By running in its own asynchronous loop, it ensures all stream management tasks 
+/// By running in its own asynchronous loop, it ensures all stream management tasks
 /// are processed sequentially, eliminating the need for shared state locks (like DashMap).
 struct ManagerActor {
     rx: mpsc::Receiver<ManagerCommand>,
@@ -538,11 +528,7 @@ impl ManagerActor {
         let _ = reply.send(Ok(()));
     }
 
-    async fn handle_stop_stream(
-        &mut self,
-        live_id: String,
-        reply: oneshot::Sender<Result<()>>,
-    ) {
+    async fn handle_stop_stream(&mut self, live_id: String, reply: oneshot::Sender<Result<()>>) {
         if let Some(ctx) = self.stream_contexts.get(&live_id) {
             ctx.stop_signal.store(true, Ordering::SeqCst);
         }
@@ -569,7 +555,8 @@ impl ManagerActor {
             while !info.is_cache_empty().unwrap_or(true) {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-        }).await?;
+        })
+        .await?;
         Ok(())
     }
 }
@@ -585,10 +572,10 @@ mod tests {
         let (flv_tx, _flv_rx) = mpsc::unbounded_channel();
         let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
 
-        let actor = ManagerActor::new(cmd_rx, flv_tx, msg_tx.clone(), cmd_tx.clone());
+        let actor = ManagerActor::new(cmd_rx, flv_tx, msg_tx, cmd_tx.clone());
         tokio::spawn(actor.run());
 
-        let manager = StreamManager { cmd_tx, stream_msg_tx: msg_tx };
+        let manager = StreamManager { cmd_tx };
 
         let streams = manager.list_active_streams().await.unwrap();
         assert!(streams.is_empty());
