@@ -30,6 +30,8 @@ impl AppServer {
         let grpc_client_factory = GrpcClientFactory::new(config.grpc.callback.clone());
 
         let manager = Arc::new(StreamManager::new(
+            config.ingest.clone(),
+            config.egress.clone(),
             minio_client,
             grpc_client_factory,
             media_bus.sender(),

@@ -5,8 +5,6 @@ use std::collections::HashSet;
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::config::load_config;
-
 /// Ingest-side port reservation service for SRT listener startup.
 ///
 /// Responsibilities:
@@ -63,16 +61,6 @@ impl PortAllocator {
         if allocated.remove(&port) {
             debug!(port = port, "Released port");
         }
-    }
-}
-
-impl Default for PortAllocator {
-    fn default() -> Self {
-        let (start_port, end_port) = load_config()
-            .ingest
-            .srt_port_range()
-            .expect("Invalid SRT port range in settings");
-        Self::new(start_port, end_port)
     }
 }
 

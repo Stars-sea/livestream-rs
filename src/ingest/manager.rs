@@ -18,6 +18,7 @@ use super::port_allocator::PortAllocator;
 use super::stream_info::StreamInfo;
 
 use crate::api::grpc::contracts::StreamRegistry;
+use crate::config::{EgressConfig, IngestConfig};
 use crate::infra::GrpcClientFactory;
 use crate::infra::MinioClient;
 use crate::ingest::session;
@@ -121,6 +122,8 @@ pub struct StreamManager {
 
 impl StreamManager {
     pub fn new(
+        ingest_config: IngestConfig,
+        egress_config: EgressConfig,
         minio_client: MinioClient,
         grpc_client_factory: GrpcClientFactory,
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
@@ -128,7 +131,20 @@ impl StreamManager {
         let (cmd_tx, cmd_rx) = mpsc::channel(128);
         let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_channel();
 
-        let actor = ManagerActor::new(cmd_rx, flv_packet_tx, stream_msg_tx.clone(), cmd_tx.clone());
+        let (start_port, end_port) = ingest_config
+            .srt_port_range()
+            .expect("Invalid SRT port range in settings");
+        let port_allocator = Arc::new(PortAllocator::new(start_port, end_port));
+
+        let actor = ManagerActor::new(
+            cmd_rx,
+            flv_packet_tx,
+            stream_msg_tx.clone(),
+            cmd_tx.clone(),
+            port_allocator,
+            ingest_config,
+            egress_config,
+        );
         tokio::spawn(actor.run());
 
         let manager = Self { cmd_tx };
@@ -318,6 +334,10 @@ struct ManagerActor {
     rx: mpsc::Receiver<ManagerCommand>,
     stream_contexts: HashMap<String, StreamContext>,
     port_allocator: Arc<PortAllocator>,
+    ingest_host: String,
+    segment_duration: i32,
+    egress_port: u16,
+    egress_appname: String,
     flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
     self_cmd_tx: mpsc::Sender<ManagerCommand>,
@@ -329,11 +349,18 @@ impl ManagerActor {
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
         stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
         self_cmd_tx: mpsc::Sender<ManagerCommand>,
+        port_allocator: Arc<PortAllocator>,
+        ingest_config: IngestConfig,
+        egress_config: EgressConfig,
     ) -> Self {
         Self {
             rx,
             stream_contexts: HashMap::new(),
-            port_allocator: Arc::new(PortAllocator::default()),
+            port_allocator,
+            ingest_host: ingest_config.host,
+            segment_duration: ingest_config.duration,
+            egress_port: egress_config.port,
+            egress_appname: egress_config.appname,
             flv_packet_tx,
             stream_msg_tx,
             self_cmd_tx,
@@ -419,7 +446,13 @@ impl ManagerActor {
         }
 
         if let Some(port) = self.port_allocator.allocate_safe_port().await {
-            match StreamInfo::new_srt(live_id.clone(), port, passphrase) {
+            match StreamInfo::new_srt(
+                live_id.clone(),
+                self.ingest_host.clone(),
+                self.segment_duration,
+                port,
+                passphrase,
+            ) {
                 Ok(info) => {
                     let info = Arc::new(info);
                     let ctx = StreamContext {
@@ -453,7 +486,13 @@ impl ManagerActor {
             return;
         }
 
-        match StreamInfo::new_rtmp(live_id.clone()) {
+        match StreamInfo::new_rtmp(
+            live_id.clone(),
+            self.ingest_host.clone(),
+            self.egress_port,
+            self.egress_appname.clone(),
+            self.segment_duration,
+        ) {
             Ok(info) => {
                 let info = Arc::new(info);
                 let ctx = StreamContext {
@@ -694,7 +733,20 @@ mod tests {
         let (flv_tx, _flv_rx) = mpsc::unbounded_channel();
         let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
 
-        let actor = ManagerActor::new(cmd_rx, flv_tx, msg_tx, cmd_tx.clone());
+        let ingest_config = IngestConfig::default();
+        let egress_config = EgressConfig::default();
+        let (start_port, end_port) = ingest_config.srt_port_range().unwrap();
+        let port_allocator = Arc::new(PortAllocator::new(start_port, end_port));
+
+        let actor = ManagerActor::new(
+            cmd_rx,
+            flv_tx,
+            msg_tx,
+            cmd_tx.clone(),
+            port_allocator,
+            ingest_config,
+            egress_config,
+        );
         tokio::spawn(actor.run());
 
         let manager = StreamManager { cmd_tx };
