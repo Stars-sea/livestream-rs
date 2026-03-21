@@ -83,7 +83,14 @@ impl Drop for FlvOutputContext {
         self.write_trailer().ok();
         unsafe {
             let pb = (*self.ctx).pb;
-            av_freep(&mut (*pb).buffer as *mut _ as *mut c_void);
+            if !pb.is_null() {
+                if !(*pb).opaque.is_null() {
+                    let _ = Arc::from_raw((*pb).opaque as *const FlvAvioOpaque);
+                    (*pb).opaque = null_mut();
+                }
+                av_freep(&mut (*pb).buffer as *mut _ as *mut c_void);
+            }
+
             avio_context_free(&mut (*self.ctx).pb);
             avformat_free_context(self.ctx);
         }

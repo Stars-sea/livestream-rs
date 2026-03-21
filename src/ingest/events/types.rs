@@ -1,8 +1,14 @@
 use std::{fmt::Display, path::PathBuf};
 
-/// Represents significant lifecycle and operational events originating from active streams.
-/// Handlers process these events to trigger side-effects like callbacks, cache updates,
-/// and telemetry observations.
+/// Event contract emitted by ingest workers and consumed by event handlers.
+///
+/// Responsibilities:
+/// - Model stream/worker lifecycle and segment notifications in one typed channel.
+/// - Provide stable payload shapes for callback/cache/metrics side-effect handlers.
+///
+/// Out of scope:
+/// - No event delivery guarantee semantics by itself.
+/// - No business logic execution.
 #[derive(Clone, Debug)]
 pub enum StreamMessage {
     /// A media segment (e.g., an HLS chunk) has finished writing to disk.

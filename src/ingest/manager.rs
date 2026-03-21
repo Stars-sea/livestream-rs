@@ -34,9 +34,18 @@ pub struct StreamContext {
     pub stop_signal: Arc<AtomicBool>,
     /// Optional transmitter for routing RTMP media tags, if the stream uses the RTMP protocol.
     pub rtmp_tx: Option<mpsc::UnboundedSender<RtmpTag>>,
+    /// Indicates whether a stream worker has been started for this context.
+    pub started: bool,
 }
 
-/// Internal commands sent to the `ManagerActor` to control and manage the lifecycle of media streams.
+/// Internal command protocol between `StreamManager` and `ManagerActor`.
+///
+/// Responsibilities:
+/// - Represent all state-changing and query operations for stream management.
+/// - Carry a typed reply channel for request/response style coordination.
+///
+/// Out of scope:
+/// - No business logic, validation, or side effects.
 enum ManagerCommand {
     MakeSrtStreamInfo {
         live_id: String,
@@ -86,9 +95,15 @@ enum ManagerCommand {
     },
 }
 
-/// A cloneable handle to interact with the backend `ManagerActor`.
-/// This struct acts as a client interface, translating async method calls into `ManagerCommand`s
-/// that are processed sequentially by the dedicated actor.
+/// Public facade for stream lifecycle operations.
+///
+/// Responsibilities:
+/// - Expose async APIs for callers (make/start/stop/list/get).
+/// - Translate each API call into `ManagerCommand` and await typed replies.
+///
+/// Out of scope:
+/// - No direct ownership or mutation of stream state.
+/// - No protocol-specific ingest logic.
 #[derive(Clone, Debug)]
 pub struct StreamManager {
     cmd_tx: mpsc::Sender<ManagerCommand>,
@@ -279,9 +294,16 @@ impl StreamRegistry for StreamManager {
     }
 }
 
-/// The stateful actor responsible for keeping track of active streams and executing commands.
-/// By running in its own asynchronous loop, it ensures all stream management tasks
-/// are processed sequentially, eliminating the need for shared state locks (like DashMap).
+/// Single-threaded authority for stream state and resource coordination.
+///
+/// Responsibilities:
+/// - Own and mutate global stream registry (`stream_contexts`).
+/// - Allocate/release ports and coordinate stream start/stop/remove transitions.
+/// - Execute `ManagerCommand`s sequentially to avoid shared-state races.
+///
+/// Out of scope:
+/// - No media packet processing (done by adapters/sessions).
+/// - No external callback business logic (handled by event handlers).
 struct ManagerActor {
     rx: mpsc::Receiver<ManagerCommand>,
     stream_contexts: HashMap<String, StreamContext>,
@@ -381,6 +403,11 @@ impl ManagerActor {
         passphrase: String,
         reply: oneshot::Sender<Result<Arc<StreamInfo>>>,
     ) {
+        if self.stream_contexts.contains_key(&live_id) {
+            let _ = reply.send(Err(anyhow::anyhow!("Stream '{}' already exists", live_id)));
+            return;
+        }
+
         if let Some(port) = self.port_allocator.allocate_safe_port().await {
             match StreamInfo::new_srt(live_id.clone(), port, passphrase) {
                 Ok(info) => {
@@ -389,6 +416,7 @@ impl ManagerActor {
                         info: info.clone(),
                         stop_signal: Arc::new(AtomicBool::new(false)),
                         rtmp_tx: None,
+                        started: false,
                     };
                     self.stream_contexts.insert(live_id, ctx);
                     let _ = reply.send(Ok(info));
@@ -410,6 +438,11 @@ impl ManagerActor {
         live_id: String,
         reply: oneshot::Sender<Result<Arc<StreamInfo>>>,
     ) {
+        if self.stream_contexts.contains_key(&live_id) {
+            let _ = reply.send(Err(anyhow::anyhow!("Stream '{}' already exists", live_id)));
+            return;
+        }
+
         match StreamInfo::new_rtmp(live_id.clone()) {
             Ok(info) => {
                 let info = Arc::new(info);
@@ -417,6 +450,7 @@ impl ManagerActor {
                     info: info.clone(),
                     stop_signal: Arc::new(AtomicBool::new(false)),
                     rtmp_tx: None,
+                    started: false,
                 };
                 self.stream_contexts.insert(live_id, ctx);
                 let _ = reply.send(Ok(info));
@@ -446,6 +480,10 @@ impl ManagerActor {
             .get(&live_id)
             .map(|ctx| ctx.stop_signal.clone())
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+
+        if let Some(ctx) = self.stream_contexts.get_mut(&live_id) {
+            ctx.started = true;
+        }
 
         let ctx = session::WorkerContext::new(
             info.clone(),
@@ -495,6 +533,7 @@ impl ManagerActor {
         let (rtmp_tx, rtmp_rx) = mpsc::unbounded_channel();
         if let Some(ctx) = self.stream_contexts.get_mut(&live_id) {
             ctx.rtmp_tx = Some(rtmp_tx);
+            ctx.started = true;
         }
 
         let ctx = session::WorkerContext::new(
@@ -529,13 +568,20 @@ impl ManagerActor {
     }
 
     async fn handle_stop_stream(&mut self, live_id: String, reply: oneshot::Sender<Result<()>>) {
-        if let Some(ctx) = self.stream_contexts.get(&live_id) {
-            ctx.stop_signal.store(true, Ordering::SeqCst);
+        let Some(ctx) = self.stream_contexts.get(&live_id) else {
+            let _ = reply.send(Err(anyhow::anyhow!("Stream '{}' not found", live_id)));
+            return;
+        };
+
+        ctx.stop_signal.store(true, Ordering::SeqCst);
+
+        // Keep started streams in the registry until workers exit, so port release
+        // and cleanup happen after actual shutdown via RemoveStream.
+        if !ctx.started {
+            self.handle_remove_stream(&live_id).await;
+            let _ = self.flv_packet_tx.send(FlvPacket::EndOfStream { live_id });
         }
-        self.handle_remove_stream(&live_id).await;
-        let _ = self.flv_packet_tx.send(FlvPacket::EndOfStream {
-            live_id: live_id.clone(),
-        });
+
         let _ = reply.send(Ok(()));
     }
 

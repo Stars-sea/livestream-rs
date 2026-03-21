@@ -73,8 +73,8 @@ impl api::livestream_server::Livestream for IngestGrpcService {
     ) -> Result<Response<api::StreamInfoResponse>, Status> {
         let mut grpc_guard = metrics::get_metrics().grpc_call("start_ingest_stream");
         let request = request.into_inner();
-        let protocol =
-            api::InputProtocol::try_from(request.input_protocol).unwrap_or(api::InputProtocol::Srt);
+        let protocol = api::InputProtocol::try_from(request.input_protocol)
+            .map_err(|_| Status::invalid_argument("input_protocol is invalid"))?;
 
         if request.live_id.is_empty() {
             return Err(Status::invalid_argument("live_id cannot be empty"));

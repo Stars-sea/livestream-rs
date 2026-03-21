@@ -7,8 +7,15 @@ use tracing::debug;
 
 use crate::config::load_config;
 
-/// Manages allocation of ports within a specified range.
-/// Ensures ports are available before allocation by testing UDP and TCP binding.
+/// Ingest-side port reservation service for SRT listener startup.
+///
+/// Responsibilities:
+/// - Reserve/release ports from configured range with in-process tracking.
+/// - Validate candidate ports are bindable before allocation.
+///
+/// Out of scope:
+/// - No cross-process/global lease guarantees.
+/// - No stream lifecycle ownership.
 #[derive(Debug)]
 pub struct PortAllocator {
     start_port: u16,

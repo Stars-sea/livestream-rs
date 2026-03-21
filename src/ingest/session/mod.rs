@@ -8,13 +8,19 @@ use crate::ingest::session::lifecycle::WorkerLifecycle;
 use crate::ingest::stream_info::StreamInfo;
 use crate::media::output::FlvPacket;
 
-/// Holds the essential shared state, communication channels, and configuration parameters
-/// for a running stream adapter instance. Serves as the primary mechanism for adapters
-/// to emit events, push finalized media packets, and check cancellation status.
+/// Runtime dependency container injected into a single adapter run.
+///
+/// Responsibilities:
+/// - Provide immutable identity/config (`live_id`, `stream_info`).
+/// - Provide control and communication primitives (`stop_signal`, channels).
+/// - Provide lifecycle helper for worker-level event deduplication.
+///
+/// Out of scope:
+/// - No protocol-specific ingest behavior.
+/// - No global registry/resource management.
 pub struct WorkerContext {
     pub live_id: String,
     pub stop_signal: Arc<std::sync::atomic::AtomicBool>,
-    pub stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
     pub flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
     pub lifecycle: WorkerLifecycle,
     pub stream_info: Arc<StreamInfo>,
@@ -31,22 +37,36 @@ impl WorkerContext {
         Self {
             live_id: live_id.clone(),
             stop_signal,
-            stream_msg_tx,
             flv_packet_tx,
-            lifecycle: WorkerLifecycle::new(&live_id),
+            lifecycle: WorkerLifecycle::new(&live_id, stream_msg_tx),
             stream_info,
         }
     }
 }
 
+/// Protocol adapter contract for one ingest worker session.
+///
+/// Responsibilities:
+/// - Execute protocol-specific ingest loop.
+/// - Observe `stop_signal` and exit cooperatively.
+/// - Report stream-level runtime outcomes via `WorkerLifecycle`.
+///
+/// Out of scope:
+/// - No direct mutation of manager actor state.
+/// - No global resource bookkeeping.
 pub trait StreamAdapter: Send + Sync {
-    /// Runs the stream adapter logic. The implementation should monitor the `stop_signal` in the provided context
     async fn run(&mut self, ctx: &mut WorkerContext) -> anyhow::Result<()>;
 }
 
-/// A wrapper around a concrete `StreamAdapter` implementation and its corresponding context.
-/// Ensures standard lifecycle notification constraints (start/stop/error bounds) are handled
-/// uniformly regardless of the underlying stream protocol (RTMP/SRT).
+/// Session runner that binds one concrete adapter with one worker context.
+///
+/// Responsibilities:
+/// - Drive one adapter run with a normalized lifecycle envelope.
+/// - Guarantee worker start/finalize notifications are emitted consistently.
+///
+/// Out of scope:
+/// - No protocol branching logic.
+/// - No global stream registry mutations.
 pub struct IngestSession<T: StreamAdapter> {
     pub ctx: WorkerContext,
     pub adapter: T,
@@ -58,20 +78,14 @@ impl<T: StreamAdapter> IngestSession<T> {
     }
 
     pub async fn start(mut self) {
-        self.ctx
-            .lifecycle
-            .notify_ingest_worker_started(&self.ctx.stream_msg_tx);
+        self.ctx.lifecycle.notify_ingest_worker_started();
 
         if let Err(e) = self.adapter.run(&mut self.ctx).await {
-            self.ctx.lifecycle.finalize(
-                &self.ctx.stream_msg_tx,
-                &self.ctx.flv_packet_tx,
-                Some(e.to_string()),
-            );
-        } else {
             self.ctx
                 .lifecycle
-                .finalize(&self.ctx.stream_msg_tx, &self.ctx.flv_packet_tx, None);
+                .finalize(&self.ctx.flv_packet_tx, Some(e.to_string()));
+        } else {
+            self.ctx.lifecycle.finalize(&self.ctx.flv_packet_tx, None);
         }
     }
 }

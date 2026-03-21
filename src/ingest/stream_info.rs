@@ -6,8 +6,15 @@ use tempfile::TempDir;
 use crate::config::load_config;
 use crate::media::options::SrtInputStreamOptions;
 
-/// Provides the connection and configuration details specific to the protocol
-/// selected for media ingest.
+/// Protocol-specific ingest endpoint/options bound to one stream.
+///
+/// Responsibilities:
+/// - Carry transport-specific connection parameters for adapter startup.
+/// - Keep protocol branching data localized to one enum.
+///
+/// Out of scope:
+/// - No runtime socket ownership.
+/// - No lifecycle state tracking.
 #[derive(Debug)]
 pub enum StreamInputOptions {
     /// Settings to establish and read from an SRT connection.
@@ -20,8 +27,16 @@ pub enum StreamInputOptions {
     },
 }
 
-/// Contains identifying information, configuration, and transient disk states
-/// utilized during a media stream's reception and processing phase.
+/// Immutable per-stream runtime metadata shared across ingest components.
+///
+/// Responsibilities:
+/// - Provide stream identity and input options to workers/adapters.
+/// - Own temporary cache directory lifecycle for segment artifacts.
+/// - Expose segmenting configuration used by processing loops.
+///
+/// Out of scope:
+/// - No worker execution logic.
+/// - No manager command/state transitions.
 #[derive(Debug)]
 pub struct StreamInfo {
     live_id: String,

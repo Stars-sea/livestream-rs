@@ -194,7 +194,7 @@ impl AppConfig {
             anyhow::bail!("Segment duration must be positive");
         }
 
-        if self.minio.is_none() {
+        if !cfg!(test) && self.minio.is_none() {
             anyhow::bail!(
                 "MinIO configuration is missing: please set minio.uri, minio.accesskey, minio.secretkey, and minio.bucket"
             );

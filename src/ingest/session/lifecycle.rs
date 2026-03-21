@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tracing::Span;
 
@@ -5,7 +6,15 @@ use crate::media::output::FlvPacket;
 
 use crate::ingest::events::StreamMessage;
 
-/// Tracks the internal execution state machine of a worker managing an ingest stream.
+/// Internal lifecycle phase marker for one ingest worker session.
+///
+/// Responsibilities:
+/// - Represent coarse worker phase transitions used by `WorkerLifecycle` guards.
+/// - Keep notification sequencing predictable during start/stop/finalize.
+///
+/// Out of scope:
+/// - Not a global stream manager state machine.
+/// - Not a transport/protocol status model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WorkerState {
     Created,
@@ -14,12 +23,21 @@ pub(super) enum WorkerState {
     Stopped,
 }
 
-/// Encapsulates the tracking and dispatching logic for stream life-cycle events.
-/// Ensures that transitions like start, stop, or End of Stream (EOS) are emitted exactly once
-/// per worker session, eliminating duplicated event triggering.
-#[derive(Debug)]
+/// Per-worker-session lifecycle event guard.
+///
+/// Responsibilities:
+/// - De-duplicate lifecycle notifications emitted from one worker session.
+/// - Track worker progression (`Created` -> `Running` -> `Stopping` -> `Stopped`).
+/// - Emit worker-level start/stop and EOS exactly once for the session.
+///
+/// Out of scope:
+/// - No protocol-level ingest logic.
+/// - No ownership of global stream registry or resources.
+/// - Should not define business retry policy.
+#[derive(Debug, Clone)]
 pub struct WorkerLifecycle {
     live_id: String,
+    stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
     state: WorkerState,
     stream_started_notified: bool,
     stream_stopped_notified: bool,
@@ -29,9 +47,10 @@ pub struct WorkerLifecycle {
 }
 
 impl WorkerLifecycle {
-    pub fn new(live_id: &str) -> Self {
+    pub fn new(live_id: &str, stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>) -> Self {
         Self {
             live_id: live_id.to_string(),
+            stream_msg_tx,
             state: WorkerState::Created,
             stream_started_notified: false,
             stream_stopped_notified: false,
@@ -41,59 +60,54 @@ impl WorkerLifecycle {
         }
     }
 
-    pub fn notify_ingest_worker_started(
-        &mut self,
-        stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
-    ) {
+    pub fn notify_ingest_worker_started(&mut self) {
         if self.worker_started_notified {
             return;
         }
 
-        notify_ingest_worker_started(stream_msg_tx, &self.live_id);
+        self.emit_ingest_worker_started();
         self.worker_started_notified = true;
         if self.state == WorkerState::Created {
             self.state = WorkerState::Running;
         }
     }
 
-    pub fn notify_stream_started(
-        &mut self,
-        stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
-    ) {
-        if self.stream_started_notified {
+    pub fn notify_stream_started(&mut self) {
+        if self.stream_started_notified && !self.stream_stopped_notified {
             return;
         }
 
-        notify_stream_started(stream_msg_tx, &self.live_id);
+        // A new stream cycle can start again in the same worker after a prior stop.
+        if self.stream_started_notified && self.stream_stopped_notified {
+            self.stream_started_notified = false;
+            self.stream_stopped_notified = false;
+        }
+
+        self.emit_stream_started();
         self.stream_started_notified = true;
         if self.state == WorkerState::Created {
             self.state = WorkerState::Running;
         }
     }
 
-    pub fn notify_stream_stopped(
-        &mut self,
-        stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
-        error: Option<String>,
-    ) {
+    pub fn notify_stream_stopped(&mut self, error: Option<String>) {
         if !self.stream_started_notified || self.stream_stopped_notified {
             return;
         }
 
-        notify_stream_stopped(stream_msg_tx, &self.live_id, error);
+        self.emit_stream_stopped(error);
         self.stream_stopped_notified = true;
         if self.state != WorkerState::Stopped {
             self.state = WorkerState::Stopping;
         }
     }
 
-    #[allow(dead_code)]
-    pub fn notify_stream_restarting(
-        &self,
-        stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
-        error: String,
-    ) {
-        notify_stream_restarting(stream_msg_tx, &self.live_id, error);
+    pub fn notify_stream_restarting(&self, error: String) {
+        self.emit_stream_restarting(error);
+    }
+
+    pub fn notify_segment_complete(&self, path: &PathBuf) {
+        self.emit_segment_complete(path);
     }
 
     pub fn send_end_of_stream_once(&mut self, flv_packet_tx: &mpsc::UnboundedSender<FlvPacket>) {
@@ -101,87 +115,75 @@ impl WorkerLifecycle {
             return;
         }
 
-        send_end_of_stream(flv_packet_tx, &self.live_id);
+        self.emit_end_of_stream(flv_packet_tx);
         self.eos_sent = true;
     }
 
-    pub fn notify_ingest_worker_stopped(
-        &mut self,
-        stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
-    ) {
+    pub fn notify_ingest_worker_stopped(&mut self) {
         if self.worker_stopped_notified {
             return;
         }
 
-        notify_ingest_worker_stopped(stream_msg_tx, &self.live_id);
+        self.emit_ingest_worker_stopped();
         self.worker_stopped_notified = true;
         self.state = WorkerState::Stopped;
     }
 
     pub fn finalize(
         &mut self,
-        stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
         flv_packet_tx: &mpsc::UnboundedSender<FlvPacket>,
         error: Option<String>,
     ) {
-        self.notify_stream_stopped(stream_msg_tx, error);
+        self.notify_stream_stopped(error);
         self.send_end_of_stream_once(flv_packet_tx);
-        self.notify_ingest_worker_stopped(stream_msg_tx);
+        self.notify_ingest_worker_stopped();
     }
-}
 
-pub(super) fn notify_ingest_worker_started(
-    stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
-    live_id: &str,
-) {
-    let _ = stream_msg_tx.send((
-        StreamMessage::ingest_worker_started(live_id),
-        Span::current(),
-    ));
-}
+    fn emit_ingest_worker_started(&self) {
+        let _ = self.stream_msg_tx.send((
+            StreamMessage::ingest_worker_started(&self.live_id),
+            Span::current(),
+        ));
+    }
 
-pub(super) fn notify_ingest_worker_stopped(
-    stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
-    live_id: &str,
-) {
-    let _ = stream_msg_tx.send((
-        StreamMessage::ingest_worker_stopped(live_id),
-        Span::current(),
-    ));
-}
+    fn emit_ingest_worker_stopped(&self) {
+        let _ = self.stream_msg_tx.send((
+            StreamMessage::ingest_worker_stopped(&self.live_id),
+            Span::current(),
+        ));
+    }
 
-pub(super) fn notify_stream_started(
-    stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
-    live_id: &str,
-) {
-    let _ = stream_msg_tx.send((StreamMessage::stream_started(live_id), Span::current()));
-}
+    fn emit_stream_started(&self) {
+        let _ = self.stream_msg_tx.send((
+            StreamMessage::stream_started(&self.live_id),
+            Span::current(),
+        ));
+    }
 
-pub(super) fn notify_stream_stopped(
-    stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
-    live_id: &str,
-    error: Option<String>,
-) {
-    let _ = stream_msg_tx.send((
-        StreamMessage::stream_stopped(live_id, error),
-        Span::current(),
-    ));
-}
+    fn emit_stream_stopped(&self, error: Option<String>) {
+        let _ = self.stream_msg_tx.send((
+            StreamMessage::stream_stopped(&self.live_id, error),
+            Span::current(),
+        ));
+    }
 
-#[allow(dead_code)]
-pub(super) fn notify_stream_restarting(
-    stream_msg_tx: &mpsc::UnboundedSender<(StreamMessage, Span)>,
-    live_id: &str,
-    error: String,
-) {
-    let _ = stream_msg_tx.send((
-        StreamMessage::stream_restarting(live_id, error),
-        Span::current(),
-    ));
-}
+    fn emit_stream_restarting(&self, error: String) {
+        let _ = self.stream_msg_tx.send((
+            StreamMessage::stream_restarting(&self.live_id, error),
+            Span::current(),
+        ));
+    }
 
-pub(super) fn send_end_of_stream(flv_packet_tx: &mpsc::UnboundedSender<FlvPacket>, live_id: &str) {
-    let _ = flv_packet_tx.send(FlvPacket::EndOfStream {
-        live_id: live_id.to_string(),
-    });
+    fn emit_segment_complete(&self, path: &PathBuf) {
+        let _ = self.stream_msg_tx.send((
+            StreamMessage::segment_complete(&self.live_id, path),
+            Span::current(),
+        ));
+    }
+
+    fn emit_end_of_stream(&self, flv_packet_tx: &mpsc::UnboundedSender<FlvPacket>) {
+        let _ = flv_packet_tx.send(FlvPacket::EndOfStream {
+            live_id: self.live_id.to_string(),
+        });
+    }
 }

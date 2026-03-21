@@ -22,7 +22,9 @@ impl OtelGuard {
 
 #[cfg(not(feature = "opentelemetry"))]
 pub fn setup_telemetry() -> anyhow::Result<Option<OtelGuard>> {
-    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+    use tracing_subscriber::{
+        EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+    };
 
     let fmt_layer = fmt::layer()
         .compact()

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::ingest::events::*;
+use crate::ingest::session::lifecycle::WorkerLifecycle;
 use crate::ingest::session::{StreamAdapter, WorkerContext};
 use crate::ingest::stream_info::{StreamInfo, StreamInputOptions};
 
@@ -16,11 +16,17 @@ use anyhow::Result;
 use retry::OperationResult;
 use retry::delay::{Exponential, jitter};
 use tokio::sync::mpsc;
-use tracing::{Span, debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument};
 
-/// The SRT adapter implementation of `StreamAdapter`.
-/// Responsible for interfacing with SRT-based streams, wrapping the blocking
-/// media decoding operations executed by a background thread.
+/// SRT-side adapter that orchestrates one worker run entrypoint.
+///
+/// Responsibilities:
+/// - Bridge async session control with blocking SRT ingest execution.
+/// - Delegate packet pulling/segment writing to `BlockingWorker`.
+///
+/// Out of scope:
+/// - No global stream registry/state ownership.
+/// - No callback side-effect handling outside lifecycle events.
 #[derive(Debug, Default)]
 pub struct SrtAdapter {}
 
@@ -30,7 +36,13 @@ impl SrtAdapter {
     }
 }
 
-/// Represents the possible outcomes from attempting to read a packet from the media stream.
+/// Read outcome abstraction for one packet pull attempt.
+///
+/// Responsibilities:
+/// - Normalize packet-read results for retry/loop control.
+///
+/// Out of scope:
+/// - No error policy or metrics reporting itself.
 enum ReadResult {
     /// Packet read was successful and processing can continue.
     Ok,
@@ -38,12 +50,20 @@ enum ReadResult {
     Eof,
 }
 
-/// A dedicated worker executing synchronous or blocking I/O tasks.
-/// Extracts media packets from an input context and writes them to appropriate output containers (FLV/HLS).
+/// Blocking ingest worker that owns FFmpeg contexts within a single retry cycle.
+///
+/// Responsibilities:
+/// - Pull packets from SRT input and write FLV/HLS outputs.
+/// - Emit stream and segment lifecycle signals through `WorkerLifecycle`.
+/// - Maintain per-run segmentation cursors (`segment_id`, `last_start_pts`).
+///
+/// Out of scope:
+/// - No manager-level start/stop command handling.
+/// - No global resource allocation decisions.
 struct BlockingWorker {
     stream_info: Arc<StreamInfo>,
-    stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
     flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
+    lifecycle: WorkerLifecycle,
     stop_signal: Arc<AtomicBool>,
 
     input_ctx: Option<InputContext>,
@@ -55,6 +75,25 @@ struct BlockingWorker {
 }
 
 impl BlockingWorker {
+    pub fn new(
+        stream_info: Arc<StreamInfo>,
+        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
+        lifecycle: WorkerLifecycle,
+        stop_signal: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            stream_info,
+            flv_packet_tx,
+            lifecycle,
+            stop_signal,
+            input_ctx: None,
+            flv_output: None,
+            hls_output: None,
+            segment_id: 1,
+            last_start_pts: 0,
+        }
+    }
+
     fn input_ctx(&self) -> Result<&InputContext> {
         self.input_ctx
             .as_ref()
@@ -126,21 +165,13 @@ impl BlockingWorker {
         None
     }
 
-    #[instrument(name = "ingest.srt_worker.segment_complete", skip(self), fields(stream.protocol = "srt", stream.live_id = %self.stream_info.live_id(), stream.segment_id = self.segment_id))]
     fn notify_segment_complete(&self) {
         let output_ctx = match self.hls_output() {
             Ok(ctx) => ctx,
             Err(_) => return,
         };
 
-        let live_id = self.stream_info.live_id();
-        let event = (
-            StreamMessage::segment_complete(live_id, output_ctx.path()),
-            Span::current(),
-        );
-        if let Err(e) = self.stream_msg_tx.send(event) {
-            warn!(error = %e, live_id = %live_id, "Failed to send final segment complete event");
-        }
+        self.lifecycle.notify_segment_complete(output_ctx.path());
     }
 
     /// Main loop for pulling stream, segmenting, and writing to disk.
@@ -149,8 +180,6 @@ impl BlockingWorker {
         let live_id = self.stream_info.live_id().to_string();
         let cache_dir = self.stream_info.cache_dir().to_path_buf();
         let metric_labels = metrics::protocol_labels("srt");
-
-        let mut stream_started_notified = false;
 
         self.input_ctx = Some(match self.stream_info.input_options() {
             StreamInputOptions::Srt(options) => {
@@ -179,27 +208,23 @@ impl BlockingWorker {
         while !self.stop_signal.load(Ordering::Relaxed) {
             let packet = Packet::alloc()?;
             match self.read_packet_with_retry(&packet) {
-                Ok(ReadResult::Ok) => *input_connected = true,
+                Ok(ReadResult::Ok) => {
+                    *input_connected = true;
+                    self.lifecycle.notify_stream_started();
+                }
                 Ok(ReadResult::Eof) => {
                     info!(live_id = %live_id, "End of stream reached");
                     break;
                 }
                 Err(e) => {
                     error!(error = %e, live_id = %live_id, "Error reading packet, terminating stream");
+                    self.lifecycle.notify_stream_stopped(Some(e.to_string()));
                     anyhow::bail!(e);
                 }
             }
 
             metrics::get_metrics().add_network_bytes_in(packet.size() as u64, &metric_labels);
             metrics::get_metrics().add_ingest_packets(1, &metric_labels);
-
-            if !stream_started_notified {
-                // Here we notify stream started manually if needed, wait, lifecycle handles 
-                // but stream_started goes over stream_msg_tx manually now
-                let evt = (StreamMessage::stream_started(&live_id), Span::current());
-                let _ = self.stream_msg_tx.send(evt);
-                stream_started_notified = true;
-            }
 
             let cloned_packet = packet.clone();
 
@@ -219,21 +244,22 @@ impl BlockingWorker {
             packet.rescale_ts_for_ctx(self.input_ctx()?, self.flv_output()?)?;
             if let Err(e) = packet.write(self.flv_output()?) {
                 self.notify_segment_complete();
-                // Send stream stopped
-                let _ = self.stream_msg_tx.send((StreamMessage::stream_stopped(&live_id, Some(format!("FLV output write failed: {}", e))), Span::current()));
+                self.lifecycle
+                    .notify_stream_stopped(Some(format!("FLV output write failed: {}", e)));
                 anyhow::bail!("Failed to write packet to FLV output: {}", e);
             }
 
             cloned_packet.rescale_ts_for_ctx(self.input_ctx()?, self.hls_output()?)?;
             if let Err(e) = cloned_packet.write(self.hls_output()?) {
                 self.notify_segment_complete();
-                let _ = self.stream_msg_tx.send((StreamMessage::stream_stopped(&live_id, Some(format!("HLS output write failed: {}", e))), Span::current()));
+                self.lifecycle
+                    .notify_stream_stopped(Some(format!("HLS output write failed: {}", e)));
                 anyhow::bail!("Failed to write packet to TS output: {}", e);
             }
         }
 
         self.notify_segment_complete();
-        let _ = self.stream_msg_tx.send((StreamMessage::stream_stopped(&live_id, None), Span::current()));
+        self.lifecycle.notify_stream_stopped(None);
 
         Ok(())
     }
@@ -241,24 +267,13 @@ impl BlockingWorker {
 
 impl StreamAdapter for SrtAdapter {
     async fn run(&mut self, ctx: &mut WorkerContext) -> Result<()> {
+        let lifecycle = ctx.lifecycle.clone();
         let stream_info = ctx.stream_info.clone();
-        let stream_msg_tx = ctx.stream_msg_tx.clone();
         let flv_packet_tx = ctx.flv_packet_tx.clone();
         let stop_signal = ctx.stop_signal.clone();
-        let live_id = ctx.live_id.clone();
 
-        tokio::task::spawn_blocking(move || {
-            let mut worker = BlockingWorker {
-                stream_info,
-                stream_msg_tx: stream_msg_tx.clone(),
-                flv_packet_tx,
-                stop_signal,
-                input_ctx: None,
-                flv_output: None,
-                hls_output: None,
-                segment_id: 1,
-                last_start_pts: 0,
-            };
+        let lifecycle = tokio::task::spawn_blocking(move || {
+            let mut worker = BlockingWorker::new(stream_info, flv_packet_tx, lifecycle, stop_signal);
 
             let start_span = tracing::info_span!("ingest.srt_worker.start", stream.protocol = "srt", stream.live_id = %worker.stream_info.live_id());
 
@@ -274,7 +289,7 @@ impl StreamAdapter for SrtAdapter {
 
                     if let Err(e) = worker.start_impl(&mut recovered) {
                         error!(error = %e, live_id = %worker.stream_info.live_id(), "Error in SRT worker loop");
-                        let _ = stream_msg_tx.send((StreamMessage::stream_restarting(&live_id, e.to_string()), Span::current()));
+                        worker.lifecycle.notify_stream_restarting(e.to_string());
                     } else {
                         break 'worker_loop;
                     }
@@ -289,7 +304,10 @@ impl StreamAdapter for SrtAdapter {
             }
 
             info!(live_id = %worker.stream_info.live_id(), "SRT worker loop exited");
-            Ok::<(), anyhow::Error>(())
-        }).await?
+            Ok::<WorkerLifecycle, anyhow::Error>(worker.lifecycle)
+        }).await??;
+
+        ctx.lifecycle = lifecycle;
+        Ok(())
     }
 }

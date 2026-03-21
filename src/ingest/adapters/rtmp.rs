@@ -1,16 +1,23 @@
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 
 use tokio::sync::mpsc;
 use tokio::task::block_in_place;
-use tracing::{Span, instrument, warn};
+use tracing::{instrument, warn};
 
-use crate::ingest::events::StreamMessage;
 use crate::ingest::session::{StreamAdapter, WorkerContext};
 use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
 
-/// Represents different types of FLV/RTMP tags parsed from the incoming stream.
-/// These tags encapsulate media payload and timestamp data for multiplexing.
+/// Internal RTMP ingest payload model consumed by the RTMP worker.
+///
+/// Responsibilities:
+/// - Carry typed media/control payloads between RTMP server and adapter loop.
+/// - Preserve timestamp/payload data required by mux/segment logic.
+///
+/// Out of scope:
+/// - No transport I/O ownership.
+/// - No lifecycle side effects.
 pub enum RtmpTag {
     Audio {
         tag: bytes::Bytes,
@@ -28,9 +35,15 @@ pub enum RtmpTag {
     PublishFinished,
 }
 
-/// The RTMP adapter implementation of `StreamAdapter`.
-/// Responsible for receiving `RtmpTag` inputs and converting them into stream events
-/// to be broadcast over the shared worker context.
+/// RTMP-side adapter for one ingest worker session.
+///
+/// Responsibilities:
+/// - Consume `RtmpTag` stream and feed FLV/HLS mux segmentation.
+/// - Emit segment-complete notifications via `WorkerLifecycle`.
+///
+/// Out of scope:
+/// - No manager actor state mutation.
+/// - No callback/network side effects beyond channel sends.
 pub struct RtmpAdapter {
     rx: mpsc::UnboundedReceiver<RtmpTag>,
 }
@@ -40,7 +53,6 @@ impl RtmpAdapter {
         Self { rx }
     }
 
-    #[instrument(name = "ingest.rtmp_worker.audio_data", skip(self, ctx, muxer, tag), fields(stream.protocol = "rtmp", stream.live_id = %ctx.live_id, stream.timestamp = timestamp, media.bytes = data_len))]
     fn on_audio_data(
         &mut self,
         ctx: &mut WorkerContext,
@@ -63,12 +75,11 @@ impl RtmpAdapter {
             data: tag,
         });
 
-        if let Some((live_id, path)) = completed_segment {
-            self.notify_segment_complete(ctx, &live_id, path);
+        if let Some((_live_id, path)) = completed_segment {
+            self.notify_segment_complete(ctx, path);
         }
     }
 
-    #[instrument(name = "ingest.rtmp_worker.video_data", skip(self, ctx, muxer, tag, payload), fields(stream.protocol = "rtmp", stream.live_id = %ctx.live_id, stream.timestamp = timestamp, media.bytes = payload.len()))]
     fn on_video_data(
         &mut self,
         ctx: &mut WorkerContext,
@@ -91,18 +102,46 @@ impl RtmpAdapter {
             data: tag,
         });
 
-        if let Some((live_id, path)) = completed_segment {
-            self.notify_segment_complete(ctx, &live_id, path);
+        if let Some((_live_id, path)) = completed_segment {
+            self.notify_segment_complete(ctx, path);
         }
     }
 
-    fn notify_segment_complete(&self, ctx: &mut WorkerContext, live_id: &str, path: PathBuf) {
-        let event = (
-            StreamMessage::segment_complete(live_id, &path),
-            Span::current(),
-        );
-        if let Err(err) = ctx.stream_msg_tx.send(event) {
-            warn!(error = %err, stream.live_id = %live_id, "Failed to emit RTMP segment_complete event");
+    fn notify_segment_complete(&self, ctx: &mut WorkerContext, path: PathBuf) {
+        ctx.lifecycle.notify_segment_complete(&path);
+    }
+
+    fn handle_rtmp_tag(
+        &mut self,
+        ctx: &mut WorkerContext,
+        muxer: &mut StreamMuxer,
+        tag: RtmpTag,
+    ) -> bool {
+        match tag {
+            RtmpTag::Header { tag } => {
+                let _ = ctx.flv_packet_tx.send(FlvPacket::Data {
+                    live_id: ctx.live_id.clone(),
+                    data: tag,
+                });
+                true
+            }
+            RtmpTag::Audio {
+                tag,
+                timestamp,
+                data_len,
+            } => {
+                self.on_audio_data(ctx, muxer, timestamp, tag, data_len);
+                true
+            }
+            RtmpTag::Video {
+                tag,
+                timestamp,
+                payload,
+            } => {
+                self.on_video_data(ctx, muxer, timestamp, tag, &payload);
+                true
+            }
+            RtmpTag::PublishFinished => false,
         }
     }
 }
@@ -113,57 +152,32 @@ impl StreamAdapter for RtmpAdapter {
         let segment_duration_ms = (ctx.stream_info.segment_duration().max(1) * 1000) as u32;
         let mut muxer = StreamMuxer::new(segment_duration_ms)?;
 
-        ctx.lifecycle.notify_stream_started(&ctx.stream_msg_tx);
+        ctx.lifecycle.notify_stream_started();
 
         let mut check_interval = tokio::time::interval(std::time::Duration::from_millis(100));
 
         loop {
             tokio::select! {
                 _ = check_interval.tick() => {
-                    if ctx.stop_signal.load(std::sync::atomic::Ordering::SeqCst) {
+                    if ctx.stop_signal.load(Ordering::SeqCst) {
                         tracing::info!("Stop signal received, exiting rtmp worker loop");
                         break;
                     }
                 }
                 tag_opt = self.rx.recv() => {
-                    match tag_opt {
-                        Some(tag) => {
-                            match tag {
-                                RtmpTag::Header { tag } => {
-                                    let _ = ctx.flv_packet_tx.send(FlvPacket::Data {
-                                        live_id: ctx.live_id.clone(),
-                                        data: tag,
-                                    });
-                                }
-                                RtmpTag::Audio {
-                                    tag,
-                                    timestamp,
-                                    data_len,
-                                } => {
-                                    self.on_audio_data(ctx, &mut muxer, timestamp, tag, data_len);
-                                }
-                                RtmpTag::Video {
-                                    tag,
-                                    timestamp,
-                                    payload,
-                                } => {
-                                    self.on_video_data(ctx, &mut muxer, timestamp, tag, &payload);
-                                }
-                                RtmpTag::PublishFinished => {
-                                    break;
-                                }
-                            }
-                        }
-                        None => {
-                            break;
-                        }
+                    let Some(tag) = tag_opt else {
+                        break;
+                    };
+
+                    if !self.handle_rtmp_tag(ctx, &mut muxer, tag) {
+                        break;
                     }
                 }
             }
         }
 
         if let Some(path) = muxer.segmenter.flush_final_segment() {
-            self.notify_segment_complete(ctx, &ctx.live_id.clone(), path);
+            self.notify_segment_complete(ctx, path);
         }
 
         Ok(())
@@ -196,8 +210,13 @@ pub fn make_rtmp_tag(tag_type: u8, timestamp: u32, payload: &[u8]) -> bytes::Byt
     bytes::Bytes::from(out)
 }
 
-/// Coordinates multiplexing of continuous stream data into discrete chunks or packets.
-/// Utilizes a `FlvSegmenter` under the hood to break the stream into manageable segments.
+/// Lightweight coordinator around FLV segmentation policy.
+///
+/// Responsibilities:
+/// - Encapsulate segmenter creation and ownership for RTMP adapter run.
+///
+/// Out of scope:
+/// - No I/O loop orchestration or lifecycle signaling.
 struct StreamMuxer {
     segmenter: FlvSegmenter,
 }
@@ -210,8 +229,15 @@ impl StreamMuxer {
     }
 }
 
-/// Breaks down an ongoing FLV stream into sequential segments based on a set duration.
-/// Caches the segment bytes temporarily until they are finalized and flushed.
+/// Stateful FLV segment builder backed by temporary files.
+///
+/// Responsibilities:
+/// - Accumulate FLV tags and roll segments on keyframe + duration policy.
+/// - Persist completed segments and expose their paths.
+///
+/// Out of scope:
+/// - No stream control decisions.
+/// - No telemetry or manager-state interaction.
 struct FlvSegmenter {
     temp_dir: tempfile::TempDir,
     segment_duration_ms: u32,
