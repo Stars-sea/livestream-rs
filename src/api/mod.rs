@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::error;
 
-use crate::api::grpc::contracts::{FlvPacketBus, MediaBus};
+use crate::contracts::{FlvPacketBus, MediaBus};
 use crate::infra::{GrpcClientFactory, MinioClient, ShutdownManager};
 use crate::ingest::events::handlers;
 use crate::ingest::StreamManager;

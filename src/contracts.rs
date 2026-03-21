@@ -1,14 +1,13 @@
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
-
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::media::output::FlvPacket;
 use crate::ingest::adapters::rtmp::RtmpTag;
 use crate::ingest::stream_info::StreamInfo;
+use crate::media::output::FlvPacket;
 
 pub trait StreamRegistry: Debug + Send + Sync {
     fn get_stream<'a>(

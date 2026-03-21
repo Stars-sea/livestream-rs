@@ -5,6 +5,7 @@ use crate::api::AppServer;
 
 mod api;
 mod config;
+mod contracts;
 mod egress;
 mod infra;
 mod ingest;

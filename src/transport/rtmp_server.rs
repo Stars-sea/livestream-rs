@@ -11,8 +11,8 @@ use tokio::time::{Duration, interval};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::api::grpc::contracts::StreamRegistry;
 use crate::config::EgressConfig;
+use crate::contracts::StreamRegistry;
 use crate::egress::dispatcher::StreamDispatcher;
 use crate::egress::rtmp_egress::RtmpEgressHandler;
 use crate::ingest::adapters;

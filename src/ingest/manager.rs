@@ -17,8 +17,8 @@ use super::events::StreamMessage;
 use super::port_allocator::PortAllocator;
 use super::stream_info::StreamInfo;
 
-use crate::api::grpc::contracts::StreamRegistry;
 use crate::config::{EgressConfig, IngestConfig};
+use crate::contracts::StreamRegistry;
 use crate::ingest::session;
 use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
