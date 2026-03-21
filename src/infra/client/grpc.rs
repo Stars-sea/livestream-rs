@@ -1,6 +1,8 @@
 use std::fmt::Display;
+use std::sync::Arc;
 
 use anyhow::Result;
+use tokio::sync::RwLock;
 use tonic::transport::Channel;
 
 #[cfg(feature = "opentelemetry")]
@@ -64,11 +66,15 @@ pub type CallbackClient = LivestreamCallbackClient<Channel>;
 
 pub struct GrpcClientFactory {
     url: String,
+    channel: Arc<RwLock<Option<Channel>>>,
 }
 
 impl GrpcClientFactory {
     pub fn new(url: String) -> Self {
-        Self { url }
+        Self {
+            url,
+            channel: Arc::new(RwLock::new(None)),
+        }
     }
 
     pub async fn build(&self) -> Result<Option<CallbackClient>> {
@@ -76,14 +82,38 @@ impl GrpcClientFactory {
             return Ok(None);
         }
 
+        if let Some(channel) = self.channel.read().await.clone() {
+            return Ok(Some(Self::client_from_channel(channel)));
+        }
+
+        let mut guard = self.channel.write().await;
+        if let Some(channel) = guard.clone() {
+            return Ok(Some(Self::client_from_channel(channel)));
+        }
+
         let channel = Channel::from_shared(self.url.clone())?.connect().await?;
-        #[cfg(feature = "opentelemetry")]
-        let client =
-            LivestreamCallbackClient::with_interceptor(channel, TraceContextInterceptor::default());
-        #[cfg(not(feature = "opentelemetry"))]
-        let client = LivestreamCallbackClient::new(channel);
+        *guard = Some(channel.clone());
+
+        let client = Self::client_from_channel(channel);
 
         Ok(Some(client))
+    }
+
+    pub async fn invalidate(&self) {
+        let mut guard = self.channel.write().await;
+        *guard = None;
+    }
+
+    fn client_from_channel(channel: Channel) -> CallbackClient {
+        #[cfg(feature = "opentelemetry")]
+        {
+            LivestreamCallbackClient::with_interceptor(channel, TraceContextInterceptor::default())
+        }
+
+        #[cfg(not(feature = "opentelemetry"))]
+        {
+            LivestreamCallbackClient::new(channel)
+        }
     }
 }
 

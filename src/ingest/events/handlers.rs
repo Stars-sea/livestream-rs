@@ -102,6 +102,7 @@ async fn stream_started_handler(live_id: String, client_factory: &GrpcClientFact
         let req = NotifyStreamStartedRequest { live_id };
         if let Err(e) = client.notify_stream_started(req).await {
             warn!(error = %e, "Failed to notify stream started");
+            client_factory.invalidate().await;
         }
     } else {
         warn!(client = %client_factory, "Failed to connect to gRPC callback");
@@ -132,6 +133,7 @@ async fn stream_stopped_handler(
         };
         if let Err(e) = client.notify_stream_stopped(req).await {
             warn!(error = %e, "Failed to notify stream stopped");
+            client_factory.invalidate().await;
         }
     } else {
         warn!(client = %client_factory, "Failed to connect to gRPC callback");
@@ -157,6 +159,7 @@ async fn stream_restarting_handler(
         };
         if let Err(e) = client.notify_stream_restarting(req).await {
             warn!(error = %e, "Failed to notify stream restarting");
+            client_factory.invalidate().await;
         }
     } else {
         warn!(client = %client_factory, "Failed to connect to gRPC callback");
@@ -170,6 +173,7 @@ async fn ingest_worker_started_handler(live_id: String, client_factory: &GrpcCli
         let req = NotifyIngestWorkerStartedRequest { live_id };
         if let Err(e) = client.notify_ingest_worker_started(req).await {
             warn!(error = %e, "Failed to notify ingest worker started");
+            client_factory.invalidate().await;
         }
     } else {
         warn!(client = %client_factory, "Failed to connect to gRPC callback");
@@ -183,6 +187,7 @@ async fn ingest_worker_stopped_handler(live_id: String, client_factory: &GrpcCli
         let req = NotifyIngestWorkerStoppedRequest { live_id };
         if let Err(e) = client.notify_ingest_worker_stopped(req).await {
             warn!(error = %e, "Failed to notify ingest worker stopped");
+            client_factory.invalidate().await;
         }
     } else {
         warn!(client = %client_factory, "Failed to connect to gRPC callback");
