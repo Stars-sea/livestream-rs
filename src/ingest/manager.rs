@@ -34,8 +34,18 @@ pub struct StreamContext {
     pub stop_signal: Arc<AtomicBool>,
     /// Optional transmitter for routing RTMP media tags, if the stream uses the RTMP protocol.
     pub rtmp_tx: Option<mpsc::UnboundedSender<RtmpTag>>,
-    /// Indicates whether a stream worker has been started for this context.
-    pub started: bool,
+    /// Stream lifecycle state managed by ManagerActor.
+    pub state: ManagerStreamState,
+}
+
+/// Coarse lifecycle state for manager-level stream orchestration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagerStreamState {
+    Created,
+    Starting,
+    Running,
+    Stopping,
+    Stopped,
 }
 
 /// Internal command protocol between `StreamManager` and `ManagerActor`.
@@ -416,7 +426,7 @@ impl ManagerActor {
                         info: info.clone(),
                         stop_signal: Arc::new(AtomicBool::new(false)),
                         rtmp_tx: None,
-                        started: false,
+                        state: ManagerStreamState::Created,
                     };
                     self.stream_contexts.insert(live_id, ctx);
                     let _ = reply.send(Ok(info));
@@ -450,7 +460,7 @@ impl ManagerActor {
                     info: info.clone(),
                     stop_signal: Arc::new(AtomicBool::new(false)),
                     rtmp_tx: None,
-                    started: false,
+                    state: ManagerStreamState::Created,
                 };
                 self.stream_contexts.insert(live_id, ctx);
                 let _ = reply.send(Ok(info));
@@ -475,6 +485,24 @@ impl ManagerActor {
             return;
         }
 
+        let Some(existing_ctx) = self.stream_contexts.get(&live_id) else {
+            let _ = reply.send(Err(anyhow::anyhow!("Stream '{}' not found", live_id)));
+            return;
+        };
+
+        if matches!(
+            existing_ctx.state,
+            ManagerStreamState::Starting
+                | ManagerStreamState::Running
+                | ManagerStreamState::Stopping
+        ) {
+            let _ = reply.send(Err(anyhow::anyhow!(
+                "Stream '{}' is already active",
+                live_id
+            )));
+            return;
+        }
+
         let stop_signal = self
             .stream_contexts
             .get(&live_id)
@@ -482,7 +510,7 @@ impl ManagerActor {
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
         if let Some(ctx) = self.stream_contexts.get_mut(&live_id) {
-            ctx.started = true;
+            ctx.state = ManagerStreamState::Starting;
         }
 
         let ctx = session::WorkerContext::new(
@@ -515,6 +543,10 @@ impl ManagerActor {
                 .await;
         });
 
+        if let Some(ctx) = self.stream_contexts.get_mut(&live_id) {
+            ctx.state = ManagerStreamState::Running;
+        }
+
         let _ = reply.send(Ok(()));
     }
 
@@ -524,6 +556,25 @@ impl ManagerActor {
         reply: oneshot::Sender<Result<()>>,
     ) {
         let live_id = info.live_id().to_string();
+
+        let Some(existing_ctx) = self.stream_contexts.get(&live_id) else {
+            let _ = reply.send(Err(anyhow::anyhow!("Stream '{}' not found", live_id)));
+            return;
+        };
+
+        if matches!(
+            existing_ctx.state,
+            ManagerStreamState::Starting
+                | ManagerStreamState::Running
+                | ManagerStreamState::Stopping
+        ) {
+            let _ = reply.send(Err(anyhow::anyhow!(
+                "Stream '{}' is already active",
+                live_id
+            )));
+            return;
+        }
+
         let stop_signal = self
             .stream_contexts
             .get(&live_id)
@@ -533,7 +584,7 @@ impl ManagerActor {
         let (rtmp_tx, rtmp_rx) = mpsc::unbounded_channel();
         if let Some(ctx) = self.stream_contexts.get_mut(&live_id) {
             ctx.rtmp_tx = Some(rtmp_tx);
-            ctx.started = true;
+            ctx.state = ManagerStreamState::Starting;
         }
 
         let ctx = session::WorkerContext::new(
@@ -564,6 +615,10 @@ impl ManagerActor {
                 .await;
         });
 
+        if let Some(ctx) = self.stream_contexts.get_mut(&live_id) {
+            ctx.state = ManagerStreamState::Running;
+        }
+
         let _ = reply.send(Ok(()));
     }
 
@@ -573,11 +628,32 @@ impl ManagerActor {
             return;
         };
 
+        if matches!(
+            ctx.state,
+            ManagerStreamState::Stopping | ManagerStreamState::Stopped
+        ) {
+            let _ = reply.send(Ok(()));
+            return;
+        }
+
         ctx.stop_signal.store(true, Ordering::SeqCst);
+
+        let state = ctx.state;
+
+        if matches!(
+            state,
+            ManagerStreamState::Starting | ManagerStreamState::Running
+        ) && let Some(ctx_mut) = self.stream_contexts.get_mut(&live_id)
+        {
+            ctx_mut.state = ManagerStreamState::Stopping;
+        }
 
         // Keep started streams in the registry until workers exit, so port release
         // and cleanup happen after actual shutdown via RemoveStream.
-        if !ctx.started {
+        if matches!(state, ManagerStreamState::Created) {
+            if let Some(ctx_mut) = self.stream_contexts.get_mut(&live_id) {
+                ctx_mut.state = ManagerStreamState::Stopped;
+            }
             self.handle_remove_stream(&live_id).await;
             let _ = self.flv_packet_tx.send(FlvPacket::EndOfStream { live_id });
         }

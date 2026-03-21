@@ -16,7 +16,7 @@ use crate::ingest::events::StreamMessage;
 /// - Not a global stream manager state machine.
 /// - Not a transport/protocol status model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WorkerState {
+pub(super) enum WorkerSessionState {
     Created,
     Running,
     Stopping,
@@ -38,7 +38,7 @@ pub(super) enum WorkerState {
 pub struct WorkerLifecycle {
     live_id: String,
     stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
-    state: WorkerState,
+    state: WorkerSessionState,
     stream_started_notified: bool,
     stream_stopped_notified: bool,
     worker_started_notified: bool,
@@ -51,7 +51,7 @@ impl WorkerLifecycle {
         Self {
             live_id: live_id.to_string(),
             stream_msg_tx,
-            state: WorkerState::Created,
+            state: WorkerSessionState::Created,
             stream_started_notified: false,
             stream_stopped_notified: false,
             worker_started_notified: false,
@@ -67,8 +67,8 @@ impl WorkerLifecycle {
 
         self.emit_ingest_worker_started();
         self.worker_started_notified = true;
-        if self.state == WorkerState::Created {
-            self.state = WorkerState::Running;
+        if self.state == WorkerSessionState::Created {
+            self.state = WorkerSessionState::Running;
         }
     }
 
@@ -85,8 +85,8 @@ impl WorkerLifecycle {
 
         self.emit_stream_started();
         self.stream_started_notified = true;
-        if self.state == WorkerState::Created {
-            self.state = WorkerState::Running;
+        if self.state == WorkerSessionState::Created {
+            self.state = WorkerSessionState::Running;
         }
     }
 
@@ -97,8 +97,8 @@ impl WorkerLifecycle {
 
         self.emit_stream_stopped(error);
         self.stream_stopped_notified = true;
-        if self.state != WorkerState::Stopped {
-            self.state = WorkerState::Stopping;
+        if self.state != WorkerSessionState::Stopped {
+            self.state = WorkerSessionState::Stopping;
         }
     }
 
@@ -126,7 +126,7 @@ impl WorkerLifecycle {
 
         self.emit_ingest_worker_stopped();
         self.worker_stopped_notified = true;
-        self.state = WorkerState::Stopped;
+        self.state = WorkerSessionState::Stopped;
     }
 
     pub fn finalize(
