@@ -11,13 +11,11 @@ use super::types::*;
 use crate::infra::GrpcClientFactory;
 use crate::infra::MinioClient;
 use crate::infra::api::*;
-use crate::ingest::manager::StreamManager;
 
 pub(crate) async fn stream_message_handler(
     rx: mpsc::UnboundedReceiver<(StreamMessage, Span)>,
     client_factory: GrpcClientFactory,
     minio: MinioClient,
-    stream_manager: StreamManager,
 ) {
     let mut stream = UnboundedReceiverStream::new(rx);
 
@@ -37,14 +35,9 @@ pub(crate) async fn stream_message_handler(
                     .await;
             }
             StreamMessage::StreamStopped { live_id, error } => {
-                stream_stopped_handler(
-                    live_id,
-                    error,
-                    &client_factory,
-                    &stream_manager,
-                )
-                .instrument(span)
-                .await;
+                stream_stopped_handler(live_id, error, &client_factory)
+                    .instrument(span)
+                    .await;
             }
             StreamMessage::StreamRestarting { live_id, error } => {
                 stream_restarting_handler(live_id, error, &client_factory)
@@ -113,7 +106,6 @@ async fn stream_stopped_handler(
     live_id: String,
     error_message: Option<String>,
     client_factory: &GrpcClientFactory,
-    stream_manager: &StreamManager,
 ) {
     event!(
         Level::INFO,
@@ -121,10 +113,6 @@ async fn stream_stopped_handler(
         live_id,
         error_message.as_deref().unwrap_or("None")
     );
-
-    // Replace the Map removal with a call to the new actor method
-    stream_manager.remove_stream(&live_id).await;
-    debug!(live_id = %live_id, "Cleaned up stream from manager");
 
     if let Ok(Some(mut client)) = client_factory.build().await {
         let req = NotifyStreamStoppedRequest {

@@ -13,14 +13,12 @@ use tracing::{Span, instrument};
 
 use super::adapters::rtmp::{RtmpAdapter, RtmpTag};
 use super::adapters::srt::SrtAdapter;
-use super::events::{StreamMessage, handlers};
+use super::events::StreamMessage;
 use super::port_allocator::PortAllocator;
 use super::stream_info::StreamInfo;
 
 use crate::api::grpc::contracts::StreamRegistry;
 use crate::config::{EgressConfig, IngestConfig};
-use crate::infra::GrpcClientFactory;
-use crate::infra::MinioClient;
 use crate::ingest::session;
 use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
@@ -124,10 +122,8 @@ impl StreamManager {
     pub fn new(
         ingest_config: IngestConfig,
         egress_config: EgressConfig,
-        minio_client: MinioClient,
-        grpc_client_factory: GrpcClientFactory,
         flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-    ) -> Self {
+    ) -> (Self, mpsc::UnboundedReceiver<(StreamMessage, Span)>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(128);
         let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_channel();
 
@@ -149,14 +145,7 @@ impl StreamManager {
 
         let manager = Self { cmd_tx };
 
-        tokio::spawn(handlers::stream_message_handler(
-            stream_msg_rx,
-            grpc_client_factory,
-            minio_client,
-            manager.clone(),
-        ));
-
-        manager
+        (manager, stream_msg_rx)
     }
 
     pub async fn make_srt_stream_info(
@@ -225,18 +214,6 @@ impl StreamManager {
             })
             .await;
         rx.await?
-    }
-
-    pub async fn remove_stream(&self, live_id: &str) {
-        let (reply, rx) = oneshot::channel();
-        let _ = self
-            .cmd_tx
-            .send(ManagerCommand::RemoveStream {
-                live_id: live_id.to_string(),
-                reply,
-            })
-            .await;
-        let _ = rx.await;
     }
 
     #[instrument(name = "ingest.manager.shutdown", skip(self))]

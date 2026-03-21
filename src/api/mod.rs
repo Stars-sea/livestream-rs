@@ -7,6 +7,7 @@ use tracing::error;
 
 use crate::api::grpc::contracts::{FlvPacketBus, MediaBus};
 use crate::infra::{GrpcClientFactory, MinioClient, ShutdownManager};
+use crate::ingest::events::handlers;
 use crate::ingest::StreamManager;
 use crate::transport::RtmpServer;
 
@@ -29,12 +30,17 @@ impl AppServer {
 
         let grpc_client_factory = GrpcClientFactory::new(config.grpc.callback.clone());
 
-        let manager = Arc::new(StreamManager::new(
+        let (manager, stream_msg_rx) = StreamManager::new(
             config.ingest.clone(),
             config.egress.clone(),
-            minio_client,
-            grpc_client_factory,
             media_bus.sender(),
+        );
+        let manager = Arc::new(manager);
+
+        tokio::spawn(handlers::stream_message_handler(
+            stream_msg_rx,
+            grpc_client_factory,
+            minio_client,
         ));
 
         let server_shutdown = shutdown.token();
