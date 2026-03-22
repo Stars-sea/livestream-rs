@@ -5,6 +5,9 @@
 //! - Packet processing
 //! - Stream information
 //! - Context utilities
+//!
+//! Unsafe ownership policy and acquire/free map:
+//! docs/ffmpeg-unsafe-ownership-map.md
 
 use std::ffi::{CStr, c_int};
 

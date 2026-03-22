@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::path::PathBuf;
 
 use tokio::fs;
@@ -63,6 +64,22 @@ async fn segment_complete_handler(
     path: PathBuf,
     minio: &MinioClient,
 ) -> anyhow::Result<()> {
+    let uploader = |key: String, local_path: PathBuf| async move {
+        minio.upload_file(&key, local_path.as_path()).await
+    };
+
+    segment_complete_handler_with_uploader(live_id, path, &uploader).await
+}
+
+async fn segment_complete_handler_with_uploader<F, Fut>(
+    live_id: String,
+    path: PathBuf,
+    uploader: &F,
+) -> anyhow::Result<()>
+where
+    F: Fn(String, PathBuf) -> Fut,
+    Fut: Future<Output = anyhow::Result<()>>,
+{
     event!(Level::DEBUG, "Segment complete: live_id={}", live_id);
 
     let filename = path
@@ -70,12 +87,8 @@ async fn segment_complete_handler(
         .ok_or(anyhow::anyhow!("Failed to get file name"))?;
     let storage_key = format!("{}/{}", live_id, filename.to_string_lossy());
 
-    let upload_resp = minio
-        .upload_file(
-            storage_key.as_str(),
-            fs::canonicalize(&path).await?.as_path(),
-        )
-        .await;
+    let canonical = fs::canonicalize(&path).await?;
+    let upload_resp = uploader(storage_key, canonical).await;
 
     if let Err(e) = upload_resp {
         warn!(path = %path.display(), error = ?e, "Upload failed");
@@ -179,5 +192,79 @@ async fn ingest_worker_stopped_handler(live_id: String, client_factory: &GrpcCli
         }
     } else {
         warn!(client = %client_factory, "Failed to connect to gRPC callback");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn segment_upload_failure_keeps_file_for_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let segment_path = dir.path().join("seg.ts");
+        tokio::fs::write(&segment_path, b"segment").await.unwrap();
+
+        let uploader = |_key: String, _path: PathBuf| async {
+            Err(anyhow::anyhow!("transient storage outage"))
+        };
+
+        let result = segment_complete_handler_with_uploader(
+            "live_test".to_string(),
+            segment_path.clone(),
+            &uploader,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(segment_path.exists());
+    }
+
+    #[tokio::test]
+    async fn segment_upload_transient_outage_then_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let segment_path = dir.path().join("seg.ts");
+        tokio::fs::write(&segment_path, b"segment").await.unwrap();
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let uploader_attempts = attempts.clone();
+        let uploader = move |_key: String, _path: PathBuf| {
+            let current = uploader_attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if current == 0 {
+                    Err(anyhow::anyhow!("temporary outage"))
+                } else {
+                    Ok(())
+                }
+            }
+        };
+
+        let first = segment_complete_handler_with_uploader(
+            "live_test".to_string(),
+            segment_path.clone(),
+            &uploader,
+        )
+        .await;
+        assert!(first.is_err());
+        assert!(segment_path.exists());
+
+        let second = segment_complete_handler_with_uploader(
+            "live_test".to_string(),
+            segment_path.clone(),
+            &uploader,
+        )
+        .await;
+        assert!(second.is_ok());
+        assert!(!segment_path.exists());
+    }
+
+    #[tokio::test]
+    async fn callback_factory_empty_url_is_non_fatal() {
+        let factory = GrpcClientFactory::new(String::new());
+        stream_started_handler("live_test".to_string(), &factory).await;
+        stream_stopped_handler("live_test".to_string(), None, &factory).await;
+        stream_restarting_handler("live_test".to_string(), "err".to_string(), &factory).await;
     }
 }

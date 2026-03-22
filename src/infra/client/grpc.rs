@@ -122,3 +122,38 @@ impl Display for GrpcClientFactory {
         f.write_fmt(format_args!("GrpcClientFactory {{ {} }}", &self.url))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tonic::transport::Endpoint;
+
+    #[tokio::test]
+    async fn build_returns_none_when_callback_url_empty() {
+        let factory = GrpcClientFactory::new(String::new());
+        let client = factory.build().await.unwrap();
+        assert!(client.is_none());
+    }
+
+    #[tokio::test]
+    async fn build_fails_fast_on_invalid_callback_url() {
+        let factory = GrpcClientFactory::new("not-a-valid-url".to_string());
+        let result = factory.build().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn invalidate_clears_cached_channel() {
+        let factory = GrpcClientFactory::new("http://127.0.0.1:50051".to_string());
+
+        {
+            let mut guard = factory.channel.write().await;
+            *guard = Some(Endpoint::from_static("http://127.0.0.1:50051").connect_lazy());
+        }
+
+        factory.invalidate().await;
+
+        let guard = factory.channel.read().await;
+        assert!(guard.is_none());
+    }
+}

@@ -745,4 +745,111 @@ mod tests {
 
         manager.shutdown().await;
     }
+
+    #[tokio::test]
+    async fn test_repeated_stop_start_same_live_id() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(10);
+        let (flv_tx, _flv_rx) = mpsc::unbounded_channel();
+        let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
+
+        let ingest_config = IngestConfig::default();
+        let egress_config = EgressConfig::default();
+        let (start_port, end_port) = ingest_config.srt_port_range().unwrap();
+        let port_allocator = Arc::new(PortAllocator::new(start_port, end_port));
+
+        let actor = ManagerActor::new(
+            cmd_rx,
+            flv_tx,
+            msg_tx,
+            cmd_tx.clone(),
+            port_allocator,
+            ingest_config,
+            egress_config,
+        );
+        tokio::spawn(actor.run());
+
+        let manager = StreamManager { cmd_tx };
+
+        let info1 = manager.make_rtmp_stream_info("live_repeat").await.unwrap();
+        assert_eq!(info1.live_id(), "live_repeat");
+
+        manager.stop_stream("live_repeat").await.unwrap();
+        assert!(!manager.has_stream("live_repeat").await);
+
+        let info2 = manager.make_rtmp_stream_info("live_repeat").await.unwrap();
+        assert_eq!(info2.live_id(), "live_repeat");
+        assert!(manager.has_stream("live_repeat").await);
+
+        manager.stop_stream("live_repeat").await.unwrap();
+        assert!(!manager.has_stream("live_repeat").await);
+    }
+
+    #[tokio::test]
+    async fn test_quick_recreate_after_early_stop() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(10);
+        let (flv_tx, _flv_rx) = mpsc::unbounded_channel();
+        let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
+
+        let ingest_config = IngestConfig::default();
+        let egress_config = EgressConfig::default();
+        let (start_port, end_port) = ingest_config.srt_port_range().unwrap();
+        let port_allocator = Arc::new(PortAllocator::new(start_port, end_port));
+
+        let actor = ManagerActor::new(
+            cmd_rx,
+            flv_tx,
+            msg_tx,
+            cmd_tx.clone(),
+            port_allocator,
+            ingest_config,
+            egress_config,
+        );
+        tokio::spawn(actor.run());
+
+        let manager = StreamManager { cmd_tx };
+
+        manager.make_rtmp_stream_info("live_quick").await.unwrap();
+        manager.stop_stream("live_quick").await.unwrap();
+        assert!(!manager.has_stream("live_quick").await);
+
+        manager.make_rtmp_stream_info("live_quick").await.unwrap();
+        assert!(manager.has_stream("live_quick").await);
+
+        manager.stop_stream("live_quick").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_quick_recreate_after_ingest_start_error() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(10);
+        let (flv_tx, _flv_rx) = mpsc::unbounded_channel();
+        let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
+
+        let ingest_config = IngestConfig::default();
+        let egress_config = EgressConfig::default();
+        let (start_port, end_port) = ingest_config.srt_port_range().unwrap();
+        let port_allocator = Arc::new(PortAllocator::new(start_port, end_port));
+
+        let actor = ManagerActor::new(
+            cmd_rx,
+            flv_tx,
+            msg_tx,
+            cmd_tx.clone(),
+            port_allocator,
+            ingest_config,
+            egress_config,
+        );
+        tokio::spawn(actor.run());
+
+        let manager = Arc::new(StreamManager { cmd_tx });
+
+        let info = manager.make_rtmp_stream_info("live_error").await.unwrap();
+        let start_result = manager.start_srt_stream(info).await;
+        assert!(start_result.is_err());
+
+        manager.stop_stream("live_error").await.unwrap();
+        assert!(!manager.has_stream("live_error").await);
+
+        let recreated = manager.make_rtmp_stream_info("live_error").await;
+        assert!(recreated.is_ok());
+    }
 }
