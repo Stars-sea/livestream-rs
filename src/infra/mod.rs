@@ -8,5 +8,4 @@ pub mod api {
 
 pub use client::grpc::GrpcClientFactory;
 pub use shutdown::ShutdownManager;
-pub use storage::cache::MemoryCache;
 pub use storage::minio::MinioClient;

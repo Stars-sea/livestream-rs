@@ -1,26 +1,25 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use dashmap::DashMap;
 use tokio::sync::RwLock;
 
-use crate::egress::broadcaster::BroadcastRx;
-use crate::egress::broadcaster::Broadcaster;
-use crate::infra::MemoryCache;
+use super::broadcaster::BroadcastRx;
+use super::broadcaster::Broadcaster;
 use crate::media::flv_parser::FlvTag;
 
-#[derive(Clone)]
 pub(crate) struct StreamState {
-    pub video_seq_header: Arc<RwLock<Option<Arc<FlvTag>>>>,
-    pub audio_seq_header: Arc<RwLock<Option<Arc<FlvTag>>>>,
-    pub metadata: Arc<RwLock<Option<Arc<FlvTag>>>>,
+    pub video_seq_header: RwLock<Option<Arc<FlvTag>>>,
+    pub audio_seq_header: RwLock<Option<Arc<FlvTag>>>,
+    pub metadata: RwLock<Option<Arc<FlvTag>>>,
 }
 
 impl StreamState {
     pub fn new() -> Self {
         Self {
-            video_seq_header: Arc::new(RwLock::new(None)),
-            audio_seq_header: Arc::new(RwLock::new(None)),
-            metadata: Arc::new(RwLock::new(None)),
+            video_seq_header: RwLock::new(None),
+            audio_seq_header: RwLock::new(None),
+            metadata: RwLock::new(None),
         }
     }
 }
@@ -28,29 +27,30 @@ impl StreamState {
 #[derive(Clone)]
 pub(crate) struct StreamDispatcher {
     broadcaster: Broadcaster<String, Arc<FlvTag>>,
-    streams: MemoryCache<StreamState>,
+    streams: DashMap<String, Arc<StreamState>>,
 }
 
 impl StreamDispatcher {
     pub fn new() -> Self {
         Self {
             broadcaster: Broadcaster::new(),
-            streams: MemoryCache::new(),
+            streams: DashMap::new(),
         }
     }
 
-    pub async fn stream(&self, stream_key: &str) -> StreamState {
+    pub fn stream(&self, stream_key: &str) -> Arc<StreamState> {
         self.streams
-            .get_or_insert_with(stream_key.to_string(), StreamState::new)
-            .await
+            .entry(stream_key.to_string())
+            .or_insert_with(|| Arc::new(StreamState::new()))
+            .clone()
     }
 
-    pub async fn remove_stream(&self, stream_key: &str) {
-        self.streams.remove(stream_key).await;
+    pub fn remove_stream(&self, stream_key: &str) {
+        self.streams.remove(stream_key);
     }
 
-    pub async fn subscribe(&self, stream_key: &str) -> (BroadcastRx<Arc<FlvTag>>, StreamState) {
-        let state = self.stream(stream_key).await;
+    pub fn subscribe(&self, stream_key: &str) -> (BroadcastRx<Arc<FlvTag>>, Arc<StreamState>) {
+        let state = self.stream(stream_key);
         (self.broadcaster.subscribe(stream_key.to_string()), state)
     }
 
@@ -70,7 +70,7 @@ mod tests {
     #[tokio::test]
     async fn subscribe_receives_broadcast_tag() {
         let dispatcher = StreamDispatcher::new();
-        let (mut rx, _state) = dispatcher.subscribe("live_1").await;
+        let (mut rx, _state) = dispatcher.subscribe("live_1");
 
         let tag = Arc::new(FlvTag::ScriptData {
             timestamp: 1,
@@ -91,15 +91,15 @@ mod tests {
     async fn remove_stream_resets_state_on_recreate() {
         let dispatcher = StreamDispatcher::new();
 
-        let state = dispatcher.stream("live_2").await;
+        let state = dispatcher.stream("live_2");
         *state.metadata.write().await = Some(Arc::new(FlvTag::ScriptData {
             timestamp: 3,
             payload: bytes::Bytes::from_static(&[0x12]),
         }));
 
-        dispatcher.remove_stream("live_2").await;
+        dispatcher.remove_stream("live_2");
 
-        let recreated = dispatcher.stream("live_2").await;
+        let recreated = dispatcher.stream("live_2");
         assert!(recreated.metadata.read().await.is_none());
         assert!(recreated.audio_seq_header.read().await.is_none());
         assert!(recreated.video_seq_header.read().await.is_none());

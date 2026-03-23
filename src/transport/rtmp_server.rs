@@ -386,7 +386,7 @@ async fn process_flv_packets(flv_rx: AsyncRx<mpsc::List<FlvPacket>>, dispatcher:
                 demuxer.push_data(&data);
                 while let Some(tag) = demuxer.next_tag() {
                     let tag = Arc::new(tag);
-                    let state = dispatcher.stream(&live_id).await;
+                    let state = dispatcher.stream(&live_id);
 
                     match tag.as_ref() {
                         FlvTag::Video { payload, .. } => {
@@ -409,7 +409,7 @@ async fn process_flv_packets(flv_rx: AsyncRx<mpsc::List<FlvPacket>>, dispatcher:
             }
             FlvPacket::EndOfStream { live_id } => {
                 demuxers.remove(&live_id);
-                dispatcher.remove_stream(&live_id).await;
+                dispatcher.remove_stream(&live_id);
             }
         }
     }

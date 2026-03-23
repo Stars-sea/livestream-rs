@@ -17,7 +17,7 @@ pub struct RtmpEgressHandler {
     stream_registry: Arc<dyn StreamRegistry>,
     active_stream_rx: Option<BroadcastRx<Arc<FlvTag>>>,
     current_stream_id: u32,
-    stream_state: Option<StreamState>,
+    stream_state: Option<Arc<StreamState>>,
     sent_headers: bool,
     pull_guard: Option<metrics::MetricGuard>,
 }
@@ -45,7 +45,7 @@ impl RtmpEgressHandler {
         if self.stream_registry.get_stream(&stream_key).await.is_some() {
             self.current_stream_id = stream_id;
 
-            let (rx, state) = self.dispatcher.subscribe(&stream_key).await;
+            let (rx, state) = self.dispatcher.subscribe(&stream_key);
             self.active_stream_rx = Some(rx);
             self.stream_state = Some(state);
             self.sent_headers = false;
