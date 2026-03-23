@@ -5,17 +5,17 @@ use rml_rtmp::sessions::{ServerSession, ServerSessionResult};
 use rml_rtmp::time::RtmpTimestamp;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
 
 use crate::contracts::StreamRegistry;
-use crate::media::flv_parser::FlvTag;
+use crate::egress::broadcaster::BroadcastRx;
 use crate::egress::dispatcher::{StreamDispatcher, StreamState};
+use crate::media::flv_parser::FlvTag;
 use crate::telemetry::metrics;
 
 pub struct RtmpEgressHandler {
     dispatcher: StreamDispatcher,
     stream_registry: Arc<dyn StreamRegistry>,
-    active_stream_rx: Option<broadcast::Receiver<Arc<FlvTag>>>,
+    active_stream_rx: Option<BroadcastRx<Arc<FlvTag>>>,
     current_stream_id: u32,
     stream_state: Option<StreamState>,
     sent_headers: bool,
@@ -71,7 +71,7 @@ impl RtmpEgressHandler {
 
     pub async fn wait_for_tag(&mut self) -> Result<Arc<FlvTag>> {
         match &mut self.active_stream_rx {
-            Some(rx) => rx.recv().await.map_err(|e| e.into()),
+            Some(rx) => Ok(rx.recv().await?),
             None => std::future::pending().await,
         }
     }

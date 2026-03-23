@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
+use crossfire::{AsyncRx, MTx, mpsc};
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
@@ -38,7 +38,7 @@ impl RtmpServer {
     #[instrument(name = "server.rtmp.start", skip(self, flv_packet_rx, shutdown), fields(server.port = self.config.port))]
     pub async fn start(
         &self,
-        flv_packet_rx: mpsc::UnboundedReceiver<FlvPacket>,
+        flv_packet_rx: AsyncRx<mpsc::List<FlvPacket>>,
         shutdown: CancellationToken,
     ) -> Result<()> {
         let listener = TcpListener::bind(format!("0.0.0.0:{}", self.config.port)).await?;
@@ -97,7 +97,7 @@ struct RtmpConnection {
     appname: String,
     session: Option<ServerSession>,
     stream_registry: Arc<dyn StreamRegistry>,
-    rtmp_tx: Option<mpsc::UnboundedSender<RtmpTag>>,
+    rtmp_tx: Option<MTx<mpsc::List<RtmpTag>>>,
     egress_handler: RtmpEgressHandler,
     _session_guard: metrics::MetricGuard,
 }
@@ -195,7 +195,7 @@ impl RtmpConnection {
                     }
                 }
                 _ = control_stop_tick.tick() => {
-                    if self.rtmp_tx.as_ref().is_some_and(|tx| tx.is_closed()) {
+                    if self.rtmp_tx.as_ref().is_some_and(|tx| tx.is_disconnected()) {
                         info!(remote_addr = ?addr, "RTMP ingest worker closed, terminating publisher connection");
                         self.rtmp_tx = None;
                         break;
@@ -372,13 +372,10 @@ impl RtmpConnection {
 }
 
 #[instrument(name = "server.rtmp.flv.process", skip(flv_rx, dispatcher))]
-async fn process_flv_packets(
-    mut flv_rx: mpsc::UnboundedReceiver<FlvPacket>,
-    dispatcher: StreamDispatcher,
-) {
+async fn process_flv_packets(flv_rx: AsyncRx<mpsc::List<FlvPacket>>, dispatcher: StreamDispatcher) {
     let mut demuxers: HashMap<String, FlvDemuxer> = HashMap::new();
 
-    while let Some(packet) = flv_rx.recv().await {
+    while let Ok(packet) = flv_rx.recv().await {
         let live_id = packet.live_id().to_string();
         let demuxer = demuxers
             .entry(live_id.clone())
@@ -407,7 +404,7 @@ async fn process_flv_packets(
                         }
                     }
 
-                    let _ = state.sender.send(tag);
+                    let _ = dispatcher.send(&live_id, tag);
                 }
             }
             FlvPacket::EndOfStream { live_id } => {

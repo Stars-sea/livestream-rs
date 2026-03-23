@@ -1,6 +1,6 @@
 pub mod lifecycle;
+use crossfire::{MTx, mpsc};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tracing::Span;
 
 use crate::ingest::events::StreamMessage;
@@ -21,7 +21,7 @@ use crate::media::output::FlvPacket;
 pub struct WorkerContext {
     pub live_id: String,
     pub stop_signal: Arc<std::sync::atomic::AtomicBool>,
-    pub flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
+    pub flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
     pub lifecycle: WorkerLifecycle,
     pub stream_info: Arc<StreamInfo>,
 }
@@ -30,8 +30,8 @@ impl WorkerContext {
     pub fn new(
         stream_info: Arc<StreamInfo>,
         stop_signal: Arc<std::sync::atomic::AtomicBool>,
-        stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
-        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
+        stream_msg_tx: MTx<mpsc::List<(StreamMessage, Span)>>,
+        flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
     ) -> Self {
         let live_id = stream_info.live_id().to_string();
         Self {
@@ -54,7 +54,7 @@ impl WorkerContext {
 /// Out of scope:
 /// - No direct mutation of manager actor state.
 /// - No global resource bookkeeping.
-pub trait StreamAdapter: Send + Sync {
+pub trait StreamAdapter: Send {
     async fn run(&mut self, ctx: &mut WorkerContext) -> anyhow::Result<()>;
 }
 

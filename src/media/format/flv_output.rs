@@ -4,8 +4,8 @@ use crate::media::context::{Context, OutputContext};
 use crate::media::ffmpeg_error;
 
 use anyhow::Result;
+use crossfire::{MTx, mpsc};
 use ffmpeg_sys_next::*;
-use tokio::sync::mpsc;
 
 use std::ffi::{c_int, c_void};
 use std::ptr::null_mut;
@@ -37,7 +37,7 @@ pub struct FlvOutputContext {
 impl FlvOutputContext {
     pub fn create(
         live_id: String,
-        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
+        flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
         input_ctx: &impl Context,
     ) -> Result<Self> {
         let ctx = Self::alloc_output_ctx("flv", None)?;
@@ -160,7 +160,7 @@ impl OutputContext for FlvOutputContext {
 
 impl FlvOutputContext {
     #[allow(dead_code)]
-    pub fn get_flv_packet_sender(&self) -> Option<mpsc::UnboundedSender<FlvPacket>> {
+    pub fn get_flv_packet_sender(&self) -> Option<MTx<mpsc::List<FlvPacket>>> {
         if self.ctx.is_null() {
             return None;
         }
@@ -183,7 +183,7 @@ impl FlvOutputContext {
 
 pub struct FlvAvioOpaque {
     live_id: String,
-    flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
+    flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
 }
 
 extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int) -> c_int {

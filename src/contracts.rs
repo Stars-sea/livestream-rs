@@ -3,7 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use crossfire::{AsyncRx, MTx, mpsc};
 
 use crate::ingest::adapters::rtmp::RtmpTag;
 use crate::ingest::stream_info::StreamInfo;
@@ -18,29 +18,29 @@ pub trait StreamRegistry: Debug + Send + Sync {
     fn get_rtmp_tx<'a>(
         &'a self,
         _live_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Option<mpsc::UnboundedSender<RtmpTag>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Option<MTx<mpsc::List<RtmpTag>>>> + Send + 'a>> {
         Box::pin(async { None })
     }
 }
 
 pub trait MediaBus: Debug + Send + Sync {
-    fn sender(&self) -> mpsc::UnboundedSender<FlvPacket>;
+    fn sender(&self) -> MTx<mpsc::List<FlvPacket>>;
 }
 
 #[derive(Debug, Clone)]
 pub struct FlvPacketBus {
-    tx: mpsc::UnboundedSender<FlvPacket>,
+    tx: MTx<mpsc::List<FlvPacket>>,
 }
 
 impl FlvPacketBus {
-    pub fn new() -> (Self, mpsc::UnboundedReceiver<FlvPacket>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    pub fn new() -> (Self, AsyncRx<mpsc::List<FlvPacket>>) {
+        let (tx, rx) = mpsc::unbounded_async();
         (Self { tx }, rx)
     }
 }
 
 impl MediaBus for FlvPacketBus {
-    fn sender(&self) -> mpsc::UnboundedSender<FlvPacket> {
+    fn sender(&self) -> MTx<mpsc::List<FlvPacket>> {
         self.tx.clone()
     }
 }

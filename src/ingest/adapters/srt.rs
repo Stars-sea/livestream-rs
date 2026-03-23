@@ -15,7 +15,7 @@ use crate::telemetry::metrics;
 use anyhow::Result;
 use retry::OperationResult;
 use retry::delay::{Exponential, jitter};
-use tokio::sync::mpsc;
+use crossfire::{MTx, mpsc};
 use tracing::{debug, error, info, instrument};
 
 /// SRT-side adapter that orchestrates one worker run entrypoint.
@@ -62,7 +62,7 @@ enum ReadResult {
 /// - No global resource allocation decisions.
 struct BlockingWorker {
     stream_info: Arc<StreamInfo>,
-    flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
+    flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
     lifecycle: WorkerLifecycle,
     stop_signal: Arc<AtomicBool>,
 
@@ -77,7 +77,7 @@ struct BlockingWorker {
 impl BlockingWorker {
     pub fn new(
         stream_info: Arc<StreamInfo>,
-        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
+        flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
         lifecycle: WorkerLifecycle,
         stop_signal: Arc<AtomicBool>,
     ) -> Self {

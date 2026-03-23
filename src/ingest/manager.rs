@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::sync::{mpsc, oneshot};
+use crossfire::{AsyncRx, MAsyncTx, MTx, mpsc, oneshot};
 use tokio::time::error::Elapsed;
 use tokio::time::timeout;
 use tracing::{Span, instrument};
@@ -32,7 +32,7 @@ pub struct StreamContext {
     /// Signal used to indicate that the stream should be stopped.
     pub stop_signal: Arc<AtomicBool>,
     /// Optional transmitter for routing RTMP media tags, if the stream uses the RTMP protocol.
-    pub rtmp_tx: Option<mpsc::UnboundedSender<RtmpTag>>,
+    pub rtmp_tx: Option<MTx<mpsc::List<RtmpTag>>>,
     /// Stream lifecycle state managed by ManagerActor.
     pub state: ManagerStreamState,
 }
@@ -59,48 +59,48 @@ enum ManagerCommand {
     MakeSrtStreamInfo {
         live_id: String,
         passphrase: String,
-        reply: oneshot::Sender<Result<Arc<StreamInfo>>>,
+        reply: oneshot::TxOneshot<Result<Arc<StreamInfo>>>,
     },
     MakeRtmpStreamInfo {
         live_id: String,
-        reply: oneshot::Sender<Result<Arc<StreamInfo>>>,
+        reply: oneshot::TxOneshot<Result<Arc<StreamInfo>>>,
     },
     StartSrtStream {
         info: Arc<StreamInfo>,
-        reply: oneshot::Sender<Result<()>>,
+        reply: oneshot::TxOneshot<Result<()>>,
     },
     StartRtmpStream {
         info: Arc<StreamInfo>,
-        reply: oneshot::Sender<Result<()>>,
+        reply: oneshot::TxOneshot<Result<()>>,
     },
     StopStream {
         live_id: String,
-        reply: oneshot::Sender<Result<()>>,
+        reply: oneshot::TxOneshot<Result<()>>,
     },
     RemoveStream {
         live_id: String,
-        reply: oneshot::Sender<()>,
+        reply: oneshot::TxOneshot<()>,
     },
     Shutdown {
-        reply: oneshot::Sender<()>,
+        reply: oneshot::TxOneshot<()>,
     },
     ListActiveStreams {
-        reply: oneshot::Sender<Result<Vec<String>>>,
+        reply: oneshot::TxOneshot<Result<Vec<String>>>,
     },
     IsStreamsEmpty {
-        reply: oneshot::Sender<bool>,
+        reply: oneshot::TxOneshot<bool>,
     },
     HasStream {
         live_id: String,
-        reply: oneshot::Sender<bool>,
+        reply: oneshot::TxOneshot<bool>,
     },
     GetStreamInfo {
         live_id: String,
-        reply: oneshot::Sender<Option<Arc<StreamInfo>>>,
+        reply: oneshot::TxOneshot<Option<Arc<StreamInfo>>>,
     },
     GetRtmpTx {
         live_id: String,
-        reply: oneshot::Sender<Option<mpsc::UnboundedSender<RtmpTag>>>,
+        reply: oneshot::TxOneshot<Option<MTx<mpsc::List<RtmpTag>>>>,
     },
 }
 
@@ -115,17 +115,17 @@ enum ManagerCommand {
 /// - No protocol-specific ingest logic.
 #[derive(Clone, Debug)]
 pub struct StreamManager {
-    cmd_tx: mpsc::Sender<ManagerCommand>,
+    cmd_tx: MAsyncTx<mpsc::Array<ManagerCommand>>,
 }
 
 impl StreamManager {
     pub fn new(
         ingest_config: IngestConfig,
         egress_config: EgressConfig,
-        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-    ) -> (Self, mpsc::UnboundedReceiver<(StreamMessage, Span)>) {
-        let (cmd_tx, cmd_rx) = mpsc::channel(128);
-        let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_channel();
+        flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
+    ) -> (Self, AsyncRx<mpsc::List<(StreamMessage, Span)>>) {
+        let (cmd_tx, cmd_rx) = mpsc::bounded_async(128);
+        let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_async();
 
         let (start_port, end_port) = ingest_config
             .srt_port_range()
@@ -153,7 +153,7 @@ impl StreamManager {
         live_id: &str,
         passphrase: &str,
     ) -> Result<Arc<StreamInfo>> {
-        let (reply, rx) = oneshot::channel();
+        let (reply, rx) = oneshot::oneshot();
         let _ = self
             .cmd_tx
             .send(ManagerCommand::MakeSrtStreamInfo {
@@ -166,7 +166,7 @@ impl StreamManager {
     }
 
     pub async fn make_rtmp_stream_info(&self, live_id: &str) -> Result<Arc<StreamInfo>> {
-        let (reply, rx) = oneshot::channel();
+        let (reply, rx) = oneshot::oneshot();
         let _ = self
             .cmd_tx
             .send(ManagerCommand::MakeRtmpStreamInfo {
@@ -179,7 +179,7 @@ impl StreamManager {
 
     #[instrument(name = "ingest.manager.start", skip(self, stream_info), fields(stream.live_id = %stream_info.live_id()))]
     pub async fn start_srt_stream(self: &Arc<Self>, stream_info: Arc<StreamInfo>) -> Result<()> {
-        let (reply, rx) = oneshot::channel();
+        let (reply, rx) = oneshot::oneshot();
         let _ = self
             .cmd_tx
             .send(ManagerCommand::StartSrtStream {
@@ -192,7 +192,7 @@ impl StreamManager {
 
     #[instrument(name = "ingest.manager.start_rtmp", skip(self, stream_info), fields(stream.live_id = %stream_info.live_id()))]
     pub async fn start_rtmp_stream(self: &Arc<Self>, stream_info: Arc<StreamInfo>) -> Result<()> {
-        let (reply, rx) = oneshot::channel();
+        let (reply, rx) = oneshot::oneshot();
         let _ = self
             .cmd_tx
             .send(ManagerCommand::StartRtmpStream {
@@ -205,7 +205,7 @@ impl StreamManager {
 
     #[instrument(name = "ingest.manager.stop", skip(self), fields(stream.live_id = %live_id))]
     pub async fn stop_stream(&self, live_id: &str) -> Result<()> {
-        let (reply, rx) = oneshot::channel();
+        let (reply, rx) = oneshot::oneshot();
         let _ = self
             .cmd_tx
             .send(ManagerCommand::StopStream {
@@ -218,14 +218,14 @@ impl StreamManager {
 
     #[instrument(name = "ingest.manager.shutdown", skip(self))]
     pub async fn shutdown(&self) {
-        let (reply, rx) = oneshot::channel();
+        let (reply, rx) = oneshot::oneshot();
         let _ = self.cmd_tx.send(ManagerCommand::Shutdown { reply }).await;
         let _ = rx.await;
     }
 
     #[instrument(name = "ingest.manager.list_active", skip(self))]
     pub async fn list_active_streams(&self) -> Result<Vec<String>> {
-        let (reply, rx) = oneshot::channel();
+        let (reply, rx) = oneshot::oneshot();
         let _ = self
             .cmd_tx
             .send(ManagerCommand::ListActiveStreams { reply })
@@ -235,7 +235,7 @@ impl StreamManager {
 
     #[instrument(name = "ingest.manager.is_empty", skip(self))]
     pub async fn is_streams_empty(&self) -> bool {
-        let (reply, rx) = oneshot::channel();
+        let (reply, rx) = oneshot::oneshot();
         let _ = self
             .cmd_tx
             .send(ManagerCommand::IsStreamsEmpty { reply })
@@ -246,7 +246,7 @@ impl StreamManager {
     #[allow(dead_code)]
     #[instrument(name = "ingest.manager.exists", skip(self), fields(stream.live_id = %live_id))]
     pub async fn has_stream(&self, live_id: &str) -> bool {
-        let (reply, rx) = oneshot::channel();
+        let (reply, rx) = oneshot::oneshot();
         let _ = self
             .cmd_tx
             .send(ManagerCommand::HasStream {
@@ -259,7 +259,7 @@ impl StreamManager {
 
     #[instrument(name = "ingest.manager.get_info", skip(self), fields(stream.live_id = %live_id))]
     pub async fn get_stream_info(&self, live_id: &str) -> Option<Arc<StreamInfo>> {
-        let (reply, rx) = oneshot::channel();
+        let (reply, rx) = oneshot::oneshot();
         let _ = self
             .cmd_tx
             .send(ManagerCommand::GetStreamInfo {
@@ -282,9 +282,9 @@ impl StreamRegistry for StreamManager {
     fn get_rtmp_tx<'a>(
         &'a self,
         live_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Option<mpsc::UnboundedSender<RtmpTag>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Option<MTx<mpsc::List<RtmpTag>>>> + Send + 'a>> {
         Box::pin(async move {
-            let (reply, rx) = oneshot::channel();
+            let (reply, rx) = oneshot::oneshot();
             let _ = self
                 .cmd_tx
                 .send(ManagerCommand::GetRtmpTx {
@@ -308,24 +308,24 @@ impl StreamRegistry for StreamManager {
 /// - No media packet processing (done by adapters/sessions).
 /// - No external callback business logic (handled by event handlers).
 struct ManagerActor {
-    rx: mpsc::Receiver<ManagerCommand>,
+    rx: AsyncRx<mpsc::Array<ManagerCommand>>,
     stream_contexts: HashMap<String, StreamContext>,
     port_allocator: Arc<PortAllocator>,
     ingest_host: String,
     segment_duration: i32,
     egress_port: u16,
     egress_appname: String,
-    flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-    stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
-    self_cmd_tx: mpsc::Sender<ManagerCommand>,
+    flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
+    stream_msg_tx: MTx<mpsc::List<(StreamMessage, Span)>>,
+    self_cmd_tx: MAsyncTx<mpsc::Array<ManagerCommand>>,
 }
 
 impl ManagerActor {
     fn new(
-        rx: mpsc::Receiver<ManagerCommand>,
-        flv_packet_tx: mpsc::UnboundedSender<FlvPacket>,
-        stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
-        self_cmd_tx: mpsc::Sender<ManagerCommand>,
+        rx: AsyncRx<mpsc::Array<ManagerCommand>>,
+        flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
+        stream_msg_tx: MTx<mpsc::List<(StreamMessage, Span)>>,
+        self_cmd_tx: MAsyncTx<mpsc::Array<ManagerCommand>>,
         port_allocator: Arc<PortAllocator>,
         ingest_config: IngestConfig,
         egress_config: EgressConfig,
@@ -353,7 +353,7 @@ impl ManagerActor {
     }
 
     async fn run(mut self) {
-        while let Some(cmd) = self.rx.recv().await {
+        while let Ok(cmd) = self.rx.recv().await {
             self.handle_command(cmd).await;
         }
     }
@@ -415,7 +415,7 @@ impl ManagerActor {
         &mut self,
         live_id: String,
         passphrase: String,
-        reply: oneshot::Sender<Result<Arc<StreamInfo>>>,
+        reply: oneshot::TxOneshot<Result<Arc<StreamInfo>>>,
     ) {
         if self.stream_contexts.contains_key(&live_id) {
             let _ = reply.send(Err(anyhow::anyhow!("Stream '{}' already exists", live_id)));
@@ -456,7 +456,7 @@ impl ManagerActor {
     fn handle_make_rtmp_stream_info(
         &mut self,
         live_id: String,
-        reply: oneshot::Sender<Result<Arc<StreamInfo>>>,
+        reply: oneshot::TxOneshot<Result<Arc<StreamInfo>>>,
     ) {
         if self.stream_contexts.contains_key(&live_id) {
             let _ = reply.send(Err(anyhow::anyhow!("Stream '{}' already exists", live_id)));
@@ -490,7 +490,7 @@ impl ManagerActor {
     fn handle_start_srt_stream(
         &mut self,
         info: Arc<StreamInfo>,
-        reply: oneshot::Sender<Result<()>>,
+        reply: oneshot::TxOneshot<Result<()>>,
     ) {
         let live_id = info.live_id().to_string();
         if info.srt_options().is_none() {
@@ -554,7 +554,7 @@ impl ManagerActor {
             let _ = self_cmd_tx
                 .send(ManagerCommand::RemoveStream {
                     live_id: cloned_info.live_id().to_string(),
-                    reply: oneshot::channel().0,
+                    reply: oneshot::oneshot().0,
                 })
                 .await;
         });
@@ -569,7 +569,7 @@ impl ManagerActor {
     fn handle_start_rtmp_stream(
         &mut self,
         info: Arc<StreamInfo>,
-        reply: oneshot::Sender<Result<()>>,
+        reply: oneshot::TxOneshot<Result<()>>,
     ) {
         let live_id = info.live_id().to_string();
 
@@ -597,7 +597,7 @@ impl ManagerActor {
             .map(|ctx| ctx.stop_signal.clone())
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
-        let (rtmp_tx, rtmp_rx) = mpsc::unbounded_channel();
+        let (rtmp_tx, rtmp_rx) = mpsc::unbounded_async();
         if let Some(ctx) = self.stream_contexts.get_mut(&live_id) {
             ctx.rtmp_tx = Some(rtmp_tx);
             ctx.state = ManagerStreamState::Starting;
@@ -626,7 +626,7 @@ impl ManagerActor {
             let _ = self_cmd_tx
                 .send(ManagerCommand::RemoveStream {
                     live_id: cloned_info.live_id().to_string(),
-                    reply: oneshot::channel().0,
+                    reply: oneshot::oneshot().0,
                 })
                 .await;
         });
@@ -638,7 +638,7 @@ impl ManagerActor {
         let _ = reply.send(Ok(()));
     }
 
-    async fn handle_stop_stream(&mut self, live_id: String, reply: oneshot::Sender<Result<()>>) {
+    async fn handle_stop_stream(&mut self, live_id: String, reply: oneshot::TxOneshot<Result<()>>) {
         let Some(ctx) = self.stream_contexts.get(&live_id) else {
             let _ = reply.send(Err(anyhow::anyhow!("Stream '{}' not found", live_id)));
             return;
@@ -677,7 +677,7 @@ impl ManagerActor {
         let _ = reply.send(Ok(()));
     }
 
-    async fn handle_shutdown(&mut self, reply: oneshot::Sender<()>) {
+    async fn handle_shutdown(&mut self, reply: oneshot::TxOneshot<()>) {
         for ctx in self.stream_contexts.values() {
             ctx.stop_signal.store(true, Ordering::SeqCst);
         }
@@ -702,13 +702,12 @@ impl ManagerActor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn test_manager_actor_flow() {
-        let (cmd_tx, cmd_rx) = mpsc::channel(10);
-        let (flv_tx, _flv_rx) = mpsc::unbounded_channel();
-        let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::bounded_async(10);
+        let (flv_tx, _flv_rx) = mpsc::unbounded_async();
+        let (msg_tx, _msg_rx) = mpsc::unbounded_async();
 
         let ingest_config = IngestConfig::default();
         let egress_config = EgressConfig::default();
@@ -748,9 +747,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_repeated_stop_start_same_live_id() {
-        let (cmd_tx, cmd_rx) = mpsc::channel(10);
-        let (flv_tx, _flv_rx) = mpsc::unbounded_channel();
-        let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::bounded_async(10);
+        let (flv_tx, _flv_rx) = mpsc::unbounded_async();
+        let (msg_tx, _msg_rx) = mpsc::unbounded_async();
 
         let ingest_config = IngestConfig::default();
         let egress_config = EgressConfig::default();
@@ -786,9 +785,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_quick_recreate_after_early_stop() {
-        let (cmd_tx, cmd_rx) = mpsc::channel(10);
-        let (flv_tx, _flv_rx) = mpsc::unbounded_channel();
-        let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::bounded_async(10);
+        let (flv_tx, _flv_rx) = mpsc::unbounded_async();
+        let (msg_tx, _msg_rx) = mpsc::unbounded_async();
 
         let ingest_config = IngestConfig::default();
         let egress_config = EgressConfig::default();
@@ -820,9 +819,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_quick_recreate_after_ingest_start_error() {
-        let (cmd_tx, cmd_rx) = mpsc::channel(10);
-        let (flv_tx, _flv_rx) = mpsc::unbounded_channel();
-        let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::bounded_async(10);
+        let (flv_tx, _flv_rx) = mpsc::unbounded_async();
+        let (msg_tx, _msg_rx) = mpsc::unbounded_async();
 
         let ingest_config = IngestConfig::default();
         let egress_config = EgressConfig::default();

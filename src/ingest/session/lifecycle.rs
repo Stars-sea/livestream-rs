@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use tokio::sync::mpsc;
+use crossfire::{MTx, mpsc};
 use tracing::Span;
 
 use crate::media::output::FlvPacket;
@@ -37,7 +37,7 @@ pub(super) enum WorkerSessionState {
 #[derive(Debug, Clone)]
 pub struct WorkerLifecycle {
     live_id: String,
-    stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>,
+    stream_msg_tx: MTx<mpsc::List<(StreamMessage, Span)>>,
     state: WorkerSessionState,
     stream_started_notified: bool,
     stream_stopped_notified: bool,
@@ -47,7 +47,7 @@ pub struct WorkerLifecycle {
 }
 
 impl WorkerLifecycle {
-    pub fn new(live_id: &str, stream_msg_tx: mpsc::UnboundedSender<(StreamMessage, Span)>) -> Self {
+    pub fn new(live_id: &str, stream_msg_tx: MTx<mpsc::List<(StreamMessage, Span)>>) -> Self {
         Self {
             live_id: live_id.to_string(),
             stream_msg_tx,
@@ -110,7 +110,7 @@ impl WorkerLifecycle {
         self.emit_segment_complete(path);
     }
 
-    pub fn send_end_of_stream_once(&mut self, flv_packet_tx: &mpsc::UnboundedSender<FlvPacket>) {
+    pub fn send_end_of_stream_once(&mut self, flv_packet_tx: &MTx<mpsc::List<FlvPacket>>) {
         if self.eos_sent {
             return;
         }
@@ -131,7 +131,7 @@ impl WorkerLifecycle {
 
     pub fn finalize(
         &mut self,
-        flv_packet_tx: &mpsc::UnboundedSender<FlvPacket>,
+        flv_packet_tx: &MTx<mpsc::List<FlvPacket>>,
         error: Option<String>,
     ) {
         self.notify_stream_stopped(error);
@@ -181,7 +181,7 @@ impl WorkerLifecycle {
         ));
     }
 
-    fn emit_end_of_stream(&self, flv_packet_tx: &mpsc::UnboundedSender<FlvPacket>) {
+    fn emit_end_of_stream(&self, flv_packet_tx: &MTx<mpsc::List<FlvPacket>>) {
         let _ = flv_packet_tx.send(FlvPacket::EndOfStream {
             live_id: self.live_id.to_string(),
         });

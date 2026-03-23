@@ -1,10 +1,8 @@
 use std::future::Future;
 use std::path::PathBuf;
 
+use crossfire::{AsyncRx, mpsc};
 use tokio::fs;
-use tokio::sync::mpsc;
-use tokio_stream::StreamExt;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{Instrument, Level, debug, warn};
 use tracing::{Span, event};
 
@@ -14,13 +12,11 @@ use crate::infra::MinioClient;
 use crate::infra::api::*;
 
 pub(crate) async fn stream_message_handler(
-    rx: mpsc::UnboundedReceiver<(StreamMessage, Span)>,
+    rx: AsyncRx<mpsc::List<(StreamMessage, Span)>>,
     client_factory: GrpcClientFactory,
     minio: MinioClient,
 ) {
-    let mut stream = UnboundedReceiverStream::new(rx);
-
-    while let Some((msg, span)) = stream.next().await {
+    while let Ok((msg, span)) = rx.recv().await {
         debug!(msg = ?msg, "Received stream message event");
 
         match msg {

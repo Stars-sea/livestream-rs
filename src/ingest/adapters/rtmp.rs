@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-use tokio::sync::mpsc;
+use crossfire::{AsyncRx, mpsc};
 use tokio::task::block_in_place;
 use tracing::{instrument, warn};
 
@@ -45,11 +45,11 @@ pub enum RtmpTag {
 /// - No manager actor state mutation.
 /// - No callback/network side effects beyond channel sends.
 pub struct RtmpAdapter {
-    rx: mpsc::UnboundedReceiver<RtmpTag>,
+    rx: AsyncRx<mpsc::List<RtmpTag>>,
 }
 
 impl RtmpAdapter {
-    pub fn new(rx: mpsc::UnboundedReceiver<RtmpTag>) -> Self {
+    pub fn new(rx: AsyncRx<mpsc::List<RtmpTag>>) -> Self {
         Self { rx }
     }
 
@@ -164,8 +164,8 @@ impl StreamAdapter for RtmpAdapter {
                         break;
                     }
                 }
-                tag_opt = self.rx.recv() => {
-                    let Some(tag) = tag_opt else {
+                recv_result = self.rx.recv() => {
+                    let Ok(tag) = recv_result else {
                         break;
                     };
 

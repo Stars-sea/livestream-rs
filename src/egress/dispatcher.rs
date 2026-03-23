@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
-use tokio::sync::{RwLock, broadcast};
+use anyhow::Result;
+use tokio::sync::RwLock;
 
-use crate::media::flv_parser::FlvTag;
+use crate::egress::broadcaster::BroadcastRx;
+use crate::egress::broadcaster::Broadcaster;
 use crate::infra::MemoryCache;
+use crate::media::flv_parser::FlvTag;
 
 #[derive(Clone)]
 pub(crate) struct StreamState {
-    pub sender: broadcast::Sender<Arc<FlvTag>>,
     pub video_seq_header: Arc<RwLock<Option<Arc<FlvTag>>>>,
     pub audio_seq_header: Arc<RwLock<Option<Arc<FlvTag>>>>,
     pub metadata: Arc<RwLock<Option<Arc<FlvTag>>>>,
@@ -16,7 +18,6 @@ pub(crate) struct StreamState {
 impl StreamState {
     pub fn new() -> Self {
         Self {
-            sender: broadcast::channel(100).0,
             video_seq_header: Arc::new(RwLock::new(None)),
             audio_seq_header: Arc::new(RwLock::new(None)),
             metadata: Arc::new(RwLock::new(None)),
@@ -26,12 +27,14 @@ impl StreamState {
 
 #[derive(Clone)]
 pub(crate) struct StreamDispatcher {
+    broadcaster: Broadcaster<String, Arc<FlvTag>>,
     streams: MemoryCache<StreamState>,
 }
 
 impl StreamDispatcher {
     pub fn new() -> Self {
         Self {
+            broadcaster: Broadcaster::new(),
             streams: MemoryCache::new(),
         }
     }
@@ -46,12 +49,13 @@ impl StreamDispatcher {
         self.streams.remove(stream_key).await;
     }
 
-    pub async fn subscribe(
-        &self,
-        stream_key: &str,
-    ) -> (broadcast::Receiver<Arc<FlvTag>>, StreamState) {
+    pub async fn subscribe(&self, stream_key: &str) -> (BroadcastRx<Arc<FlvTag>>, StreamState) {
         let state = self.stream(stream_key).await;
-        (state.sender.subscribe(), state)
+        (self.broadcaster.subscribe(stream_key.to_string()), state)
+    }
+
+    pub fn send(&self, stream_key: &str, tag: Arc<FlvTag>) -> Result<usize> {
+        self.broadcaster.send(stream_key.to_string(), tag)
     }
 }
 
@@ -66,14 +70,14 @@ mod tests {
     #[tokio::test]
     async fn subscribe_receives_broadcast_tag() {
         let dispatcher = StreamDispatcher::new();
-        let (mut rx, state) = dispatcher.subscribe("live_1").await;
+        let (mut rx, _state) = dispatcher.subscribe("live_1").await;
 
         let tag = Arc::new(FlvTag::ScriptData {
             timestamp: 1,
             payload: bytes::Bytes::from_static(&[0x02, 0x00]),
         });
 
-        let sent = state.sender.send(tag.clone());
+        let sent = dispatcher.send("live_1", tag.clone());
         assert!(sent.is_ok());
 
         let received = rx.recv().await.expect("receiver should get tag");
