@@ -17,7 +17,7 @@ use crate::egress::dispatcher::StreamDispatcher;
 use crate::egress::rtmp_egress::RtmpEgressHandler;
 use crate::ingest::adapters;
 use crate::ingest::adapters::rtmp::RtmpTag;
-use crate::media::flv_parser::{FlvDemuxer, FlvTag};
+use crate::media::flv_parser::FlvDemuxer;
 use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
 
@@ -179,12 +179,20 @@ impl RtmpConnection {
                                 .as_mut()
                                 .ok_or_else(|| anyhow::anyhow!("RTMP Session not initialized"))?;
                             let egress_handler = &mut self.egress_handler;
-                            let socket = &mut self.socket;
 
-                            if let Err(e) = egress_handler.handle_broadcast_tag(session, socket, tag).await {
-                                warn!(remote_addr = ?addr, error = %e, "Failed to send tag to client");
-                                self.notify_publish_finished();
-                                break;
+                            match egress_handler.handle_broadcast_tag(session, tag).await {
+                                Ok(bytes) => {
+                                    if !bytes.is_empty() && let Err(e) = self.socket.write_all(&bytes).await {
+                                        warn!(remote_addr = ?addr, error = %e, "Failed to send data to client");
+                                        self.notify_publish_finished();
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(remote_addr = ?addr, error = %e, "Failed to handle broadcast tag");
+                                    self.notify_publish_finished();
+                                    break;
+                                }
                             }
                         }
                         Err(e) => {
@@ -388,21 +396,7 @@ async fn process_flv_packets(flv_rx: AsyncRx<mpsc::List<FlvPacket>>, dispatcher:
                     let tag = Arc::new(tag);
                     let state = dispatcher.stream(&live_id);
 
-                    match tag.as_ref() {
-                        FlvTag::Video { payload, .. } => {
-                            if payload.len() > 1 && payload[1] == 0 {
-                                *state.video_seq_header.write().await = Some(tag.clone());
-                            }
-                        }
-                        FlvTag::Audio { payload, .. } => {
-                            if payload.len() > 1 && payload[1] == 0 {
-                                *state.audio_seq_header.write().await = Some(tag.clone());
-                            }
-                        }
-                        FlvTag::ScriptData { .. } => {
-                            *state.metadata.write().await = Some(tag.clone());
-                        }
-                    }
+                    state.write().await.update_from_tag(tag.clone());
 
                     let _ = dispatcher.send(&live_id, tag);
                 }

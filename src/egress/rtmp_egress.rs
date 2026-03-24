@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use bytes::{Bytes, BytesMut};
+use rml_rtmp::chunk_io::Packet;
 use rml_rtmp::sessions::{ServerSession, ServerSessionResult};
 use rml_rtmp::time::RtmpTimestamp;
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
+use tokio::sync::RwLock;
 
 use crate::contracts::StreamRegistry;
 use crate::egress::broadcaster::BroadcastRx;
@@ -17,7 +18,7 @@ pub struct RtmpEgressHandler {
     stream_registry: Arc<dyn StreamRegistry>,
     active_stream_rx: Option<BroadcastRx<Arc<FlvTag>>>,
     current_stream_id: u32,
-    stream_state: Option<Arc<StreamState>>,
+    stream_state: Option<Arc<RwLock<StreamState>>>,
     sent_headers: bool,
     pull_guard: Option<metrics::MetricGuard>,
 }
@@ -79,45 +80,47 @@ impl RtmpEgressHandler {
     pub async fn handle_broadcast_tag(
         &mut self,
         session: &mut ServerSession,
-        socket: &mut TcpStream,
         tag: Arc<FlvTag>,
-    ) -> Result<()> {
+    ) -> Result<Bytes> {
+        let mut bytes_out = BytesMut::new();
+
         if !self.sent_headers {
-            self.send_cached_headers(session, socket).await?;
+            for packet in self.send_cached_headers(session).await? {
+                bytes_out.extend_from_slice(&packet.bytes);
+            }
+
             self.sent_headers = true;
         }
 
-        self.send_tag(session, socket, tag.as_ref()).await
+        if let Some(packet) = self.send_tag(session, tag.as_ref()).await? {
+            bytes_out.extend_from_slice(&packet.bytes);
+        }
+
+        Ok(bytes_out.freeze())
     }
 
-    async fn send_cached_headers(
-        &mut self,
-        session: &mut ServerSession,
-        socket: &mut TcpStream,
-    ) -> Result<()> {
-        let state = if let Some(s) = &self.stream_state {
-            s.clone()
-        } else {
-            return Ok(());
+    async fn send_cached_headers(&mut self, session: &mut ServerSession) -> Result<Vec<Packet>> {
+        let Some(state) = self.stream_state.as_ref() else {
+            return Ok(Vec::new());
         };
 
-        if let Some(tag) = state.video_seq_header.read().await.clone() {
-            self.send_tag(session, socket, &tag).await?;
+        let cached_tags = state.read().await.cached_headers();
+
+        let mut packets = Vec::with_capacity(cached_tags.len());
+        for tag in cached_tags {
+            if let Some(packet) = self.send_tag(session, tag.as_ref()).await? {
+                packets.push(packet);
+            }
         }
 
-        if let Some(tag) = state.audio_seq_header.read().await.clone() {
-            self.send_tag(session, socket, &tag).await?;
-        }
-
-        Ok(())
+        Ok(packets)
     }
 
     async fn send_tag(
         &mut self,
         session: &mut ServerSession,
-        socket: &mut TcpStream,
         tag: &FlvTag,
-    ) -> Result<()> {
+    ) -> Result<Option<Packet>> {
         let stream_id = self.current_stream_id;
         let packet = match tag {
             FlvTag::Audio { timestamp, payload } => session.send_audio_data(
@@ -136,11 +139,10 @@ impl RtmpEgressHandler {
                 RtmpTimestamp::new(*timestamp),
                 !*is_keyframe,
             )?,
-            FlvTag::ScriptData { .. } => return Ok(()),
+            FlvTag::ScriptData { .. } => return Ok(None),
         };
 
-        socket.write_all(&packet.bytes).await?;
         metrics::get_metrics().add_network_bytes_out(packet.bytes.len() as u64, &[]);
-        Ok(())
+        Ok(Some(packet))
     }
 }

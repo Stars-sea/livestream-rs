@@ -8,26 +8,60 @@ use super::broadcaster::BroadcastRx;
 use super::broadcaster::Broadcaster;
 use crate::media::flv_parser::FlvTag;
 
-pub(crate) struct StreamState {
-    pub video_seq_header: RwLock<Option<Arc<FlvTag>>>,
-    pub audio_seq_header: RwLock<Option<Arc<FlvTag>>>,
-    pub metadata: RwLock<Option<Arc<FlvTag>>>,
+pub struct StreamState {
+    video_seq_header: Option<Arc<FlvTag>>,
+    audio_seq_header: Option<Arc<FlvTag>>,
+    metadata: Option<Arc<FlvTag>>,
 }
 
 impl StreamState {
     pub fn new() -> Self {
         Self {
-            video_seq_header: RwLock::new(None),
-            audio_seq_header: RwLock::new(None),
-            metadata: RwLock::new(None),
+            video_seq_header: None,
+            audio_seq_header: None,
+            metadata: None,
         }
+    }
+
+    pub fn update_from_tag(&mut self, tag: Arc<FlvTag>) {
+        match tag.as_ref() {
+            FlvTag::Video { payload, .. } => {
+                if payload.len() > 1 && payload[0] == 0x17 && payload[1] == 0x00 {
+                    self.video_seq_header = Some(tag);
+                }
+            }
+            FlvTag::Audio { payload, .. } => {
+                if payload.len() > 1 && payload[0] == 0xaf && payload[1] == 0x00 {
+                    self.audio_seq_header = Some(tag);
+                }
+            }
+            FlvTag::ScriptData { .. } => {
+                self.metadata = Some(tag);
+            }
+        }
+    }
+
+    pub fn cached_headers(&self) -> Vec<Arc<FlvTag>> {
+        let mut tags = Vec::with_capacity(3);
+
+        if let Some(tag) = self.metadata.clone() {
+            tags.push(tag);
+        }
+        if let Some(tag) = self.video_seq_header.clone() {
+            tags.push(tag);
+        }
+        if let Some(tag) = self.audio_seq_header.clone() {
+            tags.push(tag);
+        }
+
+        tags
     }
 }
 
 #[derive(Clone)]
-pub(crate) struct StreamDispatcher {
+pub struct StreamDispatcher {
     broadcaster: Broadcaster<String, Arc<FlvTag>>,
-    streams: DashMap<String, Arc<StreamState>>,
+    streams: DashMap<String, Arc<RwLock<StreamState>>>,
 }
 
 impl StreamDispatcher {
@@ -38,10 +72,10 @@ impl StreamDispatcher {
         }
     }
 
-    pub fn stream(&self, stream_key: &str) -> Arc<StreamState> {
+    pub fn stream(&self, stream_key: &str) -> Arc<RwLock<StreamState>> {
         self.streams
             .entry(stream_key.to_string())
-            .or_insert_with(|| Arc::new(StreamState::new()))
+            .or_insert_with(|| Arc::new(RwLock::new(StreamState::new())))
             .clone()
     }
 
@@ -49,7 +83,10 @@ impl StreamDispatcher {
         self.streams.remove(stream_key);
     }
 
-    pub fn subscribe(&self, stream_key: &str) -> (BroadcastRx<Arc<FlvTag>>, Arc<StreamState>) {
+    pub fn subscribe(
+        &self,
+        stream_key: &str,
+    ) -> (BroadcastRx<Arc<FlvTag>>, Arc<RwLock<StreamState>>) {
         let state = self.stream(stream_key);
         (self.broadcaster.subscribe(stream_key.to_string()), state)
     }
@@ -92,16 +129,20 @@ mod tests {
         let dispatcher = StreamDispatcher::new();
 
         let state = dispatcher.stream("live_2");
-        *state.metadata.write().await = Some(Arc::new(FlvTag::ScriptData {
-            timestamp: 3,
-            payload: bytes::Bytes::from_static(&[0x12]),
-        }));
+        state
+            .write()
+            .await
+            .update_from_tag(Arc::new(FlvTag::ScriptData {
+                timestamp: 3,
+                payload: bytes::Bytes::from_static(&[0x12]),
+            }));
 
         dispatcher.remove_stream("live_2");
 
         let recreated = dispatcher.stream("live_2");
-        assert!(recreated.metadata.read().await.is_none());
-        assert!(recreated.audio_seq_header.read().await.is_none());
-        assert!(recreated.video_seq_header.read().await.is_none());
+        let recreated = recreated.read().await;
+        assert!(recreated.metadata.is_none());
+        assert!(recreated.audio_seq_header.is_none());
+        assert!(recreated.video_seq_header.is_none());
     }
 }
