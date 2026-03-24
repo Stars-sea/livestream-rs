@@ -21,6 +21,15 @@ use crate::media::flv_parser::FlvDemuxer;
 use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
 
+/// RTMP unified edge server for ingest and playback connections.
+///
+/// Responsibilities:
+/// - Accept TCP clients and spawn per-connection RTMP state machines.
+/// - Bridge ingest FLV packet bus into dispatcher for egress fan-out.
+///
+/// Out of scope:
+/// - No stream lifecycle ownership (delegated to `StreamRegistry`).
+/// - No FFmpeg media processing.
 #[derive(Debug)]
 pub struct RtmpServer {
     config: EgressConfig,
@@ -92,6 +101,14 @@ impl RtmpServer {
     }
 }
 
+/// Per-client RTMP protocol state machine.
+///
+/// Responsibilities:
+/// - Drive handshake/session events for one socket.
+/// - Route publish media tags to ingest worker and play tags to socket.
+///
+/// Out of scope:
+/// - No global stream registry mutation.
 struct RtmpConnection {
     socket: TcpStream,
     appname: String,
@@ -380,6 +397,8 @@ impl RtmpConnection {
 }
 
 #[instrument(name = "server.rtmp.flv.process", skip(flv_rx, dispatcher))]
+/// Converts raw FLV packet bus entries into parsed tags and pushes them to
+/// stream-scoped egress subscribers.
 async fn process_flv_packets(flv_rx: AsyncRx<mpsc::List<FlvPacket>>, dispatcher: StreamDispatcher) {
     let mut demuxers: HashMap<String, FlvDemuxer> = HashMap::new();
 

@@ -25,6 +25,15 @@ use crate::telemetry::metrics;
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
 
+/// gRPC control-plane service implementation for ingest lifecycle APIs.
+///
+/// Responsibilities:
+/// - Validate API requests and convert to manager commands.
+/// - Translate internal stream metadata into gRPC response schema.
+///
+/// Out of scope:
+/// - No long-running stream worker ownership.
+/// - No direct media data-path processing.
 #[derive(Debug)]
 pub struct IngestGrpcService {
     manager: Arc<StreamManager>,
@@ -213,6 +222,14 @@ impl Extractor for MetadataExtractor<'_> {
     }
 }
 
+/// gRPC server bootstrap wrapper.
+///
+/// Responsibilities:
+/// - Host `IngestGrpcService` on configured address.
+/// - Bind shutdown cancellation to graceful manager drain.
+///
+/// Out of scope:
+/// - No business-level retry/compensation policy.
 pub struct GrpcServer {
     manager: Arc<StreamManager>,
     grpc_config: GrpcConfig,

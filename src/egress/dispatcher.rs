@@ -8,6 +8,14 @@ use super::broadcaster::BroadcastRx;
 use super::broadcaster::Broadcaster;
 use crate::media::flv_parser::FlvTag;
 
+/// Per-stream cache of headers required by late-joining RTMP players.
+///
+/// Responsibilities:
+/// - Capture latest metadata/audio/video sequence headers.
+/// - Provide replay set for egress bootstrap.
+///
+/// Out of scope:
+/// - No subscriber lifecycle management.
 pub struct StreamState {
     video_seq_header: Option<Arc<FlvTag>>,
     audio_seq_header: Option<Arc<FlvTag>>,
@@ -58,6 +66,14 @@ impl StreamState {
     }
 }
 
+/// Fan-out dispatcher from parsed FLV tags to stream subscribers.
+///
+/// Responsibilities:
+/// - Maintain stream-keyed broadcaster channels.
+/// - Keep and expose stream state for cached header replay.
+///
+/// Out of scope:
+/// - No RTMP protocol encoding.
 #[derive(Clone)]
 pub struct StreamDispatcher {
     broadcaster: Broadcaster<String, Arc<FlvTag>>,

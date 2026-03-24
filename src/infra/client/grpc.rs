@@ -64,6 +64,14 @@ pub type CallbackClient =
 #[cfg(not(feature = "opentelemetry"))]
 pub type CallbackClient = LivestreamCallbackClient<Channel>;
 
+/// Lazy callback client provider with channel reuse.
+///
+/// Responsibilities:
+/// - Create callback gRPC client on demand.
+/// - Cache and invalidate channel for reconnect scenarios.
+///
+/// Out of scope:
+/// - No callback business payload construction.
 pub struct GrpcClientFactory {
     url: String,
     channel: Arc<RwLock<Option<Channel>>>,

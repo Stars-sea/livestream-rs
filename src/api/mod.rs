@@ -13,6 +13,15 @@ use crate::transport::RtmpServer;
 
 use self::grpc::server::GrpcServer;
 
+/// Top-level runtime composition root.
+///
+/// Responsibilities:
+/// - Build shared infrastructure dependencies and buses.
+/// - Wire ingest manager, RTMP server, gRPC server, and shutdown orchestration.
+///
+/// Out of scope:
+/// - No protocol/media processing logic.
+/// - No business policy decisions.
 pub struct AppServer;
 
 impl AppServer {
