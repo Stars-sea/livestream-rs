@@ -9,6 +9,7 @@ use crate::transport::rtmp::RtmpServer;
 mod abstraction;
 mod config;
 mod media;
+mod pipeline;
 mod telemetry;
 mod transport;
 

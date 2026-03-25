@@ -1,11 +1,11 @@
-use super::state::PipeState;
+use tokio_util::sync::CancellationToken;
 
-pub trait PipeContextTrait {
-    type Payload;
+pub trait PipeContextTrait: Send + Sync {
+    type Payload: Send + Sync;
 
     fn id(&self) -> String;
 
-    fn state(&self) -> PipeState;
+    fn cancel_token(&self) -> CancellationToken;
 
     fn payload(&self) -> Self::Payload;
 }

@@ -36,7 +36,7 @@ impl Packet {
         Ok(Self { packet: pkt })
     }
 
-    pub fn read(&self, ctx: &impl Context) -> PacketReadResult {
+    pub fn read(&mut self, ctx: &impl Context) -> PacketReadResult {
         let ret = unsafe { av_read_frame(ctx.get_ctx(), self.packet) };
 
         if ret >= 0 {
@@ -62,11 +62,15 @@ impl Packet {
         }
     }
 
-    pub fn rescale_ts(&self, original_time_base: AVRational, target_time_base: AVRational) {
+    pub fn rescale_ts(&mut self, original_time_base: AVRational, target_time_base: AVRational) {
         unsafe { av_packet_rescale_ts(self.packet, original_time_base, target_time_base) }
     }
 
-    pub fn rescale_ts_for_ctx(&self, in_ctx: &impl Context, out_ctx: &impl Context) -> Result<()> {
+    pub fn rescale_ts_for_ctx(
+        &mut self,
+        in_ctx: &impl Context,
+        out_ctx: &impl Context,
+    ) -> Result<()> {
         let stream_idx = self.stream_idx();
         let in_stream = in_ctx
             .stream(stream_idx)
@@ -120,6 +124,9 @@ impl Packet {
         self.has_flag(AV_PKT_FLAG_KEY)
     }
 }
+
+unsafe impl Send for Packet {}
+unsafe impl Sync for Packet {}
 
 impl Clone for Packet {
     fn clone(&self) -> Self {
