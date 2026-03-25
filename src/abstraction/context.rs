@@ -7,5 +7,5 @@ pub trait PipeContextTrait: Send + Sync {
 
     fn cancel_token(&self) -> CancellationToken;
 
-    fn payload(&self) -> Self::Payload;
+    fn payload(&self) -> &Self::Payload;
 }

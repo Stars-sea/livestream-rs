@@ -18,10 +18,11 @@ pub mod format;
 pub mod input;
 pub mod log;
 pub mod options;
-pub mod packet;
+mod packet;
 mod stream;
 
 pub use format::flv_parser;
+pub use packet::Packet;
 
 pub mod output {
     pub use super::format::flv_output::*;
