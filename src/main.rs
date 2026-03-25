@@ -23,9 +23,13 @@ async fn main() -> Result<()> {
 
     media::init();
 
-    // if let Err(e) = AppServer::run().await {
-    //     error!(error = %e, "Server runtime error");
-    // }
+    let config = config::load_config();
+
+    let cancel_token = CancellationToken::new();
+
+    let addr = SocketAddr::from_str(&format!("0.0.0.0:{}", config.egress.port))?;
+    let rtmp_server = RtmpServer::create(addr, config.egress.appname.clone(), cancel_token).await?;
+    rtmp_server.run().await?;
 
     if let Some(guard) = otel_guard {
         guard.shutdown();
