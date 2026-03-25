@@ -1,2 +1,5 @@
-pub mod rtmp;
-pub mod srt;
+mod rtmp;
+mod srt;
+
+pub use rtmp::{RtmpAdapter, RtmpTag};
+pub use srt::SrtAdapter;

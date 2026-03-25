@@ -20,7 +20,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use crate::config::{EgressConfig, GrpcConfig};
 use crate::infra::api;
 use crate::ingest::StreamManager;
-use crate::ingest::stream_info::{StreamInfo, StreamInputOptions};
+use crate::ingest::{StreamInfo, StreamInputOptions};
 use crate::telemetry::metrics;
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -42,7 +42,10 @@ pub struct IngestGrpcService {
 
 impl IngestGrpcService {
     pub fn new(manager: Arc<StreamManager>, egress_config: EgressConfig) -> Self {
-        Self { manager, egress_config }
+        Self {
+            manager,
+            egress_config,
+        }
     }
 
     fn to_response(&self, info: Arc<StreamInfo>) -> api::StreamInfoResponse {
@@ -237,8 +240,16 @@ pub struct GrpcServer {
 }
 
 impl GrpcServer {
-    pub fn new(manager: Arc<StreamManager>, grpc_config: GrpcConfig, egress_config: EgressConfig) -> Self {
-        Self { manager, grpc_config, egress_config }
+    pub fn new(
+        manager: Arc<StreamManager>,
+        grpc_config: GrpcConfig,
+        egress_config: EgressConfig,
+    ) -> Self {
+        Self {
+            manager,
+            grpc_config,
+            egress_config,
+        }
     }
 
     #[instrument(name = "server.grpc.serve", skip(self, shutdown), fields(server.port = self.grpc_config.port))]

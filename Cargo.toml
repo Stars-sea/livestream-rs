@@ -38,6 +38,7 @@ retry = "2.2.0"
 dashmap = "6.1.0"
 tokio-util = { version = "0.7.18", features = ["full"] }
 crossfire = { version = "3.1.7", features = ["tokio"] }
+async-trait = "0.1.89"
 
 [build-dependencies]
 tonic-prost-build = "0.14.5"

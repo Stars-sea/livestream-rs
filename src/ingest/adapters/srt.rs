@@ -3,20 +3,19 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use anyhow::Result;
+use crossfire::{MTx, mpsc};
+use retry::OperationResult;
+use retry::delay::{Exponential, jitter};
+use tracing::{debug, error, info, instrument};
+
 use crate::ingest::session::lifecycle::WorkerLifecycle;
 use crate::ingest::session::{StreamAdapter, WorkerContext};
-use crate::ingest::stream_info::{StreamInfo, StreamInputOptions};
-
+use crate::ingest::{StreamInfo, StreamInputOptions};
 use crate::media::context::{Context, InputContext};
 use crate::media::output::{FlvOutputContext, FlvPacket, HlsOutputContext};
 use crate::media::packet::{Packet, PacketReadResult};
 use crate::telemetry::metrics;
-
-use anyhow::Result;
-use retry::OperationResult;
-use retry::delay::{Exponential, jitter};
-use crossfire::{MTx, mpsc};
-use tracing::{debug, error, info, instrument};
 
 /// SRT-side adapter that orchestrates one worker run entrypoint.
 ///

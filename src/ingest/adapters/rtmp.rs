@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
+use bytes::Bytes;
 use crossfire::{AsyncRx, mpsc};
 use tokio::task::block_in_place;
 use tracing::{instrument, warn};
@@ -20,19 +21,81 @@ use crate::telemetry::metrics;
 /// - No lifecycle side effects.
 pub enum RtmpTag {
     Audio {
-        tag: bytes::Bytes,
+        tag: Bytes,
         timestamp: u32,
         data_len: usize,
     },
     Video {
-        tag: bytes::Bytes,
+        tag: Bytes,
         timestamp: u32,
-        payload: bytes::Bytes,
+        payload: Bytes,
     },
     Header {
-        tag: bytes::Bytes,
+        tag: Bytes,
     },
     PublishFinished,
+}
+
+impl RtmpTag {
+    pub fn audio(tag: Bytes, timestamp: u32, data_len: usize) -> Self {
+        Self::Audio {
+            tag,
+            timestamp,
+            data_len,
+        }
+    }
+
+    pub fn video(tag: Bytes, timestamp: u32, payload: Bytes) -> Self {
+        Self::Video {
+            tag,
+            timestamp,
+            payload,
+        }
+    }
+
+    pub fn header(tag: Bytes) -> Self {
+        Self::Header { tag }
+    }
+
+    pub fn publish_finished() -> Self {
+        Self::PublishFinished
+    }
+
+    pub fn make_audio_tag(timestamp: u32, data: Bytes) -> Self {
+        let tag = Self::make_rtmp_tag(8, timestamp, &data);
+        Self::audio(tag, timestamp, data.len())
+    }
+
+    pub fn make_video_tag(timestamp: u32, data: Bytes) -> Self {
+        let tag = Self::make_rtmp_tag(9, timestamp, &data);
+        Self::video(tag, timestamp, data)
+    }
+
+    fn make_rtmp_tag(tag_type: u8, timestamp: u32, payload: &[u8]) -> Bytes {
+        let data_size = payload.len() as u32;
+        let mut out = Vec::with_capacity(11 + payload.len() + 4);
+
+        out.push(tag_type);
+        out.push(((data_size >> 16) & 0xFF) as u8);
+        out.push(((data_size >> 8) & 0xFF) as u8);
+        out.push((data_size & 0xFF) as u8);
+
+        out.push(((timestamp >> 16) & 0xFF) as u8);
+        out.push(((timestamp >> 8) & 0xFF) as u8);
+        out.push((timestamp & 0xFF) as u8);
+        out.push(((timestamp >> 24) & 0xFF) as u8);
+
+        out.extend_from_slice(&[0x00, 0x00, 0x00]);
+        out.extend_from_slice(payload);
+
+        let prev_size = 11 + data_size;
+        out.push(((prev_size >> 24) & 0xFF) as u8);
+        out.push(((prev_size >> 16) & 0xFF) as u8);
+        out.push(((prev_size >> 8) & 0xFF) as u8);
+        out.push((prev_size & 0xFF) as u8);
+
+        Bytes::from(out)
+    }
 }
 
 /// RTMP-side adapter for one ingest worker session.
@@ -58,7 +121,7 @@ impl RtmpAdapter {
         ctx: &mut WorkerContext,
         muxer: &mut StreamMuxer,
         timestamp: u32,
-        tag: bytes::Bytes,
+        tag: Bytes,
         data_len: usize,
     ) {
         let mut completed_segment: Option<(String, PathBuf)> = None;
@@ -85,7 +148,7 @@ impl RtmpAdapter {
         ctx: &mut WorkerContext,
         muxer: &mut StreamMuxer,
         timestamp: u32,
-        tag: bytes::Bytes,
+        tag: Bytes,
         payload: &[u8],
     ) {
         let mut completed_segment: Option<(String, PathBuf)> = None;
@@ -184,32 +247,6 @@ impl StreamAdapter for RtmpAdapter {
     }
 }
 
-pub fn make_rtmp_tag(tag_type: u8, timestamp: u32, payload: &[u8]) -> bytes::Bytes {
-    let data_size = payload.len() as u32;
-    let mut out = Vec::with_capacity(11 + payload.len() + 4);
-
-    out.push(tag_type);
-    out.push(((data_size >> 16) & 0xFF) as u8);
-    out.push(((data_size >> 8) & 0xFF) as u8);
-    out.push((data_size & 0xFF) as u8);
-
-    out.push(((timestamp >> 16) & 0xFF) as u8);
-    out.push(((timestamp >> 8) & 0xFF) as u8);
-    out.push((timestamp & 0xFF) as u8);
-    out.push(((timestamp >> 24) & 0xFF) as u8);
-
-    out.extend_from_slice(&[0x00, 0x00, 0x00]);
-    out.extend_from_slice(payload);
-
-    let prev_size = 11 + data_size;
-    out.push(((prev_size >> 24) & 0xFF) as u8);
-    out.push(((prev_size >> 16) & 0xFF) as u8);
-    out.push(((prev_size >> 8) & 0xFF) as u8);
-    out.push((prev_size & 0xFF) as u8);
-
-    bytes::Bytes::from(out)
-}
-
 /// Lightweight coordinator around FLV segmentation policy.
 ///
 /// Responsibilities:
@@ -264,7 +301,7 @@ impl FlvSegmenter {
         })
     }
 
-    fn on_audio_tag(&mut self, tag: &bytes::Bytes, timestamp: u32) -> Option<PathBuf> {
+    fn on_audio_tag(&mut self, tag: &Bytes, timestamp: u32) -> Option<PathBuf> {
         if self.segment_start_ts.is_none() {
             self.segment_start_ts = Some(timestamp);
         }
@@ -272,12 +309,7 @@ impl FlvSegmenter {
         None
     }
 
-    fn on_video_tag(
-        &mut self,
-        tag: &bytes::Bytes,
-        timestamp: u32,
-        payload: &[u8],
-    ) -> Option<PathBuf> {
+    fn on_video_tag(&mut self, tag: &Bytes, timestamp: u32, payload: &[u8]) -> Option<PathBuf> {
         let should_roll = self.should_roll_segment(timestamp, payload);
         if should_roll {
             let completed = self.persist_current_segment();

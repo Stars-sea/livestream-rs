@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -9,293 +7,18 @@ use anyhow::Result;
 use crossfire::{AsyncRx, MAsyncTx, MTx, mpsc, oneshot};
 use tokio::time::error::Elapsed;
 use tokio::time::timeout;
-use tracing::{Span, instrument};
+use tracing::Span;
 
-use super::adapters::rtmp::{RtmpAdapter, RtmpTag};
-use super::adapters::srt::SrtAdapter;
-use super::events::StreamMessage;
-use super::port_allocator::PortAllocator;
-use super::stream_info::StreamInfo;
-
+use super::command::ManagerCommand;
+use super::context::StreamContext;
+use super::state::ManagerStreamState;
 use crate::config::{EgressConfig, IngestConfig};
-use crate::contracts::StreamRegistry;
+use crate::ingest::adapters::{RtmpAdapter, SrtAdapter};
+use crate::ingest::events::StreamMessage;
 use crate::ingest::session;
+use crate::ingest::{PortAllocator, StreamInfo};
 use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
-
-/// Context for an active stream, holding its configuration, life-cycle controls,
-/// and protocol-specific communication channels.
-#[derive(Debug)]
-pub struct StreamContext {
-    /// Information and configuration (e.g., live ID, ports) of the current stream.
-    pub info: Arc<StreamInfo>,
-    /// Signal used to indicate that the stream should be stopped.
-    pub stop_signal: Arc<AtomicBool>,
-    /// Optional transmitter for routing RTMP media tags, if the stream uses the RTMP protocol.
-    pub rtmp_tx: Option<MTx<mpsc::List<RtmpTag>>>,
-    /// Stream lifecycle state managed by ManagerActor.
-    pub state: ManagerStreamState,
-}
-
-/// Coarse lifecycle state for manager-level stream orchestration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManagerStreamState {
-    Created,
-    Starting,
-    Running,
-    Stopping,
-    Stopped,
-}
-
-/// Internal command protocol between `StreamManager` and `ManagerActor`.
-///
-/// Responsibilities:
-/// - Represent all state-changing and query operations for stream management.
-/// - Carry a typed reply channel for request/response style coordination.
-///
-/// Out of scope:
-/// - No business logic, validation, or side effects.
-enum ManagerCommand {
-    MakeSrtStreamInfo {
-        live_id: String,
-        passphrase: String,
-        reply: oneshot::TxOneshot<Result<Arc<StreamInfo>>>,
-    },
-    MakeRtmpStreamInfo {
-        live_id: String,
-        reply: oneshot::TxOneshot<Result<Arc<StreamInfo>>>,
-    },
-    StartSrtStream {
-        info: Arc<StreamInfo>,
-        reply: oneshot::TxOneshot<Result<()>>,
-    },
-    StartRtmpStream {
-        info: Arc<StreamInfo>,
-        reply: oneshot::TxOneshot<Result<()>>,
-    },
-    StopStream {
-        live_id: String,
-        reply: oneshot::TxOneshot<Result<()>>,
-    },
-    RemoveStream {
-        live_id: String,
-        reply: oneshot::TxOneshot<()>,
-    },
-    Shutdown {
-        reply: oneshot::TxOneshot<()>,
-    },
-    ListActiveStreams {
-        reply: oneshot::TxOneshot<Result<Vec<String>>>,
-    },
-    IsStreamsEmpty {
-        reply: oneshot::TxOneshot<bool>,
-    },
-    HasStream {
-        live_id: String,
-        reply: oneshot::TxOneshot<bool>,
-    },
-    GetStreamInfo {
-        live_id: String,
-        reply: oneshot::TxOneshot<Option<Arc<StreamInfo>>>,
-    },
-    GetRtmpTx {
-        live_id: String,
-        reply: oneshot::TxOneshot<Option<MTx<mpsc::List<RtmpTag>>>>,
-    },
-}
-
-/// Public facade for stream lifecycle operations.
-///
-/// Responsibilities:
-/// - Expose async APIs for callers (make/start/stop/list/get).
-/// - Translate each API call into `ManagerCommand` and await typed replies.
-///
-/// Out of scope:
-/// - No direct ownership or mutation of stream state.
-/// - No protocol-specific ingest logic.
-#[derive(Clone, Debug)]
-pub struct StreamManager {
-    cmd_tx: MAsyncTx<mpsc::Array<ManagerCommand>>,
-}
-
-impl StreamManager {
-    pub fn new(
-        ingest_config: IngestConfig,
-        egress_config: EgressConfig,
-        flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
-    ) -> (Self, AsyncRx<mpsc::List<(StreamMessage, Span)>>) {
-        let (cmd_tx, cmd_rx) = mpsc::bounded_async(128);
-        let (stream_msg_tx, stream_msg_rx) = mpsc::unbounded_async();
-
-        let (start_port, end_port) = ingest_config
-            .srt_port_range()
-            .expect("Invalid SRT port range in settings");
-        let port_allocator = Arc::new(PortAllocator::new(start_port, end_port));
-
-        let actor = ManagerActor::new(
-            cmd_rx,
-            flv_packet_tx,
-            stream_msg_tx.clone(),
-            cmd_tx.clone(),
-            port_allocator,
-            ingest_config,
-            egress_config,
-        );
-        tokio::spawn(actor.run());
-
-        let manager = Self { cmd_tx };
-
-        (manager, stream_msg_rx)
-    }
-
-    pub async fn make_srt_stream_info(
-        &self,
-        live_id: &str,
-        passphrase: &str,
-    ) -> Result<Arc<StreamInfo>> {
-        let (reply, rx) = oneshot::oneshot();
-        let _ = self
-            .cmd_tx
-            .send(ManagerCommand::MakeSrtStreamInfo {
-                live_id: live_id.to_string(),
-                passphrase: passphrase.to_string(),
-                reply,
-            })
-            .await;
-        rx.await?
-    }
-
-    pub async fn make_rtmp_stream_info(&self, live_id: &str) -> Result<Arc<StreamInfo>> {
-        let (reply, rx) = oneshot::oneshot();
-        let _ = self
-            .cmd_tx
-            .send(ManagerCommand::MakeRtmpStreamInfo {
-                live_id: live_id.to_string(),
-                reply,
-            })
-            .await;
-        rx.await?
-    }
-
-    #[instrument(name = "ingest.manager.start", skip(self, stream_info), fields(stream.live_id = %stream_info.live_id()))]
-    pub async fn start_srt_stream(self: &Arc<Self>, stream_info: Arc<StreamInfo>) -> Result<()> {
-        let (reply, rx) = oneshot::oneshot();
-        let _ = self
-            .cmd_tx
-            .send(ManagerCommand::StartSrtStream {
-                info: stream_info,
-                reply,
-            })
-            .await;
-        rx.await?
-    }
-
-    #[instrument(name = "ingest.manager.start_rtmp", skip(self, stream_info), fields(stream.live_id = %stream_info.live_id()))]
-    pub async fn start_rtmp_stream(self: &Arc<Self>, stream_info: Arc<StreamInfo>) -> Result<()> {
-        let (reply, rx) = oneshot::oneshot();
-        let _ = self
-            .cmd_tx
-            .send(ManagerCommand::StartRtmpStream {
-                info: stream_info,
-                reply,
-            })
-            .await;
-        rx.await?
-    }
-
-    #[instrument(name = "ingest.manager.stop", skip(self), fields(stream.live_id = %live_id))]
-    pub async fn stop_stream(&self, live_id: &str) -> Result<()> {
-        let (reply, rx) = oneshot::oneshot();
-        let _ = self
-            .cmd_tx
-            .send(ManagerCommand::StopStream {
-                live_id: live_id.to_string(),
-                reply,
-            })
-            .await;
-        rx.await?
-    }
-
-    #[instrument(name = "ingest.manager.shutdown", skip(self))]
-    pub async fn shutdown(&self) {
-        let (reply, rx) = oneshot::oneshot();
-        let _ = self.cmd_tx.send(ManagerCommand::Shutdown { reply }).await;
-        let _ = rx.await;
-    }
-
-    #[instrument(name = "ingest.manager.list_active", skip(self))]
-    pub async fn list_active_streams(&self) -> Result<Vec<String>> {
-        let (reply, rx) = oneshot::oneshot();
-        let _ = self
-            .cmd_tx
-            .send(ManagerCommand::ListActiveStreams { reply })
-            .await;
-        rx.await?
-    }
-
-    #[instrument(name = "ingest.manager.is_empty", skip(self))]
-    pub async fn is_streams_empty(&self) -> bool {
-        let (reply, rx) = oneshot::oneshot();
-        let _ = self
-            .cmd_tx
-            .send(ManagerCommand::IsStreamsEmpty { reply })
-            .await;
-        rx.await.unwrap_or(true)
-    }
-
-    #[allow(dead_code)]
-    #[instrument(name = "ingest.manager.exists", skip(self), fields(stream.live_id = %live_id))]
-    pub async fn has_stream(&self, live_id: &str) -> bool {
-        let (reply, rx) = oneshot::oneshot();
-        let _ = self
-            .cmd_tx
-            .send(ManagerCommand::HasStream {
-                live_id: live_id.to_string(),
-                reply,
-            })
-            .await;
-        rx.await.unwrap_or(false)
-    }
-
-    #[instrument(name = "ingest.manager.get_info", skip(self), fields(stream.live_id = %live_id))]
-    pub async fn get_stream_info(&self, live_id: &str) -> Option<Arc<StreamInfo>> {
-        let (reply, rx) = oneshot::oneshot();
-        let _ = self
-            .cmd_tx
-            .send(ManagerCommand::GetStreamInfo {
-                live_id: live_id.to_string(),
-                reply,
-            })
-            .await;
-        rx.await.unwrap_or(None)
-    }
-}
-
-impl StreamRegistry for StreamManager {
-    fn get_stream<'a>(
-        &'a self,
-        live_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Option<Arc<StreamInfo>>> + Send + 'a>> {
-        Box::pin(async move { self.get_stream_info(live_id).await })
-    }
-
-    fn get_rtmp_tx<'a>(
-        &'a self,
-        live_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Option<MTx<mpsc::List<RtmpTag>>>> + Send + 'a>> {
-        Box::pin(async move {
-            let (reply, rx) = oneshot::oneshot();
-            let _ = self
-                .cmd_tx
-                .send(ManagerCommand::GetRtmpTx {
-                    live_id: live_id.to_string(),
-                    reply,
-                })
-                .await;
-            rx.await.unwrap_or(None)
-        })
-    }
-}
 
 /// Single-threaded authority for stream state and resource coordination.
 ///
@@ -307,7 +30,7 @@ impl StreamRegistry for StreamManager {
 /// Out of scope:
 /// - No media packet processing (done by adapters/sessions).
 /// - No external callback business logic (handled by event handlers).
-struct ManagerActor {
+pub(super) struct ManagerActor {
     rx: AsyncRx<mpsc::Array<ManagerCommand>>,
     stream_contexts: HashMap<String, StreamContext>,
     port_allocator: Arc<PortAllocator>,
@@ -321,7 +44,7 @@ struct ManagerActor {
 }
 
 impl ManagerActor {
-    fn new(
+    pub fn new(
         rx: AsyncRx<mpsc::Array<ManagerCommand>>,
         flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
         stream_msg_tx: MTx<mpsc::List<(StreamMessage, Span)>>,
@@ -352,7 +75,7 @@ impl ManagerActor {
         }
     }
 
-    async fn run(mut self) {
+    pub async fn run(mut self) {
         while let Ok(cmd) = self.rx.recv().await {
             self.handle_command(cmd).await;
         }
@@ -696,159 +419,5 @@ impl ManagerActor {
         })
         .await?;
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_manager_actor_flow() {
-        let (cmd_tx, cmd_rx) = mpsc::bounded_async(10);
-        let (flv_tx, _flv_rx) = mpsc::unbounded_async();
-        let (msg_tx, _msg_rx) = mpsc::unbounded_async();
-
-        let ingest_config = IngestConfig::default();
-        let egress_config = EgressConfig::default();
-        let (start_port, end_port) = ingest_config.srt_port_range().unwrap();
-        let port_allocator = Arc::new(PortAllocator::new(start_port, end_port));
-
-        let actor = ManagerActor::new(
-            cmd_rx,
-            flv_tx,
-            msg_tx,
-            cmd_tx.clone(),
-            port_allocator,
-            ingest_config,
-            egress_config,
-        );
-        tokio::spawn(actor.run());
-
-        let manager = StreamManager { cmd_tx };
-
-        let streams = manager.list_active_streams().await.unwrap();
-        assert!(streams.is_empty());
-        assert!(manager.is_streams_empty().await);
-
-        let info = manager.make_rtmp_stream_info("test_live").await.unwrap();
-        assert_eq!(info.live_id(), "test_live");
-
-        assert!(manager.has_stream("test_live").await);
-        let active = manager.list_active_streams().await.unwrap();
-        assert_eq!(active.len(), 1);
-        assert_eq!(active[0], "test_live");
-
-        manager.stop_stream("test_live").await.unwrap();
-        assert!(!manager.has_stream("test_live").await);
-
-        manager.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn test_repeated_stop_start_same_live_id() {
-        let (cmd_tx, cmd_rx) = mpsc::bounded_async(10);
-        let (flv_tx, _flv_rx) = mpsc::unbounded_async();
-        let (msg_tx, _msg_rx) = mpsc::unbounded_async();
-
-        let ingest_config = IngestConfig::default();
-        let egress_config = EgressConfig::default();
-        let (start_port, end_port) = ingest_config.srt_port_range().unwrap();
-        let port_allocator = Arc::new(PortAllocator::new(start_port, end_port));
-
-        let actor = ManagerActor::new(
-            cmd_rx,
-            flv_tx,
-            msg_tx,
-            cmd_tx.clone(),
-            port_allocator,
-            ingest_config,
-            egress_config,
-        );
-        tokio::spawn(actor.run());
-
-        let manager = StreamManager { cmd_tx };
-
-        let info1 = manager.make_rtmp_stream_info("live_repeat").await.unwrap();
-        assert_eq!(info1.live_id(), "live_repeat");
-
-        manager.stop_stream("live_repeat").await.unwrap();
-        assert!(!manager.has_stream("live_repeat").await);
-
-        let info2 = manager.make_rtmp_stream_info("live_repeat").await.unwrap();
-        assert_eq!(info2.live_id(), "live_repeat");
-        assert!(manager.has_stream("live_repeat").await);
-
-        manager.stop_stream("live_repeat").await.unwrap();
-        assert!(!manager.has_stream("live_repeat").await);
-    }
-
-    #[tokio::test]
-    async fn test_quick_recreate_after_early_stop() {
-        let (cmd_tx, cmd_rx) = mpsc::bounded_async(10);
-        let (flv_tx, _flv_rx) = mpsc::unbounded_async();
-        let (msg_tx, _msg_rx) = mpsc::unbounded_async();
-
-        let ingest_config = IngestConfig::default();
-        let egress_config = EgressConfig::default();
-        let (start_port, end_port) = ingest_config.srt_port_range().unwrap();
-        let port_allocator = Arc::new(PortAllocator::new(start_port, end_port));
-
-        let actor = ManagerActor::new(
-            cmd_rx,
-            flv_tx,
-            msg_tx,
-            cmd_tx.clone(),
-            port_allocator,
-            ingest_config,
-            egress_config,
-        );
-        tokio::spawn(actor.run());
-
-        let manager = StreamManager { cmd_tx };
-
-        manager.make_rtmp_stream_info("live_quick").await.unwrap();
-        manager.stop_stream("live_quick").await.unwrap();
-        assert!(!manager.has_stream("live_quick").await);
-
-        manager.make_rtmp_stream_info("live_quick").await.unwrap();
-        assert!(manager.has_stream("live_quick").await);
-
-        manager.stop_stream("live_quick").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_quick_recreate_after_ingest_start_error() {
-        let (cmd_tx, cmd_rx) = mpsc::bounded_async(10);
-        let (flv_tx, _flv_rx) = mpsc::unbounded_async();
-        let (msg_tx, _msg_rx) = mpsc::unbounded_async();
-
-        let ingest_config = IngestConfig::default();
-        let egress_config = EgressConfig::default();
-        let (start_port, end_port) = ingest_config.srt_port_range().unwrap();
-        let port_allocator = Arc::new(PortAllocator::new(start_port, end_port));
-
-        let actor = ManagerActor::new(
-            cmd_rx,
-            flv_tx,
-            msg_tx,
-            cmd_tx.clone(),
-            port_allocator,
-            ingest_config,
-            egress_config,
-        );
-        tokio::spawn(actor.run());
-
-        let manager = Arc::new(StreamManager { cmd_tx });
-
-        let info = manager.make_rtmp_stream_info("live_error").await.unwrap();
-        let start_result = manager.start_srt_stream(info).await;
-        assert!(start_result.is_err());
-
-        manager.stop_stream("live_error").await.unwrap();
-        assert!(!manager.has_stream("live_error").await);
-
-        let recreated = manager.make_rtmp_stream_info("live_error").await;
-        assert!(recreated.is_ok());
     }
 }

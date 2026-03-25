@@ -1,25 +1,18 @@
 use std::fmt::Debug;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use crossfire::{AsyncRx, MTx, mpsc};
 
-use crate::ingest::adapters::rtmp::RtmpTag;
-use crate::ingest::stream_info::StreamInfo;
+use crate::ingest::StreamInfo;
+use crate::ingest::adapters::RtmpTag;
 use crate::media::output::FlvPacket;
 
+#[async_trait::async_trait]
 pub trait StreamRegistry: Debug + Send + Sync {
-    fn get_stream<'a>(
-        &'a self,
-        live_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Option<Arc<StreamInfo>>> + Send + 'a>>;
+    async fn get_stream(&self, live_id: &str) -> Option<Arc<StreamInfo>>;
 
-    fn get_rtmp_tx<'a>(
-        &'a self,
-        _live_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Option<MTx<mpsc::List<RtmpTag>>>> + Send + 'a>> {
-        Box::pin(async { None })
+    async fn get_rtmp_tx(&self, _live_id: &str) -> Option<MTx<mpsc::List<RtmpTag>>> {
+        None
     }
 }
 

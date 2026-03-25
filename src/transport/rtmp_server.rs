@@ -15,8 +15,7 @@ use crate::config::EgressConfig;
 use crate::contracts::StreamRegistry;
 use crate::egress::dispatcher::StreamDispatcher;
 use crate::egress::rtmp_egress::RtmpEgressHandler;
-use crate::ingest::adapters;
-use crate::ingest::adapters::rtmp::RtmpTag;
+use crate::ingest::adapters::RtmpTag;
 use crate::media::flv_parser::FlvDemuxer;
 use crate::media::output::FlvPacket;
 use crate::telemetry::metrics;
@@ -148,7 +147,7 @@ impl RtmpConnection {
 
     fn notify_publish_finished(&mut self) {
         if let Some(tx) = self.rtmp_tx.take() {
-            let _ = tx.send(RtmpTag::PublishFinished);
+            let _ = tx.send(RtmpTag::publish_finished());
         }
     }
 
@@ -337,7 +336,7 @@ impl RtmpConnection {
                             0x46, 0x4C, 0x56, 0x01, 0x05, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00,
                             0x00,
                         ]);
-                        let _ = rtmp_tx.send(RtmpTag::Header { tag: header });
+                        let _ = rtmp_tx.send(RtmpTag::header(header));
                         let res = session.accept_request(request_id)?;
                         self.write_response(res).await?;
                     } else {
@@ -363,22 +362,12 @@ impl RtmpConnection {
             ServerSessionEvent::AudioDataReceived {
                 timestamp, data, ..
             } => {
-                let tag = adapters::rtmp::make_rtmp_tag(8, timestamp.value, data.as_ref());
-                self.send_rtmp_tag(RtmpTag::Audio {
-                    tag,
-                    timestamp: timestamp.value,
-                    data_len: data.len(),
-                });
+                self.send_rtmp_tag(RtmpTag::make_audio_tag(timestamp.value, data));
             }
             ServerSessionEvent::VideoDataReceived {
                 timestamp, data, ..
             } => {
-                let tag = adapters::rtmp::make_rtmp_tag(9, timestamp.value, data.as_ref());
-                self.send_rtmp_tag(RtmpTag::Video {
-                    tag,
-                    timestamp: timestamp.value,
-                    payload: data.clone(),
-                });
+                self.send_rtmp_tag(RtmpTag::make_video_tag(timestamp.value, data));
             }
             _ => {}
         }
