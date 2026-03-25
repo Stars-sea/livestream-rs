@@ -1,14 +1,13 @@
+use std::{net::SocketAddr, str::FromStr};
+
 use anyhow::Result;
-use tracing::{error, info};
+use tokio_util::sync::CancellationToken;
+use tracing::info;
 
-use crate::api::AppServer;
+use crate::transport::rtmp::RtmpServer;
 
-mod api;
+mod abstraction;
 mod config;
-mod contracts;
-mod egress;
-mod infra;
-mod ingest;
 mod media;
 mod telemetry;
 mod transport;
@@ -24,9 +23,9 @@ async fn main() -> Result<()> {
 
     media::init();
 
-    if let Err(e) = AppServer::run().await {
-        error!(error = %e, "Server runtime error");
-    }
+    // if let Err(e) = AppServer::run().await {
+    //     error!(error = %e, "Server runtime error");
+    // }
 
     if let Some(guard) = otel_guard {
         guard.shutdown();
