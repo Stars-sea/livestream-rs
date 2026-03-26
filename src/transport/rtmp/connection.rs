@@ -80,7 +80,7 @@ impl RtmpConnection {
         Ok(())
     }
 
-    async fn read(&mut self, buf: &mut BytesMut) -> Result<usize> {
+    pub(super) async fn read(&mut self, buf: &mut BytesMut) -> Result<usize> {
         tokio::select! {
             _ = self.cancel_token.cancelled() => {
                 anyhow::bail!("Connection read cancelled");
@@ -91,7 +91,7 @@ impl RtmpConnection {
         }
     }
 
-    async fn write(&mut self, buf: &[u8]) -> Result<()> {
+    pub(super) async fn write(&mut self, buf: &[u8]) -> Result<()> {
         tokio::select! {
             _ = self.cancel_token.cancelled() => {
                 anyhow::bail!("Connection write cancelled");

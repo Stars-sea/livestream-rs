@@ -1,13 +1,16 @@
 use anyhow::Result;
-use rml_rtmp::sessions::ServerSession;
+use bytes::BytesMut;
+use rml_rtmp::sessions::{ServerSession, ServerSessionEvent, ServerSessionResult};
+use tracing::debug;
 
-use super::RtmpConnection;
+use crate::transport::rtmp::handler::HandlerType;
+
+use super::{Handler, RtmpConnection};
 
 pub struct SessionGuard {
     connection: RtmpConnection,
     session: ServerSession,
     appname: String,
-    stream_key: Option<String>,
 }
 
 impl SessionGuard {
@@ -16,12 +19,110 @@ impl SessionGuard {
             connection,
             session,
             appname,
-            stream_key: None,
         }
     }
 
-    pub async fn handle_loop(&mut self) -> Result<()> {
-        Ok(())
+    pub async fn read(&mut self) -> Result<Vec<ServerSessionResult>> {
+        let mut buffer = BytesMut::with_capacity(4096);
+
+        self.connection.read(&mut buffer).await?;
+        Ok(self.session.handle_input(&buffer)?)
+    }
+
+    pub async fn handle_results(
+        &mut self,
+        results: Vec<ServerSessionResult>,
+    ) -> Result<Vec<ServerSessionEvent>> {
+        let mut events = Vec::new();
+        for result in results {
+            match result {
+                ServerSessionResult::OutboundResponse(packet) => {
+                    self.connection.write(&packet.bytes).await?;
+                }
+                ServerSessionResult::RaisedEvent(event) => {
+                    events.push(event);
+                }
+                ServerSessionResult::UnhandleableMessageReceived(payload) => {
+                    debug!(payload = ?payload, "Received non-response RTMP session result");
+                    anyhow::bail!("Received unhandleable message: {:?}", payload);
+                }
+            }
+        }
+
+        Ok(events)
+    }
+
+    pub async fn connect(mut self) -> Result<Handler> {
+        loop {
+            let results = self.read().await?;
+
+            let events = self.handle_results(results).await?;
+            for event in events {
+                if let Some((stream_key, handler_type)) = self.handle_connect_event(event).await? {
+                    let appname = self.appname.clone();
+                    return Ok(Handler::new(self, appname, stream_key, handler_type));
+                }
+            }
+        }
+    }
+
+    async fn handle_connect_event(
+        &mut self,
+        event: ServerSessionEvent,
+    ) -> Result<Option<(String, HandlerType)>> {
+        match event {
+            ServerSessionEvent::ConnectionRequested {
+                request_id,
+                app_name,
+            } => {
+                if app_name != self.appname {
+                    debug!(app_name = %app_name, expected_app = %self.appname, "Client requested connection to unexpected app");
+                    let results = self.session.reject_request(
+                        request_id,
+                        "AppNotFound",
+                        "Application not found",
+                    )?;
+                    self.handle_results(results).await?;
+                    anyhow::bail!(
+                        "Client requested connection to unexpected app: {}",
+                        app_name
+                    );
+                }
+
+                let results = self.session.accept_request(request_id)?;
+                self.handle_results(results).await?;
+            }
+            ServerSessionEvent::PlayStreamRequested {
+                request_id,
+                stream_key,
+                ..
+            } => {
+                // TODO: Validate stream key format, check if stream exists, etc.
+
+                let results = self.session.accept_request(request_id)?;
+                self.handle_results(results).await?;
+
+                return Ok(Some((stream_key, HandlerType::Play)));
+            }
+            ServerSessionEvent::PublishStreamRequested {
+                request_id,
+                stream_key,
+                ..
+            } => {
+                // TODO: Validate stream key format, check if stream already exists, etc.
+
+                let results = self.session.accept_request(request_id)?;
+                self.handle_results(results).await?;
+
+                return Ok(Some((stream_key, HandlerType::Publish)));
+            }
+            _ => {
+                debug!(event = ?event, "Unhandled session event");
+                anyhow::bail!("Unhandled session event: {:?}", event);
+            }
+        }
+
+        Ok(None)
     }
 }
 

@@ -75,14 +75,14 @@ impl RtmpServer {
             return;
         };
 
-        let mut session = if let Ok(sess) = builder.build() {
-            sess
+        let session = if let Ok(session) = builder.build() {
+            session
         } else {
             warn!("Failed to build RTMP session guard");
             return;
         };
 
-        if let Err(e) = session.handle_loop().await {
+        if let Err(e) = session.connect().await {
             warn!(error = %e, "Error handling RTMP session");
         }
     }

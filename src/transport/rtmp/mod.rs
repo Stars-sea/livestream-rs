@@ -1,11 +1,11 @@
 mod connection;
-mod play;
-mod publish;
+mod handler;
 mod server;
 mod session;
 
 pub use connection::RtmpConnection;
-pub use play::PlayGuard;
-pub use publish::PublishGuard;
+pub use handler::Handler;
+pub use handler::play::PlayHandler;
+pub use handler::publish::PublishHandler;
 pub use server::RtmpServer;
 pub use session::SessionGuard;
