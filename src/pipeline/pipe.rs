@@ -21,11 +21,16 @@ impl<Context: PipeContextTrait> Pipe<Context> {
         self
     }
 
-    async fn send_impl(&self, context: &mut Context) -> Result<()> {
+    async fn send_impl(&self, context: Context) -> Result<Option<Context>> {
+        let mut context = Some(context);
         for middleware in &self.middlewares {
-            middleware.send(context).await?;
+            if let Some(ctx) = context {
+                context = middleware.send(ctx).await?;
+            } else {
+                break;
+            }
         }
-        Ok(())
+        Ok(context)
     }
 }
 
@@ -33,7 +38,7 @@ impl<Context: PipeContextTrait> Pipe<Context> {
 impl<Context: PipeContextTrait> PipeTrait for Pipe<Context> {
     type Context = Context;
 
-    async fn send(&self, context: &mut Context) -> Result<()> {
+    async fn send(&self, context: Context) -> Result<Option<Self::Context>> {
         let cancel_token = context.cancel_token();
         let res = cancel_token
             .run_until_cancelled(self.send_impl(context))

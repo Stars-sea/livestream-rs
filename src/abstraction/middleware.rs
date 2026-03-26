@@ -6,5 +6,5 @@ use super::PipeContextTrait;
 pub trait MiddlewareTrait {
     type Context: PipeContextTrait;
 
-    async fn send(&self, context: &mut Self::Context) -> Result<()>;
+    async fn send(&self, context: Self::Context) -> Result<Option<Self::Context>>;
 }

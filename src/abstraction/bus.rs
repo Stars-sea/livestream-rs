@@ -6,7 +6,7 @@ use super::{PipeContextTrait, PipeTrait};
 
 #[async_trait::async_trait]
 pub trait BusTrait: Send + Sync {
-    async fn send<P, C>(&self, pipe: Arc<P>, context: &mut C) -> Result<()>
+    async fn send<P, C>(&self, pipe: Arc<P>, context: C) -> Result<Option<C>>
     where
         P: PipeTrait<Context = C> + Send + Sync,
         C: PipeContextTrait;
