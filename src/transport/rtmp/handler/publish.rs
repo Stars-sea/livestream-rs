@@ -1,7 +1,9 @@
 use anyhow::Result;
+use crossfire::{MAsyncTx, mpmc::List};
 use rml_rtmp::sessions::ServerSessionEvent;
-use tracing::{debug, info};
+use tracing::debug;
 
+use crate::media::flv_parser::FlvTag;
 use crate::transport::rtmp::{SessionGuard, handler::HandlerTrait};
 
 pub struct PublishHandler {
@@ -9,15 +11,30 @@ pub struct PublishHandler {
 
     appname: String,
     stream_key: String,
+
+    flv_tag_tx: MAsyncTx<List<FlvTag>>,
 }
 
 impl PublishHandler {
-    pub(super) fn new(session: SessionGuard, appname: String, stream_key: String) -> Self {
+    pub(super) fn new(
+        session: SessionGuard,
+        appname: String,
+        stream_key: String,
+        flv_tag_tx: MAsyncTx<List<FlvTag>>,
+    ) -> Self {
         Self {
             session,
             appname,
             stream_key,
+            flv_tag_tx,
         }
+    }
+
+    async fn publish_finished(&mut self) -> Result<()> {
+        debug!("Publish finished for stream key: {}", self.stream_key);
+
+        // TODO: Clean up any resources associated with this stream key, such as removing it from the stream manager
+        Ok(())
     }
 }
 
@@ -30,19 +47,23 @@ impl HandlerTrait for PublishHandler {
     async fn on_custom_events(&mut self, event: ServerSessionEvent) -> Result<()> {
         match event {
             ServerSessionEvent::PublishStreamFinished { .. } => {
-                info!("Publish finished for stream key: {}", self.stream_key);
+                self.publish_finished().await?;
             }
-            ServerSessionEvent::AudioDataReceived { .. } => {
-                debug!("Audio data received for stream key: {}", self.stream_key);
+            ServerSessionEvent::AudioDataReceived {
+                data, timestamp, ..
+            } => {
+                let flv_tag = FlvTag::audio(timestamp.value, data);
+                self.flv_tag_tx.send(flv_tag).await?;
             }
-            ServerSessionEvent::VideoDataReceived { .. } => {
-                debug!("Video data received for stream key: {}", self.stream_key);
+            ServerSessionEvent::VideoDataReceived {
+                data, timestamp, ..
+            } => {
+                let flv_tag = FlvTag::video(timestamp.value, data);
+                self.flv_tag_tx.send(flv_tag).await?;
             }
-            ServerSessionEvent::StreamMetadataChanged { .. } => {
-                debug!(
-                    "Stream metadata changed for stream key: {}",
-                    self.stream_key
-                );
+            ServerSessionEvent::StreamMetadataChanged { metadata, .. } => {
+                let flv_tag = FlvTag::script_data(metadata);
+                self.flv_tag_tx.send(flv_tag).await?;
             }
 
             _ => {

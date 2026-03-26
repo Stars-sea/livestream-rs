@@ -2,7 +2,7 @@ use anyhow::Result;
 use crossfire::MAsyncRx;
 use crossfire::mpmc::List;
 use rml_rtmp::sessions::ServerSessionEvent;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::media::flv_parser::FlvTag;
 use crate::transport::rtmp::{SessionGuard, handler::HandlerTrait};
@@ -42,6 +42,12 @@ impl PlayHandler {
 
         self.session.send_flv_tag(self.stream_id, tag).await
     }
+
+    async fn finish_playing(&mut self) -> Result<()> {
+        debug!("Finishing play for stream key: {}", self.stream_key);
+        self.session.finish_playing(self.stream_id).await?;
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -64,15 +70,8 @@ impl HandlerTrait for PlayHandler {
     async fn on_custom_events(&mut self, event: ServerSessionEvent) -> Result<()> {
         match event {
             ServerSessionEvent::PlayStreamFinished { .. } => {
-                info!("Play finished for stream key: {}", self.stream_key);
+                self.finish_playing().await?;
             }
-            ServerSessionEvent::StreamMetadataChanged { .. } => {
-                debug!(
-                    "Stream metadata changed for stream key: {}",
-                    self.stream_key
-                );
-            }
-
             _ => {
                 debug!(event = ?event, "Received non-play RTMP session event");
             }

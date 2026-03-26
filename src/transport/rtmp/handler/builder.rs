@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossfire::{MAsyncRx, mpmc::List};
+use crossfire::{MAsyncRx, MAsyncTx, mpmc::List};
 
 use crate::media::flv_parser::FlvTag;
 use crate::transport::rtmp::handler::Handler;
@@ -17,6 +17,7 @@ pub enum HandlerBuilder {
         session: Option<SessionGuard>,
         appname: Option<String>,
         stream_key: String,
+        flv_tag_tx: Option<MAsyncTx<List<FlvTag>>>,
     },
 }
 
@@ -36,6 +37,7 @@ impl HandlerBuilder {
             session: None,
             appname: None,
             stream_key,
+            flv_tag_tx: None,
         }
     }
 
@@ -58,6 +60,13 @@ impl HandlerBuilder {
     pub fn with_flv_tag_rx(mut self, flv_tag_rx: MAsyncRx<List<FlvTag>>) -> Self {
         if let HandlerBuilder::Play { flv_tag_rx: rx, .. } = &mut self {
             *rx = Some(flv_tag_rx);
+        }
+        self
+    }
+
+    pub fn with_flv_tag_tx(mut self, flv_tag_tx: MAsyncTx<List<FlvTag>>) -> Self {
+        if let HandlerBuilder::Publish { flv_tag_tx: tx, .. } = &mut self {
+            *tx = Some(flv_tag_tx);
         }
         self
     }
@@ -86,6 +95,7 @@ impl HandlerBuilder {
                 session,
                 appname,
                 stream_key,
+                flv_tag_tx,
             } => {
                 let appname = appname.ok_or_else(|| {
                     anyhow::anyhow!("App name is required to build PublishHandler")
@@ -93,8 +103,11 @@ impl HandlerBuilder {
                 let session = session.ok_or_else(|| {
                     anyhow::anyhow!("Session is required to build PublishHandler")
                 })?;
+                let flv_tag_tx = flv_tag_tx.ok_or_else(|| {
+                    anyhow::anyhow!("FLV tag sender is required to build PublishHandler")
+                })?;
                 Ok(Handler::Publish(PublishHandler::new(
-                    session, appname, stream_key,
+                    session, appname, stream_key, flv_tag_tx,
                 )))
             }
         }

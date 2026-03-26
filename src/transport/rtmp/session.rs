@@ -1,5 +1,6 @@
 use anyhow::Result;
 use bytes::BytesMut;
+use rml_rtmp::chunk_io::Packet;
 use rml_rtmp::sessions::{ServerSession, ServerSessionEvent, ServerSessionResult};
 use rml_rtmp::time::RtmpTimestamp;
 use tracing::debug;
@@ -38,6 +39,11 @@ impl SessionGuard {
         Ok(self.session.handle_input(&buffer)?)
     }
 
+    async fn handle_packet(&mut self, packet: Packet) -> Result<()> {
+        self.connection.write(&packet.bytes).await?;
+        Ok(())
+    }
+
     pub(super) async fn handle_results(
         &mut self,
         results: Vec<ServerSessionResult>,
@@ -46,7 +52,7 @@ impl SessionGuard {
         for result in results {
             match result {
                 ServerSessionResult::OutboundResponse(packet) => {
-                    self.connection.write(&packet.bytes).await?;
+                    self.handle_packet(packet).await?;
                 }
                 ServerSessionResult::RaisedEvent(event) => {
                     events.push(event);
@@ -87,8 +93,14 @@ impl SessionGuard {
             }
         };
 
-        self.connection.write(&packet.bytes).await?;
+        self.handle_packet(packet).await?;
 
+        Ok(())
+    }
+
+    pub(super) async fn finish_playing(&mut self, stream_id: u32) -> Result<()> {
+        let packet = self.session.finish_playing(stream_id)?;
+        self.handle_packet(packet).await?;
         Ok(())
     }
 
@@ -200,11 +212,6 @@ impl SessionGuardBuilder {
             .appname
             .ok_or_else(|| anyhow::anyhow!("App name is required to build SessionGuard"))?;
 
-        Ok(SessionGuard::new(
-            self.connection,
-            session,
-            appname,
-            // stream_key,
-        ))
+        Ok(SessionGuard::new(self.connection, session, appname))
     }
 }
