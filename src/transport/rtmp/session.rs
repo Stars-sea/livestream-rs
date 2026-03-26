@@ -87,10 +87,7 @@ impl SessionGuard {
                 to_timestamp(timestamp),
                 is_keyframe,
             )?,
-            FlvTag::ScriptData { .. } => {
-                // TODO: Handle metadata updates if needed
-                return Ok(());
-            }
+            _ => return Ok(()),
         };
 
         self.handle_packet(packet).await?;

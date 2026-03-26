@@ -1,9 +1,9 @@
-use std::{io, net::SocketAddr};
+use std::net::SocketAddr;
 
 use anyhow::Result;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use super::RtmpConnection;
 
@@ -35,8 +35,9 @@ impl RtmpServer {
                     break;
                 }
 
-                accpet_res = self.listener.accept() => {
-                    self.handle_accept_result(accpet_res)?;
+                accept_res = self.listener.accept() => {
+                    let (socket, addr) = accept_res?;
+                    self.accept_client(socket, addr)?;
                 }
             }
         }
@@ -44,27 +45,19 @@ impl RtmpServer {
         Ok(())
     }
 
-    fn handle_accept_result(&self, res: Result<(TcpStream, SocketAddr), io::Error>) -> Result<()> {
-        match res {
-            Ok((socket, addr)) => {
-                debug!(client_addr = %addr, "Accepted new RTMP connection");
+    fn accept_client(&self, socket: TcpStream, addr: SocketAddr) -> Result<()> {
+        debug!(client_addr = %addr, "Accepted new RTMP connection");
 
-                let cancel_token = self.cancel_token.child_token();
-                let connection = RtmpConnection::new(socket, cancel_token);
+        let cancel_token = self.cancel_token.child_token();
+        let connection = RtmpConnection::new(socket, cancel_token);
 
-                // Handle the connection in a separate task
-                tokio::spawn(Self::spawn_connection_handler(
-                    self.appname.clone(),
-                    connection,
-                ));
+        // Handle the connection in a separate task
+        tokio::spawn(Self::spawn_connection_handler(
+            self.appname.clone(),
+            connection,
+        ));
 
-                Ok(())
-            }
-            Err(e) => {
-                error!("Error accepting RTMP connection: {:?}", e);
-                Err(e.into())
-            }
-        }
+        Ok(())
     }
 
     async fn spawn_connection_handler(appname: String, connection: RtmpConnection) {
@@ -87,10 +80,7 @@ impl RtmpServer {
         // TODO: call with_flv_tag_rx
         let handler = match session.connect().await {
             Ok(builder) => builder.build(),
-            Err(e) => {
-                warn!(error = %e, "Error connecting RTMP session");
-                Err(e.into())
-            }
+            Err(e) => Err(e.into()),
         };
 
         match handler {

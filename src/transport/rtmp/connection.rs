@@ -5,7 +5,6 @@ use rml_rtmp::sessions::{ServerSession, ServerSessionConfig, ServerSessionResult
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
 
 use super::session::SessionGuardBuilder;
 
@@ -27,29 +26,26 @@ impl RtmpConnection {
         let mut buffer = BytesMut::with_capacity(1536);
         let mut handshake = Handshake::new(PeerType::Server);
 
-        loop {
+        let mut handshake_completed = false;
+
+        while !handshake_completed {
             let length = self.read(&mut buffer).await?;
             if length == 0 {
                 anyhow::bail!("Connection closed");
             }
 
             buffer.truncate(length);
-            let (completed, resp) = match handshake.process_bytes(&buffer) {
-                Ok(HandshakeProcessResult::InProgress { response_bytes }) => {
-                    (false, response_bytes)
-                }
+            let resp = match handshake.process_bytes(&buffer) {
+                Ok(HandshakeProcessResult::InProgress { response_bytes }) => response_bytes,
                 Ok(HandshakeProcessResult::Completed { response_bytes, .. }) => {
-                    (true, response_bytes)
+                    handshake_completed = true;
+                    response_bytes
                 }
                 Err(e) => anyhow::bail!("Handshake error: {:?}", e),
             };
 
             if !resp.is_empty() {
                 self.write(&resp).await?;
-            }
-
-            if completed {
-                break;
             }
         }
 
@@ -66,14 +62,7 @@ impl RtmpConnection {
                 ServerSessionResult::OutboundResponse(packet) => {
                     self.write(&packet.bytes).await?;
                 }
-                ServerSessionResult::RaisedEvent(event) => {
-                    debug!(event = ?event, "Session raised event");
-                    // TODO: Handle events like play/publish requests, etc.
-                }
-                ServerSessionResult::UnhandleableMessageReceived(payload) => {
-                    debug!(payload = ?payload, "Received unhandleable message");
-                    // TODO: Decide how to handle unhandleable messages (log, ignore, etc.)
-                }
+                _ => anyhow::bail!("Unhandled session result"),
             }
         }
 
