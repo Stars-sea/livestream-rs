@@ -4,6 +4,8 @@ use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+use crate::config::EgressConfig;
+use crate::pipeline::PipeBus;
 use crate::transport::rtmp::RtmpServer;
 
 mod abstraction;
@@ -28,13 +30,19 @@ async fn main() -> Result<()> {
 
     let cancel_token = CancellationToken::new();
 
-    let addr = SocketAddr::from_str(&format!("0.0.0.0:{}", config.egress.port))?;
-    let rtmp_server = RtmpServer::create(addr, config.egress.appname.clone(), cancel_token).await?;
-    rtmp_server.run().await?;
+    let packet_bus = PipeBus::new();
+
+    tokio::spawn(run_rtmp_server(&config.egress, cancel_token.child_token()));
 
     if let Some(guard) = otel_guard {
         guard.shutdown();
     }
 
     Ok(())
+}
+
+async fn run_rtmp_server(egress: &EgressConfig, cancel_token: CancellationToken) -> Result<()> {
+    let addr = SocketAddr::from_str(&format!("0.0.0.0:{}", egress.port))?;
+    let server = RtmpServer::create(addr, egress.appname.clone(), cancel_token).await?;
+    server.run().await
 }

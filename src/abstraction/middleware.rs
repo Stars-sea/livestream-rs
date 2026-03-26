@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use super::context::PipeContextTrait;
+use super::PipeContextTrait;
 
 #[async_trait::async_trait]
 pub trait MiddlewareTrait {

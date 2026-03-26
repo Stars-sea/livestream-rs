@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::abstraction::PipeContextTrait;
+use super::PipeContextTrait;
 
 #[async_trait::async_trait]
 pub trait PipeTrait {
