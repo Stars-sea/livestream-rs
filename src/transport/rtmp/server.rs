@@ -50,10 +50,13 @@ impl RtmpServer {
                 debug!(client_addr = %addr, "Accepted new RTMP connection");
 
                 let cancel_token = self.cancel_token.child_token();
-                let connection = RtmpConnection::new(socket, self.appname.clone(), cancel_token);
+                let connection = RtmpConnection::new(socket, cancel_token);
 
                 // Handle the connection in a separate task
-                tokio::spawn(Self::spawn_connection_handler(connection));
+                tokio::spawn(Self::spawn_connection_handler(
+                    self.appname.clone(),
+                    connection,
+                ));
 
                 Ok(())
             }
@@ -64,17 +67,23 @@ impl RtmpServer {
         }
     }
 
-    async fn spawn_connection_handler(connection: RtmpConnection) {
-        let handshaken = connection.perform_handshake().await;
-        if let Err(e) = handshaken {
-            warn!(error = %e, "RTMP handshake failed");
+    async fn spawn_connection_handler(appname: String, connection: RtmpConnection) {
+        let builder = if let Ok(builder) = connection.perform_handshake().await {
+            builder.with_appname(appname)
+        } else {
+            warn!("RTMP handshake failed");
             return;
-        }
+        };
 
-        let mut connection = handshaken.unwrap();
+        let mut session = if let Ok(sess) = builder.build() {
+            sess
+        } else {
+            warn!("Failed to build RTMP session guard");
+            return;
+        };
 
-        if let Err(e) = connection.handle().await {
-            warn!(error = %e, "Error handling RTMP connection");
+        if let Err(e) = session.handle_loop().await {
+            warn!(error = %e, "Error handling RTMP session");
         }
     }
 }
