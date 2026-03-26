@@ -1,11 +1,13 @@
 use anyhow::Result;
 use bytes::BytesMut;
 use rml_rtmp::sessions::{ServerSession, ServerSessionEvent, ServerSessionResult};
+use rml_rtmp::time::RtmpTimestamp;
 use tracing::debug;
 
-use crate::transport::rtmp::handler::HandlerType;
+use crate::media::flv_parser::FlvTag;
 
-use super::{Handler, RtmpConnection};
+use super::RtmpConnection;
+use super::handler::HandlerBuilder;
 
 pub struct SessionGuard {
     connection: RtmpConnection,
@@ -59,15 +61,46 @@ impl SessionGuard {
         Ok(events)
     }
 
-    pub async fn connect(mut self) -> Result<Handler> {
+    pub(super) async fn send_flv_tag(&mut self, stream_id: u32, tag: FlvTag) -> Result<()> {
+        fn to_timestamp(timestamp: u32) -> RtmpTimestamp {
+            RtmpTimestamp::new(timestamp)
+        }
+
+        let packet = match tag {
+            FlvTag::Audio { timestamp, payload } => {
+                self.session
+                    .send_audio_data(stream_id, payload, to_timestamp(timestamp), false)?
+            }
+            FlvTag::Video {
+                timestamp,
+                payload,
+                is_keyframe,
+            } => self.session.send_video_data(
+                stream_id,
+                payload,
+                to_timestamp(timestamp),
+                is_keyframe,
+            )?,
+            FlvTag::ScriptData { .. } => {
+                // TODO: Handle metadata updates if needed
+                return Ok(());
+            }
+        };
+
+        self.connection.write(&packet.bytes).await?;
+
+        Ok(())
+    }
+
+    pub async fn connect(mut self) -> Result<HandlerBuilder> {
         loop {
             let results = self.read_result().await?;
 
             let events = self.handle_results(results).await?;
             for event in events {
-                if let Some((stream_key, handler_type)) = self.handle_connect_event(event).await? {
+                if let Some(handler_builder) = self.handle_connect_event(event).await? {
                     let appname = self.appname.clone();
-                    return Ok(Handler::new(self, appname, stream_key, handler_type));
+                    return Ok(handler_builder.with_session(self).with_appname(appname));
                 }
             }
         }
@@ -76,7 +109,7 @@ impl SessionGuard {
     async fn handle_connect_event(
         &mut self,
         event: ServerSessionEvent,
-    ) -> Result<Option<(String, HandlerType)>> {
+    ) -> Result<Option<HandlerBuilder>> {
         match event {
             ServerSessionEvent::ConnectionRequested {
                 request_id,
@@ -102,6 +135,7 @@ impl SessionGuard {
             ServerSessionEvent::PlayStreamRequested {
                 request_id,
                 stream_key,
+                stream_id,
                 ..
             } => {
                 // TODO: Validate stream key format, check if stream exists, etc.
@@ -109,7 +143,7 @@ impl SessionGuard {
                 let results = self.session.accept_request(request_id)?;
                 self.handle_results(results).await?;
 
-                return Ok(Some((stream_key, HandlerType::Play)));
+                return Ok(Some(HandlerBuilder::play(stream_key, stream_id)));
             }
             ServerSessionEvent::PublishStreamRequested {
                 request_id,
@@ -121,7 +155,7 @@ impl SessionGuard {
                 let results = self.session.accept_request(request_id)?;
                 self.handle_results(results).await?;
 
-                return Ok(Some((stream_key, HandlerType::Publish)));
+                return Ok(Some(HandlerBuilder::publish(stream_key)));
             }
             _ => {
                 debug!(event = ?event, "Unhandled session event");

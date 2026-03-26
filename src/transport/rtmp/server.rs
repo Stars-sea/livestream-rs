@@ -84,14 +84,23 @@ impl RtmpServer {
             }
         };
 
-        match session.connect().await {
+        // TODO: call with_flv_tag_rx
+        let handler = match session.connect().await {
+            Ok(builder) => builder.build(),
+            Err(e) => {
+                warn!(error = %e, "Error connecting RTMP session");
+                Err(e.into())
+            }
+        };
+
+        match handler {
             Ok(mut handler) => {
                 if let Err(e) = handler.handle().await {
                     warn!(error = %e, "Error handling RTMP session");
                 }
             }
             Err(e) => {
-                warn!(error = %e, "Error connecting RTMP session");
+                warn!(error = %e, "Failed to build RTMP session handler");
             }
         }
     }

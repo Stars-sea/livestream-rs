@@ -1,3 +1,4 @@
+mod builder;
 pub mod play;
 pub mod publish;
 
@@ -6,18 +7,15 @@ use rml_rtmp::sessions::ServerSessionEvent;
 
 use super::{PlayHandler, PublishHandler, SessionGuard};
 
+pub use builder::HandlerBuilder;
+
 pub enum Handler {
     Play(PlayHandler),
     Publish(PublishHandler),
 }
 
-pub enum HandlerType {
-    Play,
-    Publish,
-}
-
 #[async_trait::async_trait]
-trait HandlerTrait {
+pub trait HandlerTrait {
     fn session(&mut self) -> &mut SessionGuard;
 
     async fn handle(&mut self) -> Result<()> {
@@ -40,8 +38,8 @@ trait HandlerTrait {
         event: ServerSessionEvent,
     ) -> Result<Option<ServerSessionEvent>> {
         match event {
-            ServerSessionEvent::PingResponseReceived { timestamp } => {
-                // Handle ping response if needed
+            ServerSessionEvent::PingResponseReceived { timestamp: _ } => {
+                // TODO: Handle ping response if needed
 
                 Ok(None)
             }
@@ -55,26 +53,6 @@ trait HandlerTrait {
 }
 
 impl Handler {
-    pub fn new(
-        session: SessionGuard,
-        appname: String,
-        stream_key: String,
-        handler_type: HandlerType,
-    ) -> Self {
-        match handler_type {
-            HandlerType::Play => Self::play(session, appname, stream_key),
-            HandlerType::Publish => Self::publish(session, appname, stream_key),
-        }
-    }
-
-    pub fn play(session: SessionGuard, appname: String, stream_key: String) -> Self {
-        Handler::Play(PlayHandler::new(session, appname, stream_key))
-    }
-
-    pub fn publish(session: SessionGuard, appname: String, stream_key: String) -> Self {
-        Handler::Publish(PublishHandler::new(session, appname, stream_key))
-    }
-
     pub async fn handle(&mut self) -> Result<()> {
         match self {
             Handler::Play(handler) => handler.handle().await,

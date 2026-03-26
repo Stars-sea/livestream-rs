@@ -12,7 +12,7 @@ pub struct PublishHandler {
 }
 
 impl PublishHandler {
-    pub fn new(session: SessionGuard, appname: String, stream_key: String) -> Self {
+    pub(super) fn new(session: SessionGuard, appname: String, stream_key: String) -> Self {
         Self {
             session,
             appname,
