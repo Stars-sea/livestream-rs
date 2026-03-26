@@ -68,22 +68,31 @@ impl RtmpServer {
     }
 
     async fn spawn_connection_handler(appname: String, connection: RtmpConnection) {
-        let builder = if let Ok(builder) = connection.perform_handshake().await {
-            builder.with_appname(appname)
-        } else {
-            warn!("RTMP handshake failed");
-            return;
+        let builder = match connection.perform_handshake().await {
+            Ok(builder) => builder.with_appname(appname),
+            Err(e) => {
+                warn!(error = %e, "RTMP handshake failed");
+                return;
+            }
         };
 
-        let session = if let Ok(session) = builder.build() {
-            session
-        } else {
-            warn!("Failed to build RTMP session guard");
-            return;
+        let session = match builder.build() {
+            Ok(session) => session,
+            Err(e) => {
+                warn!(error = %e, "Failed to build RTMP session guard");
+                return;
+            }
         };
 
-        if let Err(e) = session.connect().await {
-            warn!(error = %e, "Error handling RTMP session");
+        match session.connect().await {
+            Ok(mut handler) => {
+                if let Err(e) = handler.handle().await {
+                    warn!(error = %e, "Error handling RTMP session");
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Error connecting RTMP session");
+            }
         }
     }
 }

@@ -11,6 +11,8 @@ pub struct SessionGuard {
     connection: RtmpConnection,
     session: ServerSession,
     appname: String,
+
+    chunk_size: u32,
 }
 
 impl SessionGuard {
@@ -19,17 +21,22 @@ impl SessionGuard {
             connection,
             session,
             appname,
+            chunk_size: 2048,
         }
     }
 
-    pub async fn read(&mut self) -> Result<Vec<ServerSessionResult>> {
-        let mut buffer = BytesMut::with_capacity(4096);
+    pub(super) fn set_chunk_size(&mut self, new_chunk_size: u32) {
+        self.chunk_size = new_chunk_size;
+    }
+
+    pub(super) async fn read_result(&mut self) -> Result<Vec<ServerSessionResult>> {
+        let mut buffer = BytesMut::with_capacity(self.chunk_size as usize);
 
         self.connection.read(&mut buffer).await?;
         Ok(self.session.handle_input(&buffer)?)
     }
 
-    pub async fn handle_results(
+    pub(super) async fn handle_results(
         &mut self,
         results: Vec<ServerSessionResult>,
     ) -> Result<Vec<ServerSessionEvent>> {
@@ -54,7 +61,7 @@ impl SessionGuard {
 
     pub async fn connect(mut self) -> Result<Handler> {
         loop {
-            let results = self.read().await?;
+            let results = self.read_result().await?;
 
             let events = self.handle_results(results).await?;
             for event in events {
