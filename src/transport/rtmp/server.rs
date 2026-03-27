@@ -1,14 +1,18 @@
 use std::net::SocketAddr;
 
 use anyhow::Result;
+use crossfire::{AsyncRx, spsc::List};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
+
+use crate::transport::message::ControlMessage;
 
 use super::RtmpConnection;
 
 pub struct RtmpServer {
     listener: TcpListener,
+    rx: AsyncRx<List<ControlMessage>>,
     appname: String,
     cancel_token: CancellationToken,
 }
@@ -16,12 +20,14 @@ pub struct RtmpServer {
 impl RtmpServer {
     pub async fn create(
         addr: SocketAddr,
+        rx: AsyncRx<List<ControlMessage>>,
         appname: String,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         Ok(Self {
             listener,
+            rx,
             appname,
             cancel_token,
         })
@@ -33,6 +39,10 @@ impl RtmpServer {
                 _ = self.cancel_token.cancelled() => {
                     debug!("RTMP server cancellation requested, shutting down");
                     break;
+                }
+
+                msg = self.rx.recv() => {
+                    // TODO: Handle control messages from the RTMP connection
                 }
 
                 accept_res = self.listener.accept() => {

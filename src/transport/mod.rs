@@ -1,3 +1,4 @@
+mod message;
 mod registry;
 mod server;
 mod session;
