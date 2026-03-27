@@ -12,12 +12,25 @@ where
     tx: DashMap<String, MAsyncTx<List<Context>>>,
 }
 
-impl<Context> BroadcastMiddleware<Context>
+impl<C> BroadcastMiddleware<C>
 where
-    Context: PipeContextTrait + Clone + 'static + Unpin,
+    C: PipeContextTrait + Clone + 'static + Unpin,
 {
-    pub fn new(tx: DashMap<String, MAsyncTx<List<Context>>>) -> Self {
-        Self { tx }
+    pub fn new() -> Self {
+        Self { tx: DashMap::new() }
+    }
+
+    pub fn add_client(&self, id: String, tx: MAsyncTx<List<C>>) {
+        self.tx.insert(id, tx);
+    }
+}
+
+impl<C> Default for BroadcastMiddleware<C>
+where
+    C: PipeContextTrait + Clone + 'static + Unpin,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -1,5 +1,6 @@
 mod bus;
 pub mod context;
+mod factory;
 pub mod middleware;
 mod pipe;
 

@@ -5,11 +5,17 @@ use anyhow::Result;
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait, PipeTrait};
 
 #[derive(Clone)]
-pub struct Pipe<Context: PipeContextTrait> {
-    middlewares: Vec<Arc<dyn MiddlewareTrait<Context = Context>>>,
+pub struct Pipe<C: PipeContextTrait> {
+    middlewares: Vec<Arc<dyn MiddlewareTrait<Context = C>>>,
 }
 
-impl<Context: PipeContextTrait> Pipe<Context> {
+pub trait PipeFactory {
+    type Context: PipeContextTrait;
+
+    fn create(&self) -> Pipe<Self::Context>;
+}
+
+impl<C: PipeContextTrait> Pipe<C> {
     pub fn new() -> Self {
         Self {
             middlewares: Vec::new(),
@@ -18,13 +24,20 @@ impl<Context: PipeContextTrait> Pipe<Context> {
 
     pub fn with<M>(mut self, middleware: M) -> Self
     where
-        M: MiddlewareTrait<Context = Context> + 'static,
+        M: MiddlewareTrait<Context = C> + 'static,
     {
         self.middlewares.push(Arc::new(middleware));
         self
     }
 
-    async fn send_impl(&self, context: Context) -> Result<Option<Context>> {
+    pub fn add_middleware<M>(&mut self, middleware: Arc<M>)
+    where
+        M: MiddlewareTrait<Context = C> + 'static,
+    {
+        self.middlewares.push(middleware);
+    }
+
+    async fn send_impl(&self, context: C) -> Result<Option<C>> {
         let mut context = Some(context);
         for middleware in self.middlewares.iter() {
             if let Some(ctx) = context {
@@ -38,10 +51,10 @@ impl<Context: PipeContextTrait> Pipe<Context> {
 }
 
 #[async_trait::async_trait]
-impl<Context: PipeContextTrait> PipeTrait for Pipe<Context> {
-    type Context = Context;
+impl<C: PipeContextTrait> PipeTrait for Pipe<C> {
+    type Context = C;
 
-    async fn send(&self, context: Context) -> Result<Option<Self::Context>> {
+    async fn send(&self, context: C) -> Result<Option<C>> {
         let cancel_token = context.cancel_token();
         let res = cancel_token
             .run_until_cancelled(self.send_impl(context))
@@ -51,5 +64,14 @@ impl<Context: PipeContextTrait> PipeTrait for Pipe<Context> {
             Some(res) => res,
             None => anyhow::bail!("Context was cancelled"),
         }
+    }
+}
+
+impl<C> Default for Pipe<C>
+where
+    C: PipeContextTrait,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
