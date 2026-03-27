@@ -3,13 +3,14 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait, PipeTrait};
+use crate::pipeline::Pipe;
 
 pub struct TransformMiddleware<Input, Output>
 where
     Input: PipeContextTrait,
     Output: PipeContextTrait + From<Input>,
 {
-    next_pipeline: Arc<dyn PipeTrait<Context = Output> + Send + Sync>,
+    next_pipeline: Arc<Pipe<Output>>,
     _marker: std::marker::PhantomData<Input>,
 }
 
@@ -18,7 +19,7 @@ where
     Input: PipeContextTrait,
     Output: PipeContextTrait + From<Input>,
 {
-    pub fn new(next_pipeline: Arc<dyn PipeTrait<Context = Output> + Send + Sync>) -> Self {
+    pub fn new(next_pipeline: Arc<Pipe<Output>>) -> Self {
         Self {
             next_pipeline,
             _marker: std::marker::PhantomData,

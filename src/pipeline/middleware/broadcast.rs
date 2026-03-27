@@ -1,6 +1,7 @@
-use crossfire::{AsyncTxTrait, MAsyncTx, mpmc::List};
+use crossfire::{AsyncTxTrait, MAsyncTx, mpsc::List};
 
 use anyhow::Result;
+use dashmap::DashMap;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait};
 
@@ -8,14 +9,14 @@ pub struct BroadcastMiddleware<Context>
 where
     Context: PipeContextTrait + Clone + 'static + Unpin,
 {
-    tx: MAsyncTx<List<Context>>,
+    tx: DashMap<String, MAsyncTx<List<Context>>>,
 }
 
 impl<Context> BroadcastMiddleware<Context>
 where
     Context: PipeContextTrait + Clone + 'static + Unpin,
 {
-    pub fn new(tx: MAsyncTx<List<Context>>) -> Self {
+    pub fn new(tx: DashMap<String, MAsyncTx<List<Context>>>) -> Self {
         Self { tx }
     }
 }
@@ -28,7 +29,11 @@ where
     type Context = C;
 
     async fn send(&self, ctx: Self::Context) -> Result<Option<Self::Context>> {
-        self.tx.send(ctx.clone()).await?;
+        self.tx.retain(|_, v| !v.is_disconnected());
+
+        if let Some(tx) = self.tx.get(&ctx.id()) {
+            tx.send(ctx.clone()).await?;
+        }
         Ok(Some(ctx))
     }
 }

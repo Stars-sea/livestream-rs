@@ -2,26 +2,23 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::abstraction::{BusTrait, PipeContextTrait, PipeTrait};
-use crate::pipeline::context::PacketPipeContext;
+use super::Pipe;
+use super::context::PacketPipeContext;
+use crate::abstraction::PipeTrait;
 
 pub struct PipeBus {
-    packet_pipe: Arc<dyn PipeTrait<Context = PacketPipeContext> + Send + Sync>,
+    packet_pipe: Arc<Pipe<PacketPipeContext>>,
 }
 
 impl PipeBus {
-    pub fn new(packet_pipe: Arc<dyn PipeTrait<Context = PacketPipeContext> + Send + Sync>) -> Self {
+    pub fn new(packet_pipe: Arc<Pipe<PacketPipeContext>>) -> Self {
         Self { packet_pipe }
     }
-}
 
-#[async_trait::async_trait]
-impl BusTrait for PipeBus {
-    async fn send<P, C>(&self, pipe: Arc<P>, context: C) -> Result<Option<C>>
-    where
-        P: PipeTrait<Context = C> + Send + Sync,
-        C: PipeContextTrait,
-    {
-        pipe.send(context).await
+    pub async fn send_packet(
+        &self,
+        context: PacketPipeContext,
+    ) -> Result<Option<PacketPipeContext>> {
+        self.packet_pipe.send(context).await
     }
 }

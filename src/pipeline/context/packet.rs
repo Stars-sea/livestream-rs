@@ -3,6 +3,7 @@ use tokio_util::sync::CancellationToken;
 use crate::abstraction::PipeContextTrait;
 use crate::media::Packet;
 
+#[derive(Clone)]
 pub struct PacketPipeContext {
     id: String,
     cancel_token: CancellationToken,

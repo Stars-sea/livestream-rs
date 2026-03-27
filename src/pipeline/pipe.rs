@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait, PipeTrait};
 
+#[derive(Clone)]
 pub struct Pipe<Context: PipeContextTrait> {
-    middlewares: Vec<Box<dyn MiddlewareTrait<Context = Context> + Send + Sync>>,
+    middlewares: Vec<Arc<dyn MiddlewareTrait<Context = Context>>>,
 }
 
 impl<Context: PipeContextTrait> Pipe<Context> {
@@ -15,15 +18,15 @@ impl<Context: PipeContextTrait> Pipe<Context> {
 
     pub fn with<M>(mut self, middleware: M) -> Self
     where
-        M: MiddlewareTrait<Context = Context> + Send + Sync + 'static,
+        M: MiddlewareTrait<Context = Context> + 'static,
     {
-        self.middlewares.push(Box::new(middleware));
+        self.middlewares.push(Arc::new(middleware));
         self
     }
 
     async fn send_impl(&self, context: Context) -> Result<Option<Context>> {
         let mut context = Some(context);
-        for middleware in &self.middlewares {
+        for middleware in self.middlewares.iter() {
             if let Some(ctx) = context {
                 context = middleware.send(ctx).await?;
             } else {
