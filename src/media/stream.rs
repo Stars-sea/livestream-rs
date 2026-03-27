@@ -3,18 +3,13 @@
 use ffmpeg_sys_next::AVMediaType::AVMEDIA_TYPE_VIDEO;
 use ffmpeg_sys_next::*;
 
-/// Wrapper around FFmpeg's AVStream with safe accessor methods.
+/// FFmpeg's AVStream accessor methods.
 pub trait StreamTrait {
     unsafe fn ptr(&self) -> *mut AVStream;
 
     /// Returns the time base for this stream.
     fn time_base(&self) -> AVRational {
         unsafe { (*self.ptr()).time_base }
-    }
-
-    /// Returns the time base as a floating point value.
-    fn time_base_f64(&self) -> f64 {
-        unsafe { av_q2d(self.time_base()) }
     }
 
     /// Returns the index of this stream within the parent AVFormatContext.

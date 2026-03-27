@@ -1,6 +1,6 @@
 use anyhow::Result;
 use bytes::Bytes;
-use ffmpeg_sys_next::{AVRational, AVStream, av_malloc};
+use ffmpeg_sys_next::{AVRational, AVStream, av_malloc, av_rescale_q};
 use rml_rtmp::sessions::StreamMetadata;
 
 use crate::media::{Packet, stream::StreamTrait};
@@ -89,7 +89,13 @@ impl FlvTag {
             }
             buf.copy_from_nonoverlapping(payload.as_ptr(), len);
 
-            let pts = timestamp as i64 * time_base.den as i64 / time_base.num as i64;
+            // FLV timestamps are in milliseconds, convert to stream time base
+            // AVRational { num: 1, den: 1000 } represents milliseconds
+            let pts = av_rescale_q(
+                timestamp as i64,
+                AVRational { num: 1, den: 1000 },
+                time_base,
+            );
 
             (*pkt).data = buf;
             (*pkt).size = len as i32;
