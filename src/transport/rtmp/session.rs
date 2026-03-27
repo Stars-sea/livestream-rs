@@ -6,6 +6,7 @@ use rml_rtmp::time::RtmpTimestamp;
 use tracing::debug;
 
 use crate::media::format::FlvTag;
+use crate::transport::{ConnectionState, SessionState, global_registry};
 
 use super::RtmpConnection;
 use super::handler::HandlerBuilder;
@@ -16,6 +17,12 @@ pub struct SessionGuard {
     appname: String,
 
     chunk_size: u32,
+}
+
+pub(super) struct SessionGuardBuilder {
+    connection: RtmpConnection,
+    session: Option<ServerSession>,
+    appname: Option<String>,
 }
 
 impl SessionGuard {
@@ -115,6 +122,23 @@ impl SessionGuard {
         }
     }
 
+    async fn accept_request(&mut self, request_id: u32) -> Result<()> {
+        let results = self.session.accept_request(request_id)?;
+        self.handle_results(results).await?;
+        Ok(())
+    }
+
+    async fn reject_request(
+        &mut self,
+        request_id: u32,
+        code: &str,
+        description: &str,
+    ) -> Result<()> {
+        let results = self.session.reject_request(request_id, code, description)?;
+        self.handle_results(results).await?;
+        Ok(())
+    }
+
     async fn handle_connect_event(
         &mut self,
         event: ServerSessionEvent,
@@ -126,20 +150,16 @@ impl SessionGuard {
             } => {
                 if app_name != self.appname {
                     debug!(app_name = %app_name, expected_app = %self.appname, "Client requested connection to unexpected app");
-                    let results = self.session.reject_request(
-                        request_id,
-                        "AppNotFound",
-                        "Application not found",
-                    )?;
-                    self.handle_results(results).await?;
+                    self.reject_request(request_id, "AppNotFound", "Application not found")
+                        .await?;
                     anyhow::bail!(
                         "Client requested connection to unexpected app: {}",
                         app_name
                     );
                 }
 
-                let results = self.session.accept_request(request_id)?;
-                self.handle_results(results).await?;
+                self.accept_request(request_id).await?;
+                Ok(None)
             }
             ServerSessionEvent::PlayStreamRequested {
                 request_id,
@@ -147,39 +167,71 @@ impl SessionGuard {
                 stream_id,
                 ..
             } => {
-                // TODO: Validate stream key format, check if stream exists, etc.
+                if !global_registry().is_active(&stream_key).await {
+                    debug!(stream_key = %stream_key, "Client requested to play non-existent or inactive stream");
+                    self.reject_request(request_id, "StreamNotFound", "Stream not found")
+                        .await?;
+                    anyhow::bail!(
+                        "Client requested to play non-existent or inactive stream: {}",
+                        stream_key
+                    );
+                }
 
-                let results = self.session.accept_request(request_id)?;
-                self.handle_results(results).await?;
-
-                return Ok(Some(HandlerBuilder::play(stream_key, stream_id)));
+                self.accept_request(request_id).await?;
+                Ok(Some(HandlerBuilder::play(stream_key, stream_id)))
             }
             ServerSessionEvent::PublishStreamRequested {
                 request_id,
                 stream_key,
                 ..
             } => {
-                // TODO: Validate stream key format, check if stream already exists, etc.
+                let session = global_registry().get(&stream_key);
+                if session.is_none() {
+                    debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
+                    self.reject_request(request_id, "StreamNotFound", "Stream not found")
+                        .await?;
+                    anyhow::bail!(
+                        "Client requested to publish to a stream that does not exist: {}",
+                        stream_key
+                    );
+                }
 
-                let results = self.session.accept_request(request_id)?;
-                self.handle_results(results).await?;
+                let session = session.unwrap();
+                if SessionState::Rtmp(ConnectionState::Precreate) == session.read().await.state {
+                    let mut session_guard = session.write().await;
+                    session_guard.state = SessionState::Rtmp(ConnectionState::Connecting);
 
-                return Ok(Some(HandlerBuilder::publish(stream_key)));
+                    let res = self.accept_request(request_id).await;
+                    session_guard.state = if res.is_ok() {
+                        SessionState::Rtmp(ConnectionState::Connected)
+                    } else {
+                        SessionState::Rtmp(ConnectionState::Disconnected)
+                    };
+                    res?;
+                } else {
+                    debug!(stream_key = %stream_key, "Client requested to publish to a stream that is already active");
+                    session.write().await.state = SessionState::Rtmp(ConnectionState::Disconnected);
+
+                    self.reject_request(
+                        request_id,
+                        "StreamAlreadyActive",
+                        "Stream is already active",
+                    )
+                    .await?;
+                    anyhow::bail!(
+                        "Client requested to publish to a stream that is already active: {}",
+                        stream_key
+                    );
+                }
+
+                Ok(Some(HandlerBuilder::publish(stream_key, session)))
             }
             _ => {
                 debug!(event = ?event, "Unhandled session event");
                 anyhow::bail!("Unhandled session event: {:?}", event);
             }
         }
-
-        Ok(None)
     }
-}
-
-pub(super) struct SessionGuardBuilder {
-    connection: RtmpConnection,
-    session: Option<ServerSession>,
-    appname: Option<String>,
 }
 
 impl SessionGuardBuilder {

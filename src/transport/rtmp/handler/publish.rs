@@ -1,13 +1,18 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use crossfire::{MAsyncTx, mpmc::List};
 use rml_rtmp::sessions::ServerSessionEvent;
+use tokio::sync::RwLock;
 use tracing::debug;
 
 use crate::media::format::FlvTag;
 use crate::transport::rtmp::{SessionGuard, handler::HandlerTrait};
+use crate::transport::{ConnectionState, SessionDescriptor, SessionState};
 
 pub struct PublishHandler {
     session: SessionGuard,
+    descriptor: Arc<RwLock<SessionDescriptor>>,
 
     appname: String,
     stream_key: String,
@@ -18,12 +23,14 @@ pub struct PublishHandler {
 impl PublishHandler {
     pub(super) fn new(
         session: SessionGuard,
+        descriptor: Arc<RwLock<SessionDescriptor>>,
         appname: String,
         stream_key: String,
         flv_tag_tx: MAsyncTx<List<FlvTag>>,
     ) -> Self {
         Self {
             session,
+            descriptor,
             appname,
             stream_key,
             flv_tag_tx,
@@ -32,6 +39,8 @@ impl PublishHandler {
 
     async fn publish_finished(&mut self) -> Result<()> {
         debug!("Publish finished for stream key: {}", self.stream_key);
+
+        self.descriptor.write().await.state = SessionState::Rtmp(ConnectionState::Disconnected);
 
         // TODO: Clean up any resources associated with this stream key, such as removing it from the stream manager
         Ok(())

@@ -1,7 +1,11 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use crossfire::{MAsyncRx, MAsyncTx, mpmc::List};
+use tokio::sync::RwLock;
 
 use crate::media::format::FlvTag;
+use crate::transport::SessionDescriptor;
 use crate::transport::rtmp::handler::Handler;
 use crate::transport::rtmp::{PlayHandler, PublishHandler, SessionGuard};
 
@@ -15,6 +19,7 @@ pub enum HandlerBuilder {
     },
     Publish {
         session: Option<SessionGuard>,
+        descriptor: Arc<RwLock<SessionDescriptor>>,
         appname: Option<String>,
         stream_key: String,
         flv_tag_tx: Option<MAsyncTx<List<FlvTag>>>,
@@ -32,9 +37,10 @@ impl HandlerBuilder {
         }
     }
 
-    pub fn publish(stream_key: String) -> Self {
+    pub fn publish(stream_key: String, descriptor: Arc<RwLock<SessionDescriptor>>) -> Self {
         HandlerBuilder::Publish {
             session: None,
+            descriptor,
             appname: None,
             stream_key,
             flv_tag_tx: None,
@@ -93,6 +99,7 @@ impl HandlerBuilder {
             }
             HandlerBuilder::Publish {
                 session,
+                descriptor,
                 appname,
                 stream_key,
                 flv_tag_tx,
@@ -107,7 +114,7 @@ impl HandlerBuilder {
                     anyhow::anyhow!("FLV tag sender is required to build PublishHandler")
                 })?;
                 Ok(Handler::Publish(PublishHandler::new(
-                    session, appname, stream_key, flv_tag_tx,
+                    session, descriptor, appname, stream_key, flv_tag_tx,
                 )))
             }
         }
