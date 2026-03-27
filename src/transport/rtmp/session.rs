@@ -5,7 +5,7 @@ use rml_rtmp::sessions::{ServerSession, ServerSessionEvent, ServerSessionResult}
 use rml_rtmp::time::RtmpTimestamp;
 use tracing::debug;
 
-use crate::media::flv_parser::FlvTag;
+use crate::media::format::FlvTag;
 
 use super::RtmpConnection;
 use super::handler::HandlerBuilder;

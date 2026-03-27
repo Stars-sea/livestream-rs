@@ -21,13 +21,7 @@ pub mod options;
 mod packet;
 mod stream;
 
-pub use format::flv_parser;
 pub use packet::Packet;
-
-pub mod output {
-    pub use super::format::flv_output::*;
-    pub use super::format::hls_output::*;
-}
 
 /// Initializes FFmpeg network components.
 /// Must be called before using network protocols like SRT.

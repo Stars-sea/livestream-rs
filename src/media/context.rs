@@ -1,8 +1,7 @@
 //! Context trait and utilities for FFmpeg format contexts.
 
 use super::ffmpeg_error;
-pub use super::input::InputContext;
-use super::stream::Stream;
+use super::stream::StreamTrait;
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
@@ -34,10 +33,10 @@ pub(crate) trait Context: Drop {
     ///
     /// # Returns
     /// Some(Stream) if the index is valid, None otherwise.
-    fn stream(&self, id: u32) -> Option<Stream> {
+    fn stream(&self, id: u32) -> Option<*mut AVStream> {
         if id < self.nb_streams() {
             let ptr = unsafe { (*self.get_ctx()).streams.offset(id as isize) };
-            unsafe { Some(Stream::new(*ptr)) }
+            unsafe { Some(*ptr) }
         } else {
             None
         }

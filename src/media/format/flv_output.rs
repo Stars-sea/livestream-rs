@@ -2,6 +2,7 @@
 
 use crate::media::context::{Context, OutputContext};
 use crate::media::ffmpeg_error;
+use crate::media::stream::StreamTrait;
 
 use anyhow::Result;
 use crossfire::{MTx, mpsc};
