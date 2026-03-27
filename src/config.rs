@@ -9,34 +9,35 @@ use serde::Deserialize;
 /// Application settings loaded from configuration files and environment variables.
 #[derive(Clone, Debug, Deserialize)]
 pub struct AppConfig {
-    /// Ingest Configuration
+    /// Srt Configuration
     #[serde(default)]
-    pub ingest: IngestConfig,
+    pub srt: SrtConfig,
 
     /// gRPC Configuration
     #[serde(default)]
     pub grpc: GrpcConfig,
 
-    /// Egress Configuration
+    /// RTMP Configuration
     #[serde(default)]
-    pub egress: EgressConfig,
+    pub rtmp: RtmpConfig,
 
     /// Minio Configuration
     pub minio: Option<MinioConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct IngestConfig {
+pub struct SrtConfig {
     /// Host for SRT listeners (e.g., "srt.example.local")
-    #[serde(default = "default_ingest_host")]
+    #[serde(default = "default_srt_host")]
     pub host: String,
 
     /// Port range for SRT listeners (format: "start-end", e.g., "4000-5000")
-    #[serde(default = "default_ingest_srtports")]
+    #[serde(default = "default_srt_srtports")]
     pub srtports: String,
 
     /// Segment duration in seconds for HLS/TS output
-    #[serde(default = "default_ingest_duration")]
+    /// TODO: Consider moving to persistence configuration
+    #[serde(default = "default_srt_duration")]
     pub duration: i32,
 }
 
@@ -52,13 +53,13 @@ pub struct GrpcConfig {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct EgressConfig {
+pub struct RtmpConfig {
     /// Port for RTMP server to listen on
-    #[serde(default = "default_egress_port")]
+    #[serde(default = "default_rtmp_port")]
     pub port: u16,
 
     /// RTMP application name (e.g., "live" for rtmp://host/live/streamkey)
-    #[serde(default = "default_egress_appname")]
+    #[serde(default = "default_rtmp_appname")]
     pub appname: String,
 }
 
@@ -77,7 +78,7 @@ pub struct MinioConfig {
     pub bucket: String,
 }
 
-fn default_ingest_host() -> String {
+fn default_srt_host() -> String {
     "0.0.0.0".to_string()
 }
 
@@ -85,23 +86,23 @@ fn default_grpc_port() -> u16 {
     50051
 }
 
-fn default_ingest_srtports() -> String {
+fn default_srt_srtports() -> String {
     "4000-4100".to_string()
 }
 
-fn default_ingest_duration() -> i32 {
+fn default_srt_duration() -> i32 {
     10
 }
 
-fn default_egress_port() -> u16 {
+fn default_rtmp_port() -> u16 {
     1935
 }
 
-fn default_egress_appname() -> String {
+fn default_rtmp_appname() -> String {
     "lives".to_string()
 }
 
-impl IngestConfig {
+impl SrtConfig {
     /// Parses the SRT port range from the configuration.
     ///
     /// # Returns
@@ -133,12 +134,12 @@ impl IngestConfig {
     }
 }
 
-impl Default for IngestConfig {
+impl Default for SrtConfig {
     fn default() -> Self {
         Self {
-            host: default_ingest_host(),
-            srtports: default_ingest_srtports(),
-            duration: default_ingest_duration(),
+            host: default_srt_host(),
+            srtports: default_srt_srtports(),
+            duration: default_srt_duration(),
         }
     }
 }
@@ -152,11 +153,11 @@ impl Default for GrpcConfig {
     }
 }
 
-impl Default for EgressConfig {
+impl Default for RtmpConfig {
     fn default() -> Self {
         Self {
-            port: default_egress_port(),
-            appname: default_egress_appname(),
+            port: default_rtmp_port(),
+            appname: default_rtmp_appname(),
         }
     }
 }
@@ -181,7 +182,7 @@ impl AppConfig {
 
     /// Validates the configuration settings.
     pub fn validate(&self) -> Result<()> {
-        let (start, end) = self.ingest.srt_port_range()?;
+        let (start, end) = self.srt.srt_port_range()?;
         if start >= end {
             anyhow::bail!(
                 "Invalid SRT port range: start port {} must be less than end port {}",
@@ -190,7 +191,7 @@ impl AppConfig {
             );
         }
 
-        if self.ingest.duration <= 0 {
+        if self.srt.duration <= 0 {
             anyhow::bail!("Segment duration must be positive");
         }
 
