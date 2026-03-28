@@ -6,10 +6,11 @@ use crossfire::AsyncRx;
 use crossfire::spsc::List;
 use tokio_util::sync::CancellationToken;
 
+use super::message::ControlMessage;
+use super::rtmp::RtmpServer;
+use super::srt::SrtServer;
 use crate::config::{RtmpConfig, SrtConfig};
-use crate::transport::message::ControlMessage;
-use crate::transport::rtmp::RtmpServer;
-use crate::transport::srt::SrtServer;
+use crate::infra::PortAllocator;
 
 pub struct TransportServer {
     rtmp_config: RtmpConfig,
@@ -41,9 +42,18 @@ impl TransportServer {
     }
 
     async fn run_srt_server(&self, rx: AsyncRx<List<ControlMessage>>) -> Result<()> {
+        let host = self.srt_config.host.clone();
         let cancel_token = self.cancel_token.child_token();
 
-        let server = SrtServer::new(rx, cancel_token);
+        let port_allocator = match self.srt_config.srt_port_range() {
+            Ok((start, end)) => PortAllocator::new(start, end),
+            Err(e) => {
+                eprintln!("Failed to create port allocator: {}", e);
+                anyhow::bail!("Failed to create port allocator: {}", e);
+            }
+        };
+
+        let server = SrtServer::new(rx, host, port_allocator, cancel_token);
         server.run().await?;
         Ok(())
     }

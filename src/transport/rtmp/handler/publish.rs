@@ -5,7 +5,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::media::format::FlvTag;
-use crate::transport::rtmp::{SessionGuard, handler::HandlerTrait};
+use crate::transport::rtmp::handler::HandlerTrait;
+use crate::transport::rtmp::session::SessionGuard;
 
 pub struct PublishHandler {
     session: SessionGuard,

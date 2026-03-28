@@ -6,9 +6,11 @@ use anyhow::Result;
 use rml_rtmp::sessions::ServerSessionEvent;
 use tokio_util::sync::CancellationToken;
 
-use super::{PlayHandler, PublishHandler, SessionGuard};
-
 pub use builder::HandlerBuilder;
+
+use super::handler::play::PlayHandler;
+use super::handler::publish::PublishHandler;
+use crate::transport::rtmp::session::SessionGuard;
 
 pub enum Handler {
     Play(PlayHandler),

@@ -7,10 +7,9 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
+use super::connection::RtmpConnection;
 use crate::transport::message::{ControlMessage, StreamEvent};
 use crate::transport::{RtmpState, SessionDescriptor, SessionState, global};
-
-use super::RtmpConnection;
 
 pub struct RtmpServer {
     listener: TcpListener,

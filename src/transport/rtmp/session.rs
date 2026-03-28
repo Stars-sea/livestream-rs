@@ -12,7 +12,7 @@ use crate::media::format::FlvTag;
 use crate::transport::message::StreamEvent;
 use crate::transport::{ConnectionStateTrait, RtmpState, SessionState, global};
 
-use super::RtmpConnection;
+use super::connection::RtmpConnection;
 use super::handler::HandlerBuilder;
 
 pub struct SessionGuard {
