@@ -2,11 +2,10 @@ use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::Result;
 use crossfire::{AsyncRx, MTx, mpsc, spsc};
-use dashmap::DashMap;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::transport::message::{ControlMessage, StreamEvent};
 use crate::transport::{ConnectionState, SessionDescriptor, SessionState, global};
@@ -25,8 +24,6 @@ pub struct RtmpServer {
     event_tx: MTx<mpsc::List<StreamEvent>>,
 
     cancel_token: CancellationToken,
-
-    child_tokens: Arc<DashMap<String, CancellationToken>>,
 }
 
 impl RtmpServer {
@@ -47,7 +44,6 @@ impl RtmpServer {
             event_rx,
             event_tx,
             cancel_token,
-            child_tokens: Arc::new(DashMap::new()),
         })
     }
 
@@ -95,8 +91,8 @@ impl RtmpServer {
                 Ok(())
             }
             ControlMessage::StopStream { live_id } => {
-                let entry = self.child_tokens.remove(&live_id);
-                if let Some((_, token)) = entry {
+                let token = global::get_cancel_token(&live_id).await;
+                if let Some(token) = token {
                     token.cancel();
                 }
 
@@ -112,25 +108,18 @@ impl RtmpServer {
                 debug!(live_id = %live_id, new_state = ?new_state, "Stream state changed");
                 Ok(())
             }
-            StreamEvent::Exited { live_id } => {
-                debug!(live_id = %live_id, "Stream exited");
-                Ok(())
-            }
         }
     }
 
     fn accept_client(&self, socket: TcpStream, addr: SocketAddr) -> Result<()> {
         debug!(client_addr = %addr, "Accepted new RTMP connection");
 
-        let cancel_token = self.cancel_token.child_token();
-
         // Handle the connection in a separate task
         tokio::spawn(spawn_connection_handler(
             self.appname.clone(),
             socket,
             self.event_tx.clone(),
-            cancel_token,
-            self.child_tokens.clone(),
+            self.cancel_token.child_token(),
         ));
 
         Ok(())
@@ -142,11 +131,12 @@ async fn spawn_connection_handler(
     socket: TcpStream,
     event_tx: MTx<mpsc::List<StreamEvent>>,
     cancel_token: CancellationToken,
-    child_tokens: Arc<DashMap<String, CancellationToken>>,
 ) {
-    let connection = RtmpConnection::new(socket, cancel_token.clone());
+    let _cancel_guard = cancel_token.clone().drop_guard();
 
-    let builder = match connection.perform_handshake().await {
+    let connection = RtmpConnection::new(socket);
+
+    let builder = match connection.perform_handshake(&cancel_token).await {
         Ok(builder) => builder,
         Err(e) => {
             warn!(error = %e, "RTMP handshake failed");
@@ -163,8 +153,7 @@ async fn spawn_connection_handler(
         }
     };
 
-    // TODO: call with_flv_tag_rx
-    let builder = match session.connect().await {
+    let builder = match session.connect(&cancel_token).await {
         Ok(builder) => builder,
         Err(e) => {
             warn!(error = %e, "Failed to connect RTMP session");
@@ -172,14 +161,31 @@ async fn spawn_connection_handler(
         }
     };
 
-    // TODO: Consider implementing a unified CancellationToken management strategy for both RTMP and Srt protocols.
+    let stream_key = builder.stream_key();
+    let cancel_token = if builder.is_publish() {
+        // For Publish sessions, we create a cancellation token and register it in the registry.
+        match global::register_cancel_token(stream_key, cancel_token.clone()).await {
+            Ok(()) => cancel_token,
+            Err(e) => {
+                error!(error = %e, "Failed to register cancellation token");
+                return;
+            }
+        }
+    } else {
+        // For Play sessions, we don't register a cancellation token.
+        // Instead, we get the token from the registry.
+        drop(_cancel_guard);
+        match global::get_cancel_token(stream_key).await {
+            Some(token) => token,
+            None => {
+                error!(stream_key = %stream_key, "No cancellation token found for stream key");
+                return;
+            }
+        }
+    };
 
-    // child_tokens shouldn't be modified when Handler is Play.
-    // For Publish, the token is stored in child_tokens to allow cancellation from the main server loop.
-    // For Play, the session cancellation is managed through the SessionGuard and the event channel.
-    if builder.is_publish() {
-        child_tokens.insert(builder.stream_key().to_string(), cancel_token);
-    }
+    // TODO: call with_flv_tag_rx
+    let builder = builder.with_cancel_token(cancel_token);
 
     match builder.build() {
         Ok(mut handler) => {

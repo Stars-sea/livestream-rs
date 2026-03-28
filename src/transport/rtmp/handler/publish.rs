@@ -4,6 +4,7 @@ use anyhow::Result;
 use crossfire::{MAsyncTx, mpmc::List};
 use rml_rtmp::sessions::ServerSessionEvent;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::media::format::FlvTag;
@@ -18,6 +19,8 @@ pub struct PublishHandler {
     stream_key: String,
 
     flv_tag_tx: MAsyncTx<List<FlvTag>>,
+
+    cancel_token: CancellationToken,
 }
 
 impl PublishHandler {
@@ -27,6 +30,7 @@ impl PublishHandler {
         appname: String,
         stream_key: String,
         flv_tag_tx: MAsyncTx<List<FlvTag>>,
+        cancel_token: CancellationToken,
     ) -> Self {
         Self {
             session,
@@ -34,6 +38,7 @@ impl PublishHandler {
             appname,
             stream_key,
             flv_tag_tx,
+            cancel_token,
         }
     }
 
@@ -51,6 +56,10 @@ impl PublishHandler {
 impl HandlerTrait for PublishHandler {
     fn session(&mut self) -> &mut SessionGuard {
         &mut self.session
+    }
+
+    fn cancel_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
     }
 
     async fn on_custom_events(&mut self, event: ServerSessionEvent) -> Result<()> {

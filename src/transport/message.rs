@@ -14,7 +14,4 @@ pub enum StreamEvent {
         live_id: String,
         new_state: SessionState,
     },
-    Exited {
-        live_id: String,
-    },
 }

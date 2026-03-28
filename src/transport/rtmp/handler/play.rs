@@ -2,6 +2,7 @@ use anyhow::Result;
 use crossfire::MAsyncRx;
 use crossfire::mpmc::List;
 use rml_rtmp::sessions::ServerSessionEvent;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::media::format::FlvTag;
@@ -15,6 +16,8 @@ pub struct PlayHandler {
     stream_id: u32,
 
     flv_tag_rx: MAsyncRx<List<FlvTag>>,
+
+    cancel_token: CancellationToken,
 }
 
 impl PlayHandler {
@@ -24,6 +27,7 @@ impl PlayHandler {
         stream_key: String,
         stream_id: u32,
         flv_tag_rx: MAsyncRx<List<FlvTag>>,
+        cancel_token: CancellationToken,
     ) -> Self {
         Self {
             session,
@@ -31,6 +35,7 @@ impl PlayHandler {
             stream_key,
             stream_id,
             flv_tag_rx,
+            cancel_token,
         }
     }
 
@@ -40,12 +45,16 @@ impl PlayHandler {
             self.stream_key, tag
         );
 
-        self.session.send_flv_tag(self.stream_id, tag).await
+        self.session
+            .send_flv_tag(self.stream_id, tag, &self.cancel_token)
+            .await
     }
 
     async fn finish_playing(&mut self) -> Result<()> {
         debug!("Finishing play for stream key: {}", self.stream_key);
-        self.session.finish_playing(self.stream_id).await?;
+        self.session
+            .finish_playing(self.stream_id, &self.cancel_token)
+            .await?;
         Ok(())
     }
 }
@@ -54,6 +63,10 @@ impl PlayHandler {
 impl HandlerTrait for PlayHandler {
     fn session(&mut self) -> &mut SessionGuard {
         &mut self.session
+    }
+
+    fn cancel_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
     }
 
     async fn handle(&mut self) -> Result<()> {

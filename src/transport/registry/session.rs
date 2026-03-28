@@ -4,32 +4,11 @@ use anyhow::Result;
 use dashmap::DashMap;
 use tokio::sync::{OnceCell, RwLock};
 
-use crate::transport::ConnectionState;
-
-use super::SessionDescriptor;
-
-pub mod global {
-    use super::*;
-
-    pub async fn register_session(session: Arc<RwLock<SessionDescriptor>>) -> Result<()> {
-        global_registry().await.register_session(session).await
-    }
-
-    pub async fn remove_session(
-        session: Arc<RwLock<SessionDescriptor>>,
-    ) -> Result<(String, Arc<RwLock<SessionDescriptor>>)> {
-        global_registry().await.remove_session(session).await
-    }
-
-    pub async fn get_session(stream_key: &str) -> Option<Arc<RwLock<SessionDescriptor>>> {
-        global_registry().await.get(stream_key)
-    }
-}
+use crate::transport::{ConnectionState, SessionDescriptor};
 
 static REGISTRY: OnceCell<Arc<ConnectionRegistry>> = OnceCell::const_new();
 
-// TODO: Wrap methods of registry in a mod
-async fn global_registry() -> Arc<ConnectionRegistry> {
+pub async fn global_registry() -> Arc<ConnectionRegistry> {
     REGISTRY
         .get_or_init(async || Arc::new(ConnectionRegistry::new()))
         .await

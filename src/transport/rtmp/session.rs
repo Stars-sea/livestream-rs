@@ -5,6 +5,7 @@ use crossfire::mpsc::List;
 use rml_rtmp::chunk_io::Packet;
 use rml_rtmp::sessions::{ServerSession, ServerSessionEvent, ServerSessionResult};
 use rml_rtmp::time::RtmpTimestamp;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::media::format::FlvTag;
@@ -51,27 +52,31 @@ impl SessionGuard {
         self.chunk_size = new_chunk_size;
     }
 
-    pub(super) async fn read_result(&mut self) -> Result<Vec<ServerSessionResult>> {
+    pub(super) async fn read_result(
+        &mut self,
+        ct: &CancellationToken,
+    ) -> Result<Vec<ServerSessionResult>> {
         let mut buffer = BytesMut::with_capacity(self.chunk_size as usize);
 
-        self.connection.read(&mut buffer).await?;
+        self.connection.read(&mut buffer, ct).await?;
         Ok(self.session.handle_input(&buffer)?)
     }
 
-    async fn handle_packet(&mut self, packet: Packet) -> Result<()> {
-        self.connection.write(&packet.bytes).await?;
+    async fn handle_packet(&mut self, packet: Packet, ct: &CancellationToken) -> Result<()> {
+        self.connection.write(&packet.bytes, ct).await?;
         Ok(())
     }
 
     pub(super) async fn handle_results(
         &mut self,
         results: Vec<ServerSessionResult>,
+        ct: &CancellationToken,
     ) -> Result<Vec<ServerSessionEvent>> {
         let mut events = Vec::new();
         for result in results {
             match result {
                 ServerSessionResult::OutboundResponse(packet) => {
-                    self.handle_packet(packet).await?;
+                    self.handle_packet(packet, ct).await?;
                 }
                 ServerSessionResult::RaisedEvent(event) => {
                     events.push(event);
@@ -86,7 +91,12 @@ impl SessionGuard {
         Ok(events)
     }
 
-    pub(super) async fn send_flv_tag(&mut self, stream_id: u32, tag: FlvTag) -> Result<()> {
+    pub(super) async fn send_flv_tag(
+        &mut self,
+        stream_id: u32,
+        tag: FlvTag,
+        ct: &CancellationToken,
+    ) -> Result<()> {
         fn to_timestamp(timestamp: u32) -> RtmpTimestamp {
             RtmpTimestamp::new(timestamp)
         }
@@ -109,24 +119,28 @@ impl SessionGuard {
             _ => return Ok(()),
         };
 
-        self.handle_packet(packet).await?;
+        self.handle_packet(packet, ct).await?;
 
         Ok(())
     }
 
-    pub(super) async fn finish_playing(&mut self, stream_id: u32) -> Result<()> {
+    pub(super) async fn finish_playing(
+        &mut self,
+        stream_id: u32,
+        ct: &CancellationToken,
+    ) -> Result<()> {
         let packet = self.session.finish_playing(stream_id)?;
-        self.handle_packet(packet).await?;
+        self.handle_packet(packet, ct).await?;
         Ok(())
     }
 
-    pub async fn connect(mut self) -> Result<HandlerBuilder> {
+    pub async fn connect(mut self, ct: &CancellationToken) -> Result<HandlerBuilder> {
         loop {
-            let results = self.read_result().await?;
+            let results = self.read_result(ct).await?;
 
-            let events = self.handle_results(results).await?;
+            let events = self.handle_results(results, ct).await?;
             for event in events {
-                let handler_builder = match self.handle_connect_event(event).await? {
+                let handler_builder = match self.handle_connect_event(event, ct).await? {
                     Some(builder) => builder,
                     None => continue,
                 };
@@ -139,9 +153,9 @@ impl SessionGuard {
         }
     }
 
-    async fn accept_request(&mut self, request_id: u32) -> Result<()> {
+    async fn accept_request(&mut self, request_id: u32, ct: &CancellationToken) -> Result<()> {
         let results = self.session.accept_request(request_id)?;
-        self.handle_results(results).await?;
+        self.handle_results(results, ct).await?;
         Ok(())
     }
 
@@ -150,22 +164,24 @@ impl SessionGuard {
         request_id: u32,
         code: &str,
         description: &str,
+        ct: &CancellationToken,
     ) -> Result<()> {
         let results = self.session.reject_request(request_id, code, description)?;
-        self.handle_results(results).await?;
+        self.handle_results(results, ct).await?;
         Ok(())
     }
 
     async fn handle_connect_event(
         &mut self,
         event: ServerSessionEvent,
+        ct: &CancellationToken,
     ) -> Result<Option<HandlerBuilder>> {
         match event {
             ServerSessionEvent::ConnectionRequested {
                 request_id,
                 app_name,
             } => {
-                self.on_connect_requested(request_id, app_name).await?;
+                self.on_connect_requested(request_id, app_name, ct).await?;
                 Ok(None)
             }
             ServerSessionEvent::PlayStreamRequested {
@@ -174,14 +190,14 @@ impl SessionGuard {
                 stream_id,
                 ..
             } => {
-                self.on_play_requested(request_id, stream_key, stream_id)
+                self.on_play_requested(request_id, stream_key, stream_id, ct)
                     .await
             }
             ServerSessionEvent::PublishStreamRequested {
                 request_id,
                 stream_key,
                 ..
-            } => self.on_publish_requested(request_id, stream_key).await,
+            } => self.on_publish_requested(request_id, stream_key, ct).await,
 
             _ => {
                 debug!(event = ?event, "Unhandled session event");
@@ -190,10 +206,15 @@ impl SessionGuard {
         }
     }
 
-    async fn on_connect_requested(&mut self, request_id: u32, app_name: String) -> Result<()> {
+    async fn on_connect_requested(
+        &mut self,
+        request_id: u32,
+        app_name: String,
+        ct: &CancellationToken,
+    ) -> Result<()> {
         if app_name != self.appname {
             debug!(app_name = %app_name, expected_app = %self.appname, "Client requested connection to unexpected app");
-            self.reject_request(request_id, "AppNotFound", "Application not found")
+            self.reject_request(request_id, "AppNotFound", "Application not found", ct)
                 .await?;
             anyhow::bail!(
                 "Client requested connection to unexpected app: {}",
@@ -201,7 +222,7 @@ impl SessionGuard {
             );
         }
 
-        self.accept_request(request_id).await?;
+        self.accept_request(request_id, ct).await?;
         Ok(())
     }
 
@@ -210,6 +231,7 @@ impl SessionGuard {
         request_id: u32,
         stream_key: String,
         stream_id: u32,
+        ct: &CancellationToken,
     ) -> Result<Option<HandlerBuilder>> {
         let is_active = match global::get_session(&stream_key).await {
             Some(session) => {
@@ -220,7 +242,7 @@ impl SessionGuard {
         };
         if !is_active {
             debug!(stream_key = %stream_key, "Client requested to play non-existent or inactive stream");
-            self.reject_request(request_id, "StreamNotFound", "Stream not found")
+            self.reject_request(request_id, "StreamNotFound", "Stream not found", ct)
                 .await?;
             anyhow::bail!(
                 "Client requested to play non-existent or inactive stream: {}",
@@ -228,7 +250,7 @@ impl SessionGuard {
             );
         }
 
-        self.accept_request(request_id).await?;
+        self.accept_request(request_id, ct).await?;
         Ok(Some(HandlerBuilder::play(stream_key, stream_id)))
     }
 
@@ -236,11 +258,12 @@ impl SessionGuard {
         &mut self,
         request_id: u32,
         stream_key: String,
+        ct: &CancellationToken,
     ) -> Result<Option<HandlerBuilder>> {
         let session = global::get_session(&stream_key).await;
         if session.is_none() {
             debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
-            self.reject_request(request_id, "StreamNotFound", "Stream not found")
+            self.reject_request(request_id, "StreamNotFound", "Stream not found", ct)
                 .await?;
             anyhow::bail!(
                 "Client requested to publish to a stream that does not exist: {}",
@@ -258,7 +281,7 @@ impl SessionGuard {
                 new_state: session_guard.state,
             });
 
-            let res = self.accept_request(request_id).await;
+            let res = self.accept_request(request_id, ct).await;
 
             session_guard.state = if res.is_ok() {
                 SessionState::Rtmp(ConnectionState::Connected)
@@ -279,6 +302,7 @@ impl SessionGuard {
                 request_id,
                 "StreamAlreadyActive",
                 "Stream is already active",
+                ct,
             )
             .await?;
             anyhow::bail!(

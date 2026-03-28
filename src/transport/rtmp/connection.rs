@@ -10,26 +10,24 @@ use super::session::SessionGuardBuilder;
 
 pub struct RtmpConnection {
     socket: TcpStream,
-
-    cancel_token: CancellationToken,
 }
 
 impl RtmpConnection {
-    pub fn new(socket: TcpStream, cancel_token: CancellationToken) -> Self {
-        Self {
-            socket,
-            cancel_token,
-        }
+    pub fn new(socket: TcpStream) -> Self {
+        Self { socket }
     }
 
-    pub async fn perform_handshake(mut self) -> Result<SessionGuardBuilder> {
+    pub async fn perform_handshake(
+        mut self,
+        ct: &CancellationToken,
+    ) -> Result<SessionGuardBuilder> {
         let mut buffer = BytesMut::with_capacity(1536);
         let mut handshake = Handshake::new(PeerType::Server);
 
         let mut handshake_completed = false;
 
         while !handshake_completed {
-            let length = self.read(&mut buffer).await?;
+            let length = self.read(&mut buffer, ct).await?;
             if length == 0 {
                 anyhow::bail!("Connection closed");
             }
@@ -45,22 +43,26 @@ impl RtmpConnection {
             };
 
             if !resp.is_empty() {
-                self.write(&resp).await?;
+                self.write(&resp, ct).await?;
             }
         }
 
         let config = ServerSessionConfig::new();
         let (session, results) = ServerSession::new(config)?;
 
-        self.handle(results).await?;
+        self.handle(results, ct).await?;
         Ok(SessionGuardBuilder::new(self).with_session(session))
     }
 
-    pub(super) async fn handle(&mut self, results: Vec<ServerSessionResult>) -> Result<()> {
+    pub(super) async fn handle(
+        &mut self,
+        results: Vec<ServerSessionResult>,
+        ct: &CancellationToken,
+    ) -> Result<()> {
         for result in results {
             match result {
                 ServerSessionResult::OutboundResponse(packet) => {
-                    self.write(&packet.bytes).await?;
+                    self.write(&packet.bytes, ct).await?;
                 }
                 _ => anyhow::bail!("Unhandled session result"),
             }
@@ -69,9 +71,13 @@ impl RtmpConnection {
         Ok(())
     }
 
-    pub(super) async fn read(&mut self, buf: &mut BytesMut) -> Result<usize> {
+    pub(super) async fn read(
+        &mut self,
+        buf: &mut BytesMut,
+        ct: &CancellationToken,
+    ) -> Result<usize> {
         tokio::select! {
-            _ = self.cancel_token.cancelled() => {
+            _ = ct.cancelled() => {
                 anyhow::bail!("Connection read cancelled");
             }
             res = self.socket.read(buf) => {
@@ -80,9 +86,9 @@ impl RtmpConnection {
         }
     }
 
-    pub(super) async fn write(&mut self, buf: &[u8]) -> Result<()> {
+    pub(super) async fn write(&mut self, buf: &[u8], ct: &CancellationToken) -> Result<()> {
         tokio::select! {
-            _ = self.cancel_token.cancelled() => {
+            _ = ct.cancelled() => {
                 anyhow::bail!("Connection write cancelled");
             }
             res = self.socket.write_all(buf) => {

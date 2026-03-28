@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use crossfire::{MAsyncRx, MAsyncTx, mpmc::List};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 use crate::media::format::FlvTag;
 use crate::transport::SessionDescriptor;
@@ -16,6 +17,7 @@ pub enum HandlerBuilder {
         appname: Option<String>,
         stream_key: String,
         flv_tag_rx: Option<MAsyncRx<List<FlvTag>>>,
+        cancel_token: Option<CancellationToken>,
     },
     Publish {
         session: Option<SessionGuard>,
@@ -23,6 +25,7 @@ pub enum HandlerBuilder {
         appname: Option<String>,
         stream_key: String,
         flv_tag_tx: Option<MAsyncTx<List<FlvTag>>>,
+        cancel_token: Option<CancellationToken>,
     },
 }
 
@@ -34,6 +37,7 @@ impl HandlerBuilder {
             stream_key,
             stream_id,
             flv_tag_rx: None,
+            cancel_token: None,
         }
     }
 
@@ -44,6 +48,7 @@ impl HandlerBuilder {
             appname: None,
             stream_key,
             flv_tag_tx: None,
+            cancel_token: None,
         }
     }
 
@@ -92,6 +97,18 @@ impl HandlerBuilder {
         self
     }
 
+    pub fn with_cancel_token(mut self, cancel_token: CancellationToken) -> Self {
+        match &mut self {
+            HandlerBuilder::Play {
+                cancel_token: ct, ..
+            } => *ct = Some(cancel_token),
+            HandlerBuilder::Publish {
+                cancel_token: ct, ..
+            } => *ct = Some(cancel_token),
+        }
+        self
+    }
+
     pub fn build(self) -> Result<Handler> {
         match self {
             HandlerBuilder::Play {
@@ -100,6 +117,7 @@ impl HandlerBuilder {
                 stream_key,
                 stream_id,
                 flv_tag_rx,
+                cancel_token,
             } => {
                 let appname = appname
                     .ok_or_else(|| anyhow::anyhow!("App name is required to build PlayHandler"))?;
@@ -108,8 +126,16 @@ impl HandlerBuilder {
                 let flv_tag_rx = flv_tag_rx.ok_or_else(|| {
                     anyhow::anyhow!("FLV tag receiver is required to build PlayHandler")
                 })?;
+                let cancel_token = cancel_token.ok_or_else(|| {
+                    anyhow::anyhow!("Cancellation token is required to build PlayHandler")
+                })?;
                 Ok(Handler::Play(PlayHandler::new(
-                    session, appname, stream_key, stream_id, flv_tag_rx,
+                    session,
+                    appname,
+                    stream_key,
+                    stream_id,
+                    flv_tag_rx,
+                    cancel_token,
                 )))
             }
             HandlerBuilder::Publish {
@@ -118,6 +144,7 @@ impl HandlerBuilder {
                 appname,
                 stream_key,
                 flv_tag_tx,
+                cancel_token,
             } => {
                 let appname = appname.ok_or_else(|| {
                     anyhow::anyhow!("App name is required to build PublishHandler")
@@ -128,8 +155,16 @@ impl HandlerBuilder {
                 let flv_tag_tx = flv_tag_tx.ok_or_else(|| {
                     anyhow::anyhow!("FLV tag sender is required to build PublishHandler")
                 })?;
+                let cancel_token = cancel_token.ok_or_else(|| {
+                    anyhow::anyhow!("Cancellation token is required to build PublishHandler")
+                })?;
                 Ok(Handler::Publish(PublishHandler::new(
-                    session, descriptor, appname, stream_key, flv_tag_tx,
+                    session,
+                    descriptor,
+                    appname,
+                    stream_key,
+                    flv_tag_tx,
+                    cancel_token,
                 )))
             }
         }

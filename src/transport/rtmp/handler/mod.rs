@@ -4,6 +4,7 @@ pub mod publish;
 
 use anyhow::Result;
 use rml_rtmp::sessions::ServerSessionEvent;
+use tokio_util::sync::CancellationToken;
 
 use super::{PlayHandler, PublishHandler, SessionGuard};
 
@@ -18,10 +19,13 @@ pub enum Handler {
 pub trait HandlerTrait {
     fn session(&mut self) -> &mut SessionGuard;
 
+    fn cancel_token(&self) -> CancellationToken;
+
     async fn handle(&mut self) -> Result<()> {
+        let ct = self.cancel_token();
         loop {
-            let results = self.session().read_result().await?;
-            let events = self.session().handle_results(results).await?;
+            let results = self.session().read_result(&ct).await?;
+            let events = self.session().handle_results(results, &ct).await?;
 
             for event in events {
                 if let Some(event) = self.on_common_events(event).await? {
