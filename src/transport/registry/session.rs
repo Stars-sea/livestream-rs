@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use dashmap::DashMap;
+use dashmap::{DashMap, Entry};
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::transport::{
@@ -31,12 +31,16 @@ impl ConnectionRegistry {
 
     pub async fn register_session(&self, session: Arc<RwLock<SessionDescriptor>>) -> Result<()> {
         let stream_key = session.read().await.id.clone();
-        if self.connections.contains_key(&stream_key) {
-            anyhow::bail!("Stream key {} is already in use", stream_key);
-        }
 
-        self.connections.insert(stream_key, session);
-        Ok(())
+        match self.connections.entry(stream_key.clone()) {
+            Entry::Occupied(_) => {
+                anyhow::bail!("Stream key {} is already in use", stream_key);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(session);
+                Ok(())
+            }
+        }
     }
 
     pub async fn remove_session(
@@ -51,14 +55,16 @@ impl ConnectionRegistry {
         &self,
         stream_key: &str,
     ) -> Result<(String, Arc<RwLock<SessionDescriptor>>)> {
-        match self.connections.remove(stream_key) {
-            Some((key, value)) => {
+        match self.connections.entry(stream_key.to_string()) {
+            Entry::Occupied(entry) => {
+                let value = entry.get().clone();
                 if value.read().await.state.is_active() {
                     anyhow::bail!("Session for stream key {} is still active", stream_key);
                 }
-                Ok((key, value))
+
+                Ok(entry.remove_entry())
             }
-            None => anyhow::bail!("No session found for stream key {}", stream_key),
+            Entry::Vacant(_) => anyhow::bail!("No session found for stream key {}", stream_key),
         }
     }
 
