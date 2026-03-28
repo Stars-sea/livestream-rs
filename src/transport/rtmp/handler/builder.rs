@@ -47,6 +47,13 @@ impl HandlerBuilder {
         }
     }
 
+    pub fn stream_key(&self) -> &str {
+        match self {
+            HandlerBuilder::Play { stream_key, .. } => stream_key,
+            HandlerBuilder::Publish { stream_key, .. } => stream_key,
+        }
+    }
+
     pub fn with_appname(mut self, appname: String) -> Self {
         match &mut self {
             HandlerBuilder::Play { appname: a, .. } => *a = Some(appname),

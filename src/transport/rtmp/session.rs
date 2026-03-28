@@ -114,10 +114,15 @@ impl SessionGuard {
 
             let events = self.handle_results(results).await?;
             for event in events {
-                if let Some(handler_builder) = self.handle_connect_event(event).await? {
-                    let appname = self.appname.clone();
-                    return Ok(handler_builder.with_session(self).with_appname(appname));
-                }
+                let handler_builder = match self.handle_connect_event(event).await? {
+                    Some(builder) => builder,
+                    None => continue,
+                };
+
+                let handler_builder = handler_builder
+                    .with_appname(self.appname.clone())
+                    .with_session(self);
+                return Ok(handler_builder);
             }
         }
     }
@@ -167,7 +172,7 @@ impl SessionGuard {
                 stream_id,
                 ..
             } => {
-                if !global_registry().is_active(&stream_key).await {
+                if !global_registry().await.is_active(&stream_key).await {
                     debug!(stream_key = %stream_key, "Client requested to play non-existent or inactive stream");
                     self.reject_request(request_id, "StreamNotFound", "Stream not found")
                         .await?;
@@ -185,7 +190,7 @@ impl SessionGuard {
                 stream_key,
                 ..
             } => {
-                let session = global_registry().get(&stream_key);
+                let session = global_registry().await.get(&stream_key);
                 if session.is_none() {
                     debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
                     self.reject_request(request_id, "StreamNotFound", "Stream not found")

@@ -8,7 +8,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{RtmpConfig, SrtConfig};
 use crate::transport::message::ControlMessage;
-use crate::transport::registry;
 use crate::transport::rtmp::RtmpServer;
 use crate::transport::srt::SrtServer;
 
@@ -50,8 +49,6 @@ impl TransportServer {
     }
 
     pub async fn run(self) -> Result<()> {
-        registry::init_registry();
-
         let (rtmp_msg_tx, rtmp_msg_rx) = crossfire::spsc::unbounded_async();
         let (srt_msg_tx, srt_msg_rx) = crossfire::spsc::unbounded_async();
 

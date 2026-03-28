@@ -10,14 +10,11 @@ use super::SessionDescriptor;
 
 pub static REGISTRY: OnceCell<Arc<ConnectionRegistry>> = OnceCell::const_new();
 
-pub fn init_registry() {
-    REGISTRY.get_or_init(async || Arc::new(ConnectionRegistry::new()));
-}
-
-pub fn global_registry() -> Arc<ConnectionRegistry> {
+// TODO: Wrap methods of registry in a mod
+pub async fn global_registry() -> Arc<ConnectionRegistry> {
     REGISTRY
-        .get()
-        .expect("Connection registry not initialized")
+        .get_or_init(async || Arc::new(ConnectionRegistry::new()))
+        .await
         .clone()
 }
 
@@ -33,23 +30,22 @@ impl ConnectionRegistry {
         }
     }
 
-    pub async fn add_session(&self, session: Arc<RwLock<SessionDescriptor>>) -> Result<()> {
-        let stream_key = match session.read().await.id.clone() {
-            Some(key) => key,
-            None => anyhow::bail!("Connection does not have a valid stream key"),
-        };
+    pub async fn register_session(&self, session: Arc<RwLock<SessionDescriptor>>) -> Result<()> {
+        let stream_key = session.read().await.id.clone();
         self.connections.insert(stream_key, session);
         Ok(())
     }
 
-    pub async fn remove_session(&self, session: Arc<RwLock<SessionDescriptor>>) {
-        if let Some(stream_key) = session.read().await.id.clone() {
-            self.connections.remove(&stream_key);
-        }
+    pub async fn remove_session(
+        &self,
+        session: Arc<RwLock<SessionDescriptor>>,
+    ) -> Option<(String, Arc<RwLock<SessionDescriptor>>)> {
+        let stream_key = session.read().await.id.clone();
+        self.connections.remove(&stream_key)
     }
 
-    pub fn remove(&self, stream_key: &str) {
-        self.connections.remove(stream_key);
+    pub fn remove(&self, stream_key: &str) -> Option<(String, Arc<RwLock<SessionDescriptor>>)> {
+        self.connections.remove(stream_key)
     }
 
     pub fn get(&self, stream_key: &str) -> Option<Arc<RwLock<SessionDescriptor>>> {

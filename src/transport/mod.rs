@@ -9,7 +9,3 @@ pub mod srt;
 pub use registry::{ConnectionRegistry, global_registry};
 pub use server::TransportServer;
 pub use session::*;
-
-pub fn init() {
-    registry::init_registry();
-}

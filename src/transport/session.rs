@@ -14,7 +14,7 @@ pub enum SessionState {
 }
 
 pub struct SessionDescriptor {
-    pub id: Option<String>,
+    pub id: String,
     pub state: SessionState,
 }
 
