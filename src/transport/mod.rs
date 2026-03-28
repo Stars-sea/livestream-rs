@@ -6,6 +6,6 @@ mod session;
 pub mod rtmp;
 pub mod srt;
 
-pub use registry::{ConnectionRegistry, global_registry};
+pub use registry::global;
 pub use server::TransportServer;
 pub use session::*;

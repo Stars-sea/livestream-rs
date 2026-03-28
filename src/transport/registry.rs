@@ -4,14 +4,30 @@ use anyhow::Result;
 use dashmap::DashMap;
 use tokio::sync::{OnceCell, RwLock};
 
-use crate::transport::ConnectionState;
-
 use super::SessionDescriptor;
 
-pub static REGISTRY: OnceCell<Arc<ConnectionRegistry>> = OnceCell::const_new();
+pub mod global {
+    use super::*;
+
+    pub async fn register_session(session: Arc<RwLock<SessionDescriptor>>) -> Result<()> {
+        global_registry().await.register_session(session).await
+    }
+
+    pub async fn remove_session(
+        session: Arc<RwLock<SessionDescriptor>>,
+    ) -> Option<(String, Arc<RwLock<SessionDescriptor>>)> {
+        global_registry().await.remove_session(session).await
+    }
+
+    pub async fn get_session(stream_key: &str) -> Option<Arc<RwLock<SessionDescriptor>>> {
+        global_registry().await.get(stream_key)
+    }
+}
+
+static REGISTRY: OnceCell<Arc<ConnectionRegistry>> = OnceCell::const_new();
 
 // TODO: Wrap methods of registry in a mod
-pub async fn global_registry() -> Arc<ConnectionRegistry> {
+async fn global_registry() -> Arc<ConnectionRegistry> {
     REGISTRY
         .get_or_init(async || Arc::new(ConnectionRegistry::new()))
         .await
@@ -24,7 +40,7 @@ pub struct ConnectionRegistry {
 }
 
 impl ConnectionRegistry {
-    pub(self) fn new() -> Self {
+    fn new() -> Self {
         Self {
             connections: DashMap::new(),
         }
@@ -52,13 +68,5 @@ impl ConnectionRegistry {
         self.connections
             .get(stream_key)
             .map(|entry| entry.value().clone())
-    }
-
-    pub async fn is_active(&self, stream_key: &str) -> bool {
-        if let Some(session) = self.get(stream_key) {
-            ConnectionState::Connected == session.read().await.state.into()
-        } else {
-            false
-        }
     }
 }

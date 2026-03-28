@@ -6,7 +6,7 @@ use rml_rtmp::time::RtmpTimestamp;
 use tracing::debug;
 
 use crate::media::format::FlvTag;
-use crate::transport::{ConnectionState, SessionState, global_registry};
+use crate::transport::{ConnectionState, SessionState, global};
 
 use super::RtmpConnection;
 use super::handler::HandlerBuilder;
@@ -153,17 +153,7 @@ impl SessionGuard {
                 request_id,
                 app_name,
             } => {
-                if app_name != self.appname {
-                    debug!(app_name = %app_name, expected_app = %self.appname, "Client requested connection to unexpected app");
-                    self.reject_request(request_id, "AppNotFound", "Application not found")
-                        .await?;
-                    anyhow::bail!(
-                        "Client requested connection to unexpected app: {}",
-                        app_name
-                    );
-                }
-
-                self.accept_request(request_id).await?;
+                self.on_connect_requested(request_id, app_name).await?;
                 Ok(None)
             }
             ServerSessionEvent::PlayStreamRequested {
@@ -172,70 +162,109 @@ impl SessionGuard {
                 stream_id,
                 ..
             } => {
-                if !global_registry().await.is_active(&stream_key).await {
-                    debug!(stream_key = %stream_key, "Client requested to play non-existent or inactive stream");
-                    self.reject_request(request_id, "StreamNotFound", "Stream not found")
-                        .await?;
-                    anyhow::bail!(
-                        "Client requested to play non-existent or inactive stream: {}",
-                        stream_key
-                    );
-                }
-
-                self.accept_request(request_id).await?;
-                Ok(Some(HandlerBuilder::play(stream_key, stream_id)))
+                self.on_play_requested(request_id, stream_key, stream_id)
+                    .await
             }
             ServerSessionEvent::PublishStreamRequested {
                 request_id,
                 stream_key,
                 ..
-            } => {
-                let session = global_registry().await.get(&stream_key);
-                if session.is_none() {
-                    debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
-                    self.reject_request(request_id, "StreamNotFound", "Stream not found")
-                        .await?;
-                    anyhow::bail!(
-                        "Client requested to publish to a stream that does not exist: {}",
-                        stream_key
-                    );
-                }
+            } => self.on_publish_requested(request_id, stream_key).await,
 
-                let session = session.unwrap();
-                if SessionState::Rtmp(ConnectionState::Precreate) == session.read().await.state {
-                    let mut session_guard = session.write().await;
-                    session_guard.state = SessionState::Rtmp(ConnectionState::Connecting);
-
-                    let res = self.accept_request(request_id).await;
-                    session_guard.state = if res.is_ok() {
-                        SessionState::Rtmp(ConnectionState::Connected)
-                    } else {
-                        SessionState::Rtmp(ConnectionState::Disconnected)
-                    };
-                    res?;
-                } else {
-                    debug!(stream_key = %stream_key, "Client requested to publish to a stream that is already active");
-                    session.write().await.state = SessionState::Rtmp(ConnectionState::Disconnected);
-
-                    self.reject_request(
-                        request_id,
-                        "StreamAlreadyActive",
-                        "Stream is already active",
-                    )
-                    .await?;
-                    anyhow::bail!(
-                        "Client requested to publish to a stream that is already active: {}",
-                        stream_key
-                    );
-                }
-
-                Ok(Some(HandlerBuilder::publish(stream_key, session)))
-            }
             _ => {
                 debug!(event = ?event, "Unhandled session event");
                 anyhow::bail!("Unhandled session event: {:?}", event);
             }
         }
+    }
+
+    async fn on_connect_requested(&mut self, request_id: u32, app_name: String) -> Result<()> {
+        if app_name != self.appname {
+            debug!(app_name = %app_name, expected_app = %self.appname, "Client requested connection to unexpected app");
+            self.reject_request(request_id, "AppNotFound", "Application not found")
+                .await?;
+            anyhow::bail!(
+                "Client requested connection to unexpected app: {}",
+                app_name
+            );
+        }
+
+        self.accept_request(request_id).await?;
+        Ok(())
+    }
+
+    async fn on_play_requested(
+        &mut self,
+        request_id: u32,
+        stream_key: String,
+        stream_id: u32,
+    ) -> Result<Option<HandlerBuilder>> {
+        let is_active = match global::get_session(&stream_key).await {
+            Some(session) => {
+                let session_guard = session.read().await;
+                ConnectionState::Connected == session_guard.state.into()
+            }
+            None => false,
+        };
+        if !is_active {
+            debug!(stream_key = %stream_key, "Client requested to play non-existent or inactive stream");
+            self.reject_request(request_id, "StreamNotFound", "Stream not found")
+                .await?;
+            anyhow::bail!(
+                "Client requested to play non-existent or inactive stream: {}",
+                stream_key
+            );
+        }
+
+        self.accept_request(request_id).await?;
+        Ok(Some(HandlerBuilder::play(stream_key, stream_id)))
+    }
+
+    async fn on_publish_requested(
+        &mut self,
+        request_id: u32,
+        stream_key: String,
+    ) -> Result<Option<HandlerBuilder>> {
+        let session = global::get_session(&stream_key).await;
+        if session.is_none() {
+            debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
+            self.reject_request(request_id, "StreamNotFound", "Stream not found")
+                .await?;
+            anyhow::bail!(
+                "Client requested to publish to a stream that does not exist: {}",
+                stream_key
+            );
+        }
+
+        let session = session.unwrap();
+        if SessionState::Rtmp(ConnectionState::Precreate) == session.read().await.state {
+            let mut session_guard = session.write().await;
+            session_guard.state = SessionState::Rtmp(ConnectionState::Connecting);
+
+            let res = self.accept_request(request_id).await;
+            session_guard.state = if res.is_ok() {
+                SessionState::Rtmp(ConnectionState::Connected)
+            } else {
+                SessionState::Rtmp(ConnectionState::Disconnected)
+            };
+            res?;
+        } else {
+            debug!(stream_key = %stream_key, "Client requested to publish to a stream that is already active");
+            session.write().await.state = SessionState::Rtmp(ConnectionState::Disconnected);
+
+            self.reject_request(
+                request_id,
+                "StreamAlreadyActive",
+                "Stream is already active",
+            )
+            .await?;
+            anyhow::bail!(
+                "Client requested to publish to a stream that is already active: {}",
+                stream_key
+            );
+        }
+
+        Ok(Some(HandlerBuilder::publish(stream_key, session)))
     }
 }
 

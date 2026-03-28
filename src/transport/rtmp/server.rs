@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::transport::message::ControlMessage;
-use crate::transport::{ConnectionState, SessionDescriptor, SessionState, global_registry};
+use crate::transport::{ConnectionState, SessionDescriptor, SessionState, global};
 
 use super::RtmpConnection;
 
@@ -71,10 +71,7 @@ impl RtmpServer {
                     id: live_id,
                     state: SessionState::Rtmp(ConnectionState::Precreate),
                 };
-                global_registry()
-                    .await
-                    .register_session(Arc::new(RwLock::new(session)))
-                    .await?;
+                global::register_session(Arc::new(RwLock::new(session))).await?;
 
                 Ok(())
             }
