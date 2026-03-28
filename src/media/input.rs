@@ -4,11 +4,10 @@ use super::options::StreamOptions;
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
+use tokio_util::sync::CancellationToken;
 
 use std::ffi::CString;
 use std::ptr::null_mut;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Unified FFmpeg input context wrapper for different ingest protocols.
 #[derive(Debug)]
@@ -17,8 +16,8 @@ pub struct InputContext {
 }
 
 impl InputContext {
-    pub fn open(options: &impl StreamOptions, stop_signal: Arc<AtomicBool>) -> Result<Self> {
-        let mut ctx = alloc_input_context(stop_signal)?;
+    pub fn open(options: &impl StreamOptions, cancel_token: CancellationToken) -> Result<Self> {
+        let mut ctx = alloc_input_context(Box::new(cancel_token))?;
         let url = options.filename();
         let c_url = CString::new(url.as_str())?;
         let mut c_opt = options.to_dict();
@@ -46,6 +45,8 @@ impl InputContext {
     }
 }
 
+unsafe impl Send for InputContext {}
+
 impl Drop for InputContext {
     fn drop(&mut self) {
         free_input_context(self.ctx);
@@ -59,17 +60,17 @@ impl Context for InputContext {
     }
 }
 
-fn alloc_input_context(stop_signal: Arc<AtomicBool>) -> Result<*mut AVFormatContext> {
+fn alloc_input_context(cancel_token: Box<CancellationToken>) -> Result<*mut AVFormatContext> {
     let ctx = unsafe { avformat_alloc_context() };
     if ctx.is_null() {
         return Err(anyhow::anyhow!("Failed to alloc AVFormatContext"));
     }
 
     unsafe {
-        let stop_signal_ptr = Arc::into_raw(stop_signal) as *mut std::ffi::c_void;
+        let cancel_token_ptr = Box::into_raw(cancel_token) as *mut std::ffi::c_void;
         (*ctx).interrupt_callback = AVIOInterruptCB {
             callback: Some(interrupt_callback),
-            opaque: stop_signal_ptr,
+            opaque: cancel_token_ptr,
         };
     }
 
@@ -81,8 +82,9 @@ fn free_input_context(ctx: *mut AVFormatContext) {
         return;
     }
     unsafe {
-        if !(*ctx).interrupt_callback.opaque.is_null() {
-            let _ = Arc::from_raw((*ctx).interrupt_callback.opaque as *const AtomicBool);
+        let opaque = (*ctx).interrupt_callback.opaque;
+        if !opaque.is_null() {
+            let _ = Box::from_raw(opaque as *mut CancellationToken);
         }
         avformat_close_input(&mut { ctx });
     }
@@ -92,10 +94,6 @@ extern "C" fn interrupt_callback(opaque: *mut std::ffi::c_void) -> i32 {
     if opaque.is_null() {
         return 0;
     }
-    let stop_flag = unsafe { &*(opaque as *const AtomicBool) };
-    if stop_flag.load(Ordering::Relaxed) {
-        1
-    } else {
-        0
-    }
+    let cancel_token = unsafe { &*(opaque as *mut CancellationToken) };
+    if cancel_token.is_cancelled() { 0 } else { 1 }
 }
