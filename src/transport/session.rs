@@ -1,16 +1,26 @@
+pub trait ConnectionStateTrait {
+    fn is_active(&self) -> bool;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConnectionState {
-    Precreate,
-    Created,
+pub enum RtmpState {
+    Pending,
     Connecting,
     Connected,
     Disconnected,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SrtState {
+    Pending,
+    Connected,
+    Disconnected,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
-    Srt(ConnectionState),
-    Rtmp(ConnectionState),
+    Srt(SrtState),
+    Rtmp(RtmpState),
 }
 
 pub struct SessionDescriptor {
@@ -18,11 +28,23 @@ pub struct SessionDescriptor {
     pub state: SessionState,
 }
 
-impl Into<ConnectionState> for SessionState {
-    fn into(self) -> ConnectionState {
+impl ConnectionStateTrait for RtmpState {
+    fn is_active(&self) -> bool {
+        matches!(self, RtmpState::Connected)
+    }
+}
+
+impl ConnectionStateTrait for SrtState {
+    fn is_active(&self) -> bool {
+        matches!(self, SrtState::Connected)
+    }
+}
+
+impl ConnectionStateTrait for SessionState {
+    fn is_active(&self) -> bool {
         match self {
-            SessionState::Srt(state) => state,
-            SessionState::Rtmp(state) => state,
+            SessionState::Rtmp(state) => state.is_active(),
+            SessionState::Srt(state) => state.is_active(),
         }
     }
 }

@@ -10,7 +10,7 @@ pub mod global {
 
     use super::cancel_token::global_registry as global_tokens;
     use super::session::global_registry as global_session;
-    use crate::transport::SessionDescriptor;
+    use crate::transport::{SessionDescriptor, SessionState};
 
     pub async fn register_session(session: Arc<RwLock<SessionDescriptor>>) -> Result<()> {
         global_session().await.register_session(session).await
@@ -22,8 +22,15 @@ pub mod global {
         global_session().await.remove_session(session).await
     }
 
-    pub async fn get_session(stream_key: &str) -> Option<Arc<RwLock<SessionDescriptor>>> {
-        global_session().await.get(stream_key)
+    pub async fn get_session_state(stream_key: &str) -> Option<SessionState> {
+        global_session().await.get_state(stream_key).await
+    }
+
+    pub async fn update_session_state(stream_key: &str, new_state: SessionState) -> Result<()> {
+        global_session()
+            .await
+            .update_state(stream_key, new_state)
+            .await
     }
 
     pub async fn register_cancel_token(stream_key: &str, token: CancellationToken) -> Result<()> {

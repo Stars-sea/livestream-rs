@@ -10,7 +10,7 @@ use tracing::debug;
 
 use crate::media::format::FlvTag;
 use crate::transport::message::StreamEvent;
-use crate::transport::{ConnectionState, SessionState, global};
+use crate::transport::{ConnectionStateTrait, RtmpState, SessionState, global};
 
 use super::RtmpConnection;
 use super::handler::HandlerBuilder;
@@ -233,11 +233,8 @@ impl SessionGuard {
         stream_id: u32,
         ct: &CancellationToken,
     ) -> Result<Option<HandlerBuilder>> {
-        let is_active = match global::get_session(&stream_key).await {
-            Some(session) => {
-                let session_guard = session.read().await;
-                ConnectionState::Connected == session_guard.state.into()
-            }
+        let is_active = match global::get_session_state(&stream_key).await {
+            Some(state) => state.is_active(),
             None => false,
         };
         if !is_active {
@@ -260,9 +257,13 @@ impl SessionGuard {
         stream_key: String,
         ct: &CancellationToken,
     ) -> Result<Option<HandlerBuilder>> {
-        let session = global::get_session(&stream_key).await;
-        if session.is_none() {
+        let state = global::get_session_state(&stream_key).await;
+        if state.is_none() {
             debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
+            self.event_tx.send(StreamEvent::StateChange {
+                live_id: stream_key.clone(),
+                new_state: SessionState::Rtmp(RtmpState::Disconnected),
+            });
             self.reject_request(request_id, "StreamNotFound", "Stream not found", ct)
                 .await?;
             anyhow::bail!(
@@ -271,32 +272,31 @@ impl SessionGuard {
             );
         }
 
-        let session = session.unwrap();
-        if SessionState::Rtmp(ConnectionState::Precreate) == session.read().await.state {
-            let mut session_guard = session.write().await;
-
-            session_guard.state = SessionState::Rtmp(ConnectionState::Connecting);
+        if state.unwrap() == SessionState::Rtmp(RtmpState::Pending) {
             self.event_tx.send(StreamEvent::StateChange {
                 live_id: stream_key.clone(),
-                new_state: session_guard.state,
+                new_state: SessionState::Rtmp(RtmpState::Connecting),
             });
 
             let res = self.accept_request(request_id, ct).await;
 
-            session_guard.state = if res.is_ok() {
-                SessionState::Rtmp(ConnectionState::Connected)
+            let new_state = if res.is_ok() {
+                SessionState::Rtmp(RtmpState::Connected)
             } else {
-                SessionState::Rtmp(ConnectionState::Disconnected)
+                SessionState::Rtmp(RtmpState::Disconnected)
             };
             self.event_tx.send(StreamEvent::StateChange {
                 live_id: stream_key.clone(),
-                new_state: session_guard.state,
+                new_state: new_state,
             });
 
             res?;
         } else {
             debug!(stream_key = %stream_key, "Client requested to publish to a stream that is already active");
-            session.write().await.state = SessionState::Rtmp(ConnectionState::Disconnected);
+            self.event_tx.send(StreamEvent::StateChange {
+                live_id: stream_key.clone(),
+                new_state: SessionState::Rtmp(RtmpState::Disconnected),
+            });
 
             self.reject_request(
                 request_id,
@@ -311,7 +311,7 @@ impl SessionGuard {
             );
         }
 
-        Ok(Some(HandlerBuilder::publish(stream_key, session)))
+        Ok(Some(HandlerBuilder::publish(stream_key)))
     }
 }
 

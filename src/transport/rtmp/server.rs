@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use crossfire::{AsyncRx, MTx, mpsc, spsc};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 use crate::transport::message::{ControlMessage, StreamEvent};
-use crate::transport::{ConnectionState, SessionDescriptor, SessionState, global};
+use crate::transport::{RtmpState, SessionDescriptor, SessionState, global};
 
 use super::RtmpConnection;
 
@@ -84,7 +84,7 @@ impl RtmpServer {
             ControlMessage::PrecreateStream { live_id } => {
                 let session = SessionDescriptor {
                     id: live_id,
-                    state: SessionState::Rtmp(ConnectionState::Precreate),
+                    state: SessionState::Rtmp(RtmpState::Pending),
                 };
                 global::register_session(Arc::new(RwLock::new(session))).await?;
 
@@ -102,10 +102,17 @@ impl RtmpServer {
     }
 
     async fn handle_stream_event(&self, event: StreamEvent) -> Result<()> {
-        // TODO
         match event {
             StreamEvent::StateChange { live_id, new_state } => {
                 debug!(live_id = %live_id, new_state = ?new_state, "Stream state changed");
+                if let Err(e) = global::update_session_state(&live_id, new_state).await {
+                    error!(error = %e, live_id = %live_id, "Failed to update session state, cancelling stream");
+                    let cancel_token = global::get_cancel_token(&live_id).await.ok_or(anyhow!(
+                        "No cancellation token found for live_id: {}",
+                        live_id
+                    ))?;
+                    cancel_token.cancel();
+                }
                 Ok(())
             }
         }
