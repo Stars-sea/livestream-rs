@@ -21,7 +21,7 @@ pub mod options;
 mod packet;
 mod stream;
 
-pub use packet::Packet;
+pub use packet::{Packet, PacketReadResult};
 
 /// Initializes FFmpeg network components.
 /// Must be called before using network protocols like SRT.

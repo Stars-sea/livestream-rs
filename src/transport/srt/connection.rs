@@ -1,10 +1,14 @@
 use anyhow::Result;
 use crossfire::{MTx, mpsc::List};
+use retry::OperationResult;
+use retry::delay::{Exponential, jitter};
 use tokio_util::sync::CancellationToken;
 
 use crate::media::input::InputContext;
 use crate::media::options::SrtInputStreamOptions;
+use crate::media::{Packet, PacketReadResult};
 use crate::transport::message::StreamEvent;
+use crate::transport::{SessionState, SrtState};
 
 pub struct SrtConnection {
     live_id: String,
@@ -42,9 +46,66 @@ impl SrtConnection {
         }
     }
 
-    pub fn run(self) {
-        while !self.cancel_token.is_cancelled() {}
+    pub fn run(self) -> Result<()> {
+        let mut state = SrtState::Pending;
+
+        while !self.cancel_token.is_cancelled() {
+            let mut packet = Packet::alloc()?;
+            match read_packet_with_retry(&self.av_ctx, &mut packet) {
+                Ok(ReadResult::Ok) => {
+                    if state == SrtState::Pending {
+                        state = SrtState::Connected;
+                        self.event_tx.send(StreamEvent::StateChange {
+                            live_id: self.live_id.clone(),
+                            new_state: SessionState::Srt(state),
+                        })?;
+                    }
+                }
+                Ok(ReadResult::Eof) => break,
+                Err(e) => anyhow::bail!("Error reading packet: {}", e),
+            }
+
+            // TODO: Process packet and forward to media pipeline
+        }
+
+        state = SrtState::Disconnected;
+        self.event_tx.send(StreamEvent::StateChange {
+            live_id: self.live_id.clone(),
+            new_state: SessionState::Srt(state),
+        })?;
+        Ok(())
     }
+}
+
+/// Read outcome abstraction for one packet pull attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadResult {
+    Ok,
+    Eof,
+}
+
+fn read_packet_with_retry(input_ctx: &InputContext, packet: &mut Packet) -> Result<ReadResult> {
+    let result = retry::retry(
+        Exponential::from_millis(10).map(jitter).take(5),
+        || match packet.read(input_ctx) {
+            PacketReadResult::Data => OperationResult::Ok(ReadResult::Ok),
+            PacketReadResult::Eof => OperationResult::Ok(ReadResult::Eof),
+            PacketReadResult::Retryable { code, message } => {
+                OperationResult::Retry(anyhow::anyhow!(
+                    "Retryable error reading packet: code={}, message={}",
+                    code,
+                    message
+                ))
+            }
+            PacketReadResult::Fatal { code, message } => OperationResult::Err(anyhow::anyhow!(
+                "Fatal error reading packet: code={}, message={}",
+                code,
+                message
+            )),
+        },
+    );
+
+    result.map_err(|e| anyhow::anyhow!("Failed to read packet after retries: {}", e))
 }
 
 impl SrtConnectionBuilder {
