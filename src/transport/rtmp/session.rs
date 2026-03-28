@@ -1,11 +1,14 @@
 use anyhow::Result;
 use bytes::BytesMut;
+use crossfire::MTx;
+use crossfire::mpsc::List;
 use rml_rtmp::chunk_io::Packet;
 use rml_rtmp::sessions::{ServerSession, ServerSessionEvent, ServerSessionResult};
 use rml_rtmp::time::RtmpTimestamp;
 use tracing::debug;
 
 use crate::media::format::FlvTag;
+use crate::transport::message::StreamEvent;
 use crate::transport::{ConnectionState, SessionState, global};
 
 use super::RtmpConnection;
@@ -16,6 +19,8 @@ pub struct SessionGuard {
     session: ServerSession,
     appname: String,
 
+    event_tx: MTx<List<StreamEvent>>,
+
     chunk_size: u32,
 }
 
@@ -23,14 +28,21 @@ pub(super) struct SessionGuardBuilder {
     connection: RtmpConnection,
     session: Option<ServerSession>,
     appname: Option<String>,
+    event_tx: Option<MTx<List<StreamEvent>>>,
 }
 
 impl SessionGuard {
-    pub(self) fn new(connection: RtmpConnection, session: ServerSession, appname: String) -> Self {
+    pub(self) fn new(
+        connection: RtmpConnection,
+        session: ServerSession,
+        appname: String,
+        event_tx: MTx<List<StreamEvent>>,
+    ) -> Self {
         Self {
             connection,
             session,
             appname,
+            event_tx,
             chunk_size: 2048,
         }
     }
@@ -239,14 +251,25 @@ impl SessionGuard {
         let session = session.unwrap();
         if SessionState::Rtmp(ConnectionState::Precreate) == session.read().await.state {
             let mut session_guard = session.write().await;
+
             session_guard.state = SessionState::Rtmp(ConnectionState::Connecting);
+            self.event_tx.send(StreamEvent::StateChange {
+                live_id: stream_key.clone(),
+                new_state: session_guard.state,
+            });
 
             let res = self.accept_request(request_id).await;
+
             session_guard.state = if res.is_ok() {
                 SessionState::Rtmp(ConnectionState::Connected)
             } else {
                 SessionState::Rtmp(ConnectionState::Disconnected)
             };
+            self.event_tx.send(StreamEvent::StateChange {
+                live_id: stream_key.clone(),
+                new_state: session_guard.state,
+            });
+
             res?;
         } else {
             debug!(stream_key = %stream_key, "Client requested to publish to a stream that is already active");
@@ -274,6 +297,7 @@ impl SessionGuardBuilder {
             connection,
             session: None,
             appname: None,
+            event_tx: None,
         }
     }
 
@@ -287,6 +311,11 @@ impl SessionGuardBuilder {
         self
     }
 
+    pub fn with_event_tx(mut self, event_tx: MTx<List<StreamEvent>>) -> Self {
+        self.event_tx = Some(event_tx);
+        self
+    }
+
     pub fn build(self) -> Result<SessionGuard> {
         let session = self
             .session
@@ -294,7 +323,15 @@ impl SessionGuardBuilder {
         let appname = self
             .appname
             .ok_or_else(|| anyhow::anyhow!("App name is required to build SessionGuard"))?;
+        let event_tx = self.event_tx.ok_or_else(|| {
+            anyhow::anyhow!("Event transmitter is required to build SessionGuard")
+        })?;
 
-        Ok(SessionGuard::new(self.connection, session, appname))
+        Ok(SessionGuard::new(
+            self.connection,
+            session,
+            appname,
+            event_tx,
+        ))
     }
 }

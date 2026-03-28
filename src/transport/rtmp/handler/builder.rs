@@ -47,6 +47,14 @@ impl HandlerBuilder {
         }
     }
 
+    pub fn is_play(&self) -> bool {
+        matches!(self, HandlerBuilder::Play { .. })
+    }
+
+    pub fn is_publish(&self) -> bool {
+        matches!(self, HandlerBuilder::Publish { .. })
+    }
+
     pub fn stream_key(&self) -> &str {
         match self {
             HandlerBuilder::Play { stream_key, .. } => stream_key,

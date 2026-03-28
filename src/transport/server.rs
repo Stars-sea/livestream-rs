@@ -36,7 +36,7 @@ impl TransportServer {
         let cancel_token = self.cancel_token.child_token();
 
         let addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.rtmp_config.port))?;
-        let server = RtmpServer::create(addr, rx, appname, cancel_token).await?;
+        let server = RtmpServer::create(addr, appname, rx, cancel_token).await?;
         server.run().await
     }
 
