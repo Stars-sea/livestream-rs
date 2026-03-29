@@ -1,9 +1,10 @@
 use anyhow::Result;
 use bytes::Bytes;
-use ffmpeg_sys_next::{AVRational, AVStream, av_malloc, av_rescale_q};
+use ffmpeg_sys_next::{AVRational, av_malloc, av_rescale_q};
 use rml_rtmp::sessions::StreamMetadata;
 
-use crate::media::{Packet, stream::StreamTrait};
+use super::Packet;
+use crate::media::{StreamTrait, stream::DummyStream};
 
 #[derive(Clone, Debug)]
 pub enum FlvTag {
@@ -37,7 +38,7 @@ impl FlvTag {
         FlvTag::ScriptData(metadata)
     }
 
-    pub fn to_packet(self, stream: *mut AVStream) -> Result<Option<Packet>> {
+    pub fn to_packet(self, stream: &impl StreamTrait) -> Result<Option<Packet>> {
         self.convert_packet(stream.time_base(), stream.index())
     }
 
@@ -109,6 +110,16 @@ impl FlvTag {
             }
         }
         Ok(pkt)
+    }
+}
+
+impl Into<Option<Packet>> for FlvTag {
+    fn into(self) -> Option<Packet> {
+        match self {
+            FlvTag::Audio { .. } => self.to_packet(&DummyStream::Audio).ok()?,
+            FlvTag::Video { .. } => self.to_packet(&DummyStream::Video).ok()?,
+            FlvTag::ScriptData(_) => None,
+        }
     }
 }
 

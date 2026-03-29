@@ -2,23 +2,22 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use super::Pipe;
-use super::context::PacketPipeContext;
+use super::{Pipe, UnifiedPacketContext};
 use crate::abstraction::PipeTrait;
 
 pub struct PipeBus {
-    packet_pipe: Arc<Pipe<PacketPipeContext>>,
+    packet_pipe: Arc<Pipe<UnifiedPacketContext>>,
 }
 
 impl PipeBus {
-    pub fn new(packet_pipe: Arc<Pipe<PacketPipeContext>>) -> Self {
+    pub fn new(packet_pipe: Arc<Pipe<UnifiedPacketContext>>) -> Self {
         Self { packet_pipe }
     }
 
     pub async fn send_packet(
         &self,
-        context: PacketPipeContext,
-    ) -> Result<Option<PacketPipeContext>> {
+        context: UnifiedPacketContext,
+    ) -> Result<Option<UnifiedPacketContext>> {
         self.packet_pipe.send(context).await
     }
 }

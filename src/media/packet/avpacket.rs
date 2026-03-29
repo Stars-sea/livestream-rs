@@ -1,9 +1,7 @@
 //! FFmpeg packet wrapper for safe packet operations.
 
-use crate::media::stream::StreamTrait;
-
-use super::context::{Context, OutputContext};
-use super::ffmpeg_error;
+use crate::media::context::{Context, OutputContext};
+use crate::media::{StreamTrait, ffmpeg_error};
 
 use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;
@@ -21,6 +19,7 @@ pub enum PacketReadResult {
 /// # Safety
 /// Manages the lifecycle of AVPacket through RAII.
 /// The packet is allocated in `alloc()` and freed in `Drop`.
+#[derive(Debug)]
 pub struct Packet {
     pub(super) packet: *mut AVPacket,
 }

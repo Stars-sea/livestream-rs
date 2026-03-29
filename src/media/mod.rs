@@ -18,10 +18,10 @@ pub mod format;
 pub mod input;
 pub mod log;
 pub mod options;
-mod packet;
+pub mod packet;
 mod stream;
 
-pub use packet::{Packet, PacketReadResult};
+pub use stream::StreamTrait;
 
 /// Initializes FFmpeg network components.
 /// Must be called before using network protocols like SRT.

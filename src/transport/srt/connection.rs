@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::media::input::InputContext;
 use crate::media::options::SrtInputStreamOptions;
-use crate::media::{Packet, PacketReadResult};
+use crate::media::packet::{Packet, PacketReadResult};
 use crate::transport::message::StreamEvent;
 use crate::transport::{SessionState, SrtState};
 
