@@ -5,18 +5,17 @@ use crate::pipeline::UnifiedPacketContext;
 use crate::pipeline::middleware::BroadcastMiddleware;
 use crate::pipeline::pipe::PipeFactory;
 
-pub struct FlvPipeFactory {
+pub struct UnifiedPipeFactory {
     broadcast: Arc<BroadcastMiddleware<UnifiedPacketContext>>,
 }
 
-impl PipeFactory for FlvPipeFactory {
+impl PipeFactory for UnifiedPipeFactory {
     type Context = UnifiedPacketContext;
 
     fn create(&self) -> Pipe<Self::Context> {
         let mut pipe = Pipe::new();
 
         pipe.add_middleware(self.broadcast.clone());
-        // TODO: Convert to UnifiedPacketContext and send to persistence middleware
 
         pipe
     }

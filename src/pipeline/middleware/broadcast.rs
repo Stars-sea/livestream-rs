@@ -51,12 +51,12 @@ where
 {
     type Context = C;
 
-    async fn send(&self, ctx: Self::Context) -> Result<Option<Self::Context>> {
+    async fn send(&self, ctx: Self::Context) -> Result<Self::Context> {
         let stream_id = ctx.id();
 
         if let Some(tx) = self.tx.get(&stream_id) {
             tx.send(ctx.clone());
         }
-        Ok(Some(ctx))
+        Ok(ctx)
     }
 }

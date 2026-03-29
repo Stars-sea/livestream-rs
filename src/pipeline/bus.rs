@@ -14,10 +14,7 @@ impl PipeBus {
         Self { packet_pipe }
     }
 
-    pub async fn send_packet(
-        &self,
-        context: UnifiedPacketContext,
-    ) -> Result<Option<UnifiedPacketContext>> {
+    pub async fn send_packet(&self, context: UnifiedPacketContext) -> Result<UnifiedPacketContext> {
         self.packet_pipe.send(context).await
     }
 }

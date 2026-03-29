@@ -1,8 +1,7 @@
 mod broadcast;
-mod transform;
-
 mod persistence;
+mod segment;
 
 pub use broadcast::BroadcastMiddleware;
 pub use persistence::PersistenceMiddleware;
-pub use transform::TransformMiddleware;
+pub use segment::SegmentMiddleware;

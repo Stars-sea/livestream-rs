@@ -6,5 +6,5 @@ use super::PipeContextTrait;
 pub trait PipeTrait: Send + Sync {
     type Context: PipeContextTrait;
 
-    async fn send(&self, context: Self::Context) -> Result<Option<Self::Context>>;
+    async fn send(&self, context: Self::Context) -> Result<Self::Context>;
 }
