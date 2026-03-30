@@ -4,9 +4,9 @@ use retry::OperationResult;
 use retry::delay::{Exponential, jitter};
 use tokio_util::sync::CancellationToken;
 
-use crate::media::input::InputContext;
-use crate::media::options::SrtInputStreamOptions;
-use crate::media::packet::{Packet, PacketReadResult};
+use crate::infra::media::context::InputContext;
+use crate::infra::media::options::SrtInputStreamOptions;
+use crate::infra::media::packet::{Packet, PacketReadResult};
 use crate::transport::contract::message::StreamEvent;
 use crate::transport::contract::state::{SessionState, SrtState};
 

@@ -6,12 +6,12 @@ use crossfire::{AsyncRx, spsc::List, spsc::unbounded_async};
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 
+use super::TransportController;
 use super::contract::message::ControlMessage;
 use super::rtmp::RtmpServer;
 use super::srt::SrtServer;
 use crate::config::{RtmpConfig, SrtConfig};
 use crate::infra::PortAllocator;
-use crate::transport::TransportController;
 
 pub struct TransportServer {
     rtmp_config: RtmpConfig,
@@ -59,8 +59,8 @@ impl TransportServer {
     }
 
     pub async fn spawn_task(self) -> Result<TransportController> {
-        let (_rtmp_msg_tx, rtmp_msg_rx) = unbounded_async();
-        let (_srt_msg_tx, srt_msg_rx) = unbounded_async();
+        let (rtmp_msg_tx, rtmp_msg_rx) = unbounded_async();
+        let (srt_msg_tx, srt_msg_rx) = unbounded_async();
 
         let rtmp_server = self.rtmp_server(rtmp_msg_rx).await?;
         let srt_server = self.srt_server(srt_msg_rx).await?;
@@ -70,6 +70,11 @@ impl TransportServer {
             Ok(())
         });
 
-        Ok(TransportController::new(handle, self.cancel_token))
+        Ok(TransportController::new(
+            rtmp_msg_tx,
+            srt_msg_tx,
+            handle,
+            self.cancel_token,
+        ))
     }
 }

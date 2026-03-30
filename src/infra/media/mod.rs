@@ -14,8 +14,6 @@ use std::ffi::{CStr, c_int};
 use ffmpeg_sys_next::*;
 
 pub mod context;
-pub mod format;
-pub mod input;
 pub mod log;
 pub mod options;
 pub mod packet;

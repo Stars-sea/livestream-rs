@@ -1,7 +1,7 @@
 use tokio_util::sync::CancellationToken;
 
 use crate::abstraction::PipeContextTrait;
-use crate::media::packet::{Packet, UnifiedPacket};
+use crate::infra::media::packet::{Packet, UnifiedPacket};
 
 #[derive(Clone, Debug)]
 pub struct UnifiedPacketContext {

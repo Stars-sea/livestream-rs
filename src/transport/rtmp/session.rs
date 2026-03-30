@@ -8,7 +8,7 @@ use rml_rtmp::time::RtmpTimestamp;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::media::packet::FlvTag;
+use crate::infra::media::packet::FlvTag;
 use crate::transport::contract::message::StreamEvent;
 use crate::transport::contract::state::{ConnectionStateTrait, RtmpState, SessionState};
 use crate::transport::registry::global;

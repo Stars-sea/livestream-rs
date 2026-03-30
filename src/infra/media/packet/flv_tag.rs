@@ -4,7 +4,7 @@ use ffmpeg_sys_next::{AVRational, av_malloc, av_rescale_q};
 use rml_rtmp::sessions::StreamMetadata;
 
 use super::Packet;
-use crate::media::{StreamTrait, stream::DummyStream};
+use crate::infra::media::{StreamTrait, stream::DummyStream};
 
 #[derive(Clone, Debug)]
 pub enum FlvTag {

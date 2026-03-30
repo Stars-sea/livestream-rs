@@ -1,3 +1,4 @@
+pub mod media;
 mod minio;
 mod port_allocator;
 

@@ -1,6 +1,6 @@
 use dashmap::DashMap;
 
-use crate::media::format::HlsOutputContext;
+use crate::infra::media::context::HlsOutputContext;
 
 pub struct SegmentMiddleware {
     ctxs: DashMap<String, HlsOutputContext>,

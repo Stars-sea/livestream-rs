@@ -1,7 +1,6 @@
 //! Context trait and utilities for FFmpeg format contexts.
 
-use super::ffmpeg_error;
-use super::stream::StreamTrait;
+use crate::infra::media::{StreamTrait, ffmpeg_error};
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;

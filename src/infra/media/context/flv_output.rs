@@ -1,8 +1,8 @@
 //! FLV output context for streaming to RTMP servers.
 
-use crate::media::context::{Context, OutputContext};
-use crate::media::ffmpeg_error;
-use crate::media::stream::StreamTrait;
+use super::{Context, OutputContext};
+use crate::infra::media::ffmpeg_error;
+use crate::infra::media::stream::StreamTrait;
 
 use anyhow::Result;
 use crossfire::{MTx, mpsc};

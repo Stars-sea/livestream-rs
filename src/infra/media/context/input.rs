@@ -1,6 +1,6 @@
-use super::context::Context;
-use super::ffmpeg_error;
-use super::options::StreamOptions;
+use super::Context;
+use crate::infra::media::ffmpeg_error;
+use crate::infra::media::options::StreamOptions;
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
