@@ -1,5 +1,6 @@
-mod cancel_token;
 mod session;
+
+pub use session::SessionEntry;
 
 pub mod global {
     use std::sync::Arc;
@@ -8,18 +9,31 @@ pub mod global {
     use tokio::sync::RwLock;
     use tokio_util::sync::CancellationToken;
 
-    use super::cancel_token::global_registry as global_tokens;
+    use super::SessionEntry;
     use super::session::global_registry as global_session;
     use crate::transport::{SessionDescriptor, SessionState};
 
-    pub async fn register_session(session: Arc<RwLock<SessionDescriptor>>) -> Result<()> {
-        global_session().await.register_session(session).await
+    pub async fn register_session(session: SessionDescriptor, ct: CancellationToken) -> Result<()> {
+        let session = Arc::new(RwLock::new(session));
+        global_session().await.register_session(session, ct).await
     }
 
     pub async fn remove_session(
         session: Arc<RwLock<SessionDescriptor>>,
-    ) -> Result<(String, Arc<RwLock<SessionDescriptor>>)> {
+    ) -> Result<(String, SessionEntry)> {
         global_session().await.remove_session(session).await
+    }
+
+    // pub async fn get(stream_key: &str) -> Option<SessionEntry> {
+    //     global_session().await.get(stream_key)
+    // }
+
+    pub async fn get_session(stream_key: &str) -> Option<Arc<RwLock<SessionDescriptor>>> {
+        global_session().await.get_session(stream_key)
+    }
+
+    pub async fn get_cancel_token(stream_key: &str) -> Option<CancellationToken> {
+        global_session().await.get_cancel_token(stream_key)
     }
 
     pub async fn get_session_state(stream_key: &str) -> Option<SessionState> {
@@ -31,13 +45,5 @@ pub mod global {
             .await
             .update_state(stream_key, new_state)
             .await
-    }
-
-    pub async fn register_cancel_token(stream_key: &str, token: CancellationToken) -> Result<()> {
-        global_tokens().await.register(stream_key, token)
-    }
-
-    pub async fn get_cancel_token(stream_key: &str) -> Option<CancellationToken> {
-        global_tokens().await.get(stream_key)
     }
 }

@@ -28,7 +28,6 @@ pub struct SrtConnectionBuilder {
     passphrase: String,
 
     event_tx: MTx<List<StreamEvent>>,
-    cancel_token: CancellationToken,
 }
 
 impl SrtConnection {
@@ -115,7 +114,6 @@ impl SrtConnectionBuilder {
         live_id: String,
         passphrase: String,
         event_tx: MTx<List<StreamEvent>>,
-        cancel_token: CancellationToken,
     ) -> Self {
         Self {
             host,
@@ -123,19 +121,10 @@ impl SrtConnectionBuilder {
             live_id,
             passphrase,
             event_tx,
-            cancel_token,
         }
     }
 
-    pub fn live_id(&self) -> String {
-        self.live_id.clone()
-    }
-
-    pub fn cancel_token(&self) -> CancellationToken {
-        self.cancel_token.clone()
-    }
-
-    pub fn build(self) -> Result<SrtConnection> {
+    pub fn build(self, cancel_token: CancellationToken) -> Result<SrtConnection> {
         let options = SrtInputStreamOptions::new(
             self.host.clone(),
             self.port,
@@ -143,12 +132,12 @@ impl SrtConnectionBuilder {
             self.passphrase.clone(),
         );
 
-        let av_ctx = InputContext::open(&options, self.cancel_token.clone())?;
+        let av_ctx = InputContext::open(&options, cancel_token.clone())?;
         Ok(SrtConnection::new(
             self.live_id,
             av_ctx,
             self.event_tx,
-            self.cancel_token,
+            cancel_token,
         ))
     }
 }

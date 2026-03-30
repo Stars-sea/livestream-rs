@@ -1,14 +1,14 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow};
 use crossfire::{AsyncRx, MTx, mpsc, spsc};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 use super::connection::RtmpConnection;
 use crate::transport::message::{ControlMessage, StreamEvent};
+use crate::transport::rtmp::handler::HandlerBuilder;
 use crate::transport::{RtmpState, SessionDescriptor, SessionState, global};
 
 pub struct RtmpServer {
@@ -85,7 +85,7 @@ impl RtmpServer {
                     id: live_id,
                     state: SessionState::Rtmp(RtmpState::Pending),
                 };
-                global::register_session(Arc::new(RwLock::new(session))).await?;
+                global::register_session(session, self.cancel_token.child_token()).await?;
 
                 Ok(())
             }
@@ -125,7 +125,6 @@ impl RtmpServer {
             self.appname.clone(),
             socket,
             self.event_tx.clone(),
-            self.cancel_token.child_token(),
         ));
 
         Ok(())
@@ -136,9 +135,9 @@ async fn spawn_connection_handler(
     appname: String,
     socket: TcpStream,
     event_tx: MTx<mpsc::List<StreamEvent>>,
-    cancel_token: CancellationToken,
 ) {
-    let _cancel_guard = cancel_token.clone().drop_guard();
+    let cancel_token = CancellationToken::new();
+    let _cancel_guard = cancel_token.drop_guard_ref();
 
     let connection = RtmpConnection::new(socket);
 
@@ -167,27 +166,19 @@ async fn spawn_connection_handler(
         }
     };
 
+    drop(_cancel_guard);
+
     let stream_key = builder.stream_key();
-    let cancel_token = if builder.is_publish() {
-        // For Publish sessions, we create a cancellation token and register it in the registry.
-        match global::register_cancel_token(stream_key, cancel_token.clone()).await {
-            Ok(()) => cancel_token,
-            Err(e) => {
-                error!(error = %e, "Failed to register cancellation token");
-                return;
-            }
+    let cancel_token = match global::get_cancel_token(stream_key).await {
+        Some(token) => token,
+        None => {
+            error!(stream_key = %stream_key, "No cancellation token found for stream key");
+            return;
         }
-    } else {
-        // For Play sessions, we don't register a cancellation token.
-        // Instead, we get the token from the registry.
-        drop(_cancel_guard);
-        match global::get_cancel_token(stream_key).await {
-            Some(token) => token,
-            None => {
-                error!(stream_key = %stream_key, "No cancellation token found for stream key");
-                return;
-            }
-        }
+    };
+    let _cancel_guard = match &builder {
+        HandlerBuilder::Play { .. } => None,
+        HandlerBuilder::Publish { .. } => Some(cancel_token.clone().drop_guard()),
     };
 
     // TODO: call with_flv_tag_rx

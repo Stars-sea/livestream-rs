@@ -1,8 +1,5 @@
-use std::sync::Arc;
-
 use anyhow::{Result, anyhow};
 use crossfire::{AsyncRx, MTx, mpsc, spsc};
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
@@ -111,46 +108,35 @@ impl SrtServer {
             }
         };
 
+        let session = SessionDescriptor {
+            id: live_id.clone(),
+            state: SessionState::Srt(SrtState::Pending),
+        };
+        global::register_session(session, cancel_token.clone()).await?;
+
         let builder = SrtConnectionBuilder::new(
             self.host.clone(),
             port,
             live_id,
             "passphrase".to_string(), // TODO
             event_tx,
-            cancel_token,
         );
 
-        spawn_connection_handler(builder).await
+        spawn_connection_handler(builder, cancel_token);
+        Ok(())
     }
 }
 
-async fn spawn_connection_handler(builder: SrtConnectionBuilder) -> Result<()> {
-    let live_id = builder.live_id();
-    let cancel_token = builder.cancel_token();
-    let connection = builder.build()?;
+fn spawn_connection_handler(
+    builder: SrtConnectionBuilder,
+    cancel_token: CancellationToken,
+) -> Result<()> {
+    let _cancel_guard = cancel_token.clone().drop_guard();
 
-    let session = SessionDescriptor {
-        id: live_id.clone(),
-        state: SessionState::Srt(SrtState::Pending),
-    };
-    let session = Arc::new(RwLock::new(session));
-
-    // TODO:
-    // Solve the synchronization issue here. If the connection handler fails to register the session or cancellation token,
-    // we need to ensure that any partial state is cleaned up properly.
-    let task1 = global::register_session(session.clone());
-    let task2 = global::register_cancel_token(&live_id, cancel_token.clone());
-
-    if task1.await.is_err() || task2.await.is_err() {
-        error!(live_id = %live_id, "Failed to register session or cancellation token");
-        cancel_token.cancel();
-        global::remove_session(session).await;
-
-        anyhow::bail!("Failed to register session or cancellation token");
-    }
+    let connection = builder.build(cancel_token)?;
 
     std::thread::spawn(move || {
-        let _cancel_guard = cancel_token.drop_guard();
+        let _cancel_guard = _cancel_guard;
         connection.run()
     });
 

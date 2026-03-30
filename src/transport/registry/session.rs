@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use dashmap::{DashMap, Entry};
 use tokio::sync::{OnceCell, RwLock};
+use tokio_util::sync::CancellationToken;
 
 use crate::transport::{
     ConnectionStateTrait, RtmpState, SessionDescriptor, SessionState, SrtState,
@@ -17,19 +18,25 @@ pub async fn global_registry() -> Arc<ConnectionRegistry> {
         .clone()
 }
 
+pub type SessionEntry = (Arc<RwLock<SessionDescriptor>>, CancellationToken);
+
 pub struct ConnectionRegistry {
     // Map of stream keys to active connections
-    connections: DashMap<String, Arc<RwLock<SessionDescriptor>>>,
+    connections: Arc<DashMap<String, SessionEntry>>,
 }
 
 impl ConnectionRegistry {
     fn new() -> Self {
         Self {
-            connections: DashMap::new(),
+            connections: Arc::new(DashMap::new()),
         }
     }
 
-    pub async fn register_session(&self, session: Arc<RwLock<SessionDescriptor>>) -> Result<()> {
+    pub async fn register_session(
+        &self,
+        session: Arc<RwLock<SessionDescriptor>>,
+        ct: CancellationToken,
+    ) -> Result<()> {
         let stream_key = session.read().await.id.clone();
 
         match self.connections.entry(stream_key.clone()) {
@@ -37,27 +44,31 @@ impl ConnectionRegistry {
                 anyhow::bail!("Stream key {} is already in use", stream_key);
             }
             Entry::Vacant(entry) => {
-                entry.insert(session);
-                Ok(())
+                entry.insert((session, ct.clone()));
             }
         }
+
+        let connections = self.connections.clone();
+        tokio::spawn(async move {
+            ct.cancelled().await;
+            connections.remove(&stream_key);
+        });
+
+        Ok(())
     }
 
     pub async fn remove_session(
         &self,
         session: Arc<RwLock<SessionDescriptor>>,
-    ) -> Result<(String, Arc<RwLock<SessionDescriptor>>)> {
+    ) -> Result<(String, SessionEntry)> {
         let id = &session.read().await.id;
         self.remove(id).await
     }
 
-    pub async fn remove(
-        &self,
-        stream_key: &str,
-    ) -> Result<(String, Arc<RwLock<SessionDescriptor>>)> {
+    pub async fn remove(&self, stream_key: &str) -> Result<(String, SessionEntry)> {
         match self.connections.entry(stream_key.to_string()) {
             Entry::Occupied(entry) => {
-                let value = entry.get().clone();
+                let (value, _) = entry.get().clone();
                 if value.read().await.state.is_active() {
                     anyhow::bail!("Session for stream key {} is still active", stream_key);
                 }
@@ -68,10 +79,18 @@ impl ConnectionRegistry {
         }
     }
 
-    fn get_session(&self, stream_key: &str) -> Option<Arc<RwLock<SessionDescriptor>>> {
+    fn get(&self, stream_key: &str) -> Option<SessionEntry> {
         self.connections
             .get(stream_key)
             .map(|entry| entry.value().clone())
+    }
+
+    pub fn get_session(&self, stream_key: &str) -> Option<Arc<RwLock<SessionDescriptor>>> {
+        self.get(stream_key).map(|entry| entry.0.clone())
+    }
+
+    pub fn get_cancel_token(&self, stream_key: &str) -> Option<CancellationToken> {
+        self.get(stream_key).map(|entry| entry.1.clone())
     }
 
     pub async fn get_state(&self, stream_key: &str) -> Option<SessionState> {
