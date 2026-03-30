@@ -11,6 +11,7 @@ use super::rtmp::RtmpServer;
 use super::srt::SrtServer;
 use crate::config::{RtmpConfig, SrtConfig};
 use crate::infra::PortAllocator;
+use crate::transport::TransportController;
 
 pub struct TransportServer {
     rtmp_config: RtmpConfig,
@@ -32,16 +33,16 @@ impl TransportServer {
         }
     }
 
-    async fn run_rtmp_server(&self, rx: AsyncRx<List<ControlMessage>>) -> Result<()> {
+    async fn rtmp_server(&self, rx: AsyncRx<List<ControlMessage>>) -> Result<RtmpServer> {
         let appname = self.rtmp_config.appname.clone();
         let cancel_token = self.cancel_token.child_token();
 
         let addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.rtmp_config.port))?;
         let server = RtmpServer::create(addr, appname, rx, cancel_token).await?;
-        server.run().await
+        Ok(server)
     }
 
-    async fn run_srt_server(&self, rx: AsyncRx<List<ControlMessage>>) -> Result<()> {
+    async fn srt_server(&self, rx: AsyncRx<List<ControlMessage>>) -> Result<SrtServer> {
         let host = self.srt_config.host.clone();
         let cancel_token = self.cancel_token.child_token();
 
@@ -54,18 +55,21 @@ impl TransportServer {
         };
 
         let server = SrtServer::new(rx, host, port_allocator, cancel_token);
-        server.run().await?;
-        Ok(())
+        Ok(server)
     }
 
-    pub async fn run(self) -> Result<()> {
-        let (rtmp_msg_tx, rtmp_msg_rx) = unbounded_async();
-        let (srt_msg_tx, srt_msg_rx) = unbounded_async();
+    pub async fn spawn_task(self) -> Result<TransportController> {
+        let (_rtmp_msg_tx, rtmp_msg_rx) = unbounded_async();
+        let (_srt_msg_tx, srt_msg_rx) = unbounded_async();
 
-        tokio::try_join!(
-            self.run_rtmp_server(rtmp_msg_rx),
-            self.run_srt_server(srt_msg_rx)
-        )?;
-        Ok(())
+        let rtmp_server = self.rtmp_server(rtmp_msg_rx).await?;
+        let srt_server = self.srt_server(srt_msg_rx).await?;
+
+        let handle = tokio::spawn(async move {
+            tokio::try_join!(rtmp_server.run(), srt_server.run())?;
+            Ok(())
+        });
+
+        Ok(TransportController::new(handle, self.cancel_token))
     }
 }

@@ -38,7 +38,7 @@ impl SrtServer {
         }
     }
 
-    pub async fn run(&self) -> Result<()> {
+    pub async fn run(mut self) -> Result<()> {
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
@@ -65,7 +65,7 @@ impl SrtServer {
         Ok(())
     }
 
-    async fn handle_control_message(&self, msg: ControlMessage) -> Result<()> {
+    async fn handle_control_message(&mut self, msg: ControlMessage) -> Result<()> {
         match msg {
             ControlMessage::PrecreateStream { live_id } => {
                 self.spawn_connection_handler(live_id).await
@@ -80,7 +80,7 @@ impl SrtServer {
         }
     }
 
-    async fn handle_stream_event(&self, event: StreamEvent) -> Result<()> {
+    async fn handle_stream_event(&mut self, event: StreamEvent) -> Result<()> {
         match event {
             StreamEvent::StateChange { live_id, new_state } => {
                 debug!(live_id = %live_id, new_state = ?new_state, "Stream state changed");
@@ -97,7 +97,7 @@ impl SrtServer {
         }
     }
 
-    async fn spawn_connection_handler(&self, live_id: String) -> Result<()> {
+    async fn spawn_connection_handler(&mut self, live_id: String) -> Result<()> {
         let event_tx = self.event_tx.clone();
         let cancel_token = self.cancel_token.child_token();
 

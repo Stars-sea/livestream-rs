@@ -47,7 +47,7 @@ impl RtmpServer {
         })
     }
 
-    pub async fn run(&self) -> Result<()> {
+    pub async fn run(mut self) -> Result<()> {
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
@@ -79,7 +79,7 @@ impl RtmpServer {
         Ok(())
     }
 
-    async fn handle_control_message(&self, msg: ControlMessage) -> Result<()> {
+    async fn handle_control_message(&mut self, msg: ControlMessage) -> Result<()> {
         match msg {
             ControlMessage::PrecreateStream { live_id } => {
                 let session = SessionDescriptor {
@@ -101,7 +101,7 @@ impl RtmpServer {
         }
     }
 
-    async fn handle_stream_event(&self, event: StreamEvent) -> Result<()> {
+    async fn handle_stream_event(&mut self, event: StreamEvent) -> Result<()> {
         match event {
             StreamEvent::StateChange { live_id, new_state } => {
                 debug!(live_id = %live_id, new_state = ?new_state, "Stream state changed");
