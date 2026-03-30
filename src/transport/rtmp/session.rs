@@ -9,8 +9,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::media::packet::FlvTag;
-use crate::transport::message::StreamEvent;
-use crate::transport::{ConnectionStateTrait, RtmpState, SessionState, global};
+use crate::transport::contract::message::StreamEvent;
+use crate::transport::contract::state::{ConnectionStateTrait, RtmpState, SessionState};
+use crate::transport::registry::global;
 
 use super::connection::RtmpConnection;
 use super::handler::HandlerBuilder;

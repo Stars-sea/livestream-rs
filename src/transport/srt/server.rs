@@ -5,8 +5,9 @@ use tracing::{debug, error};
 
 use super::connection::SrtConnectionBuilder;
 use crate::infra::PortAllocator;
-use crate::transport::message::{ControlMessage, StreamEvent};
-use crate::transport::{SessionDescriptor, SessionState, SrtState, global};
+use crate::transport::contract::message::{ControlMessage, StreamEvent};
+use crate::transport::contract::state::{SessionDescriptor, SessionState, SrtState};
+use crate::transport::registry::global;
 
 pub struct SrtServer {
     ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,

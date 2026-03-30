@@ -2,11 +2,11 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 
 use anyhow::Result;
-use crossfire::AsyncRx;
-use crossfire::spsc::List;
+use crossfire::{AsyncRx, spsc::List, spsc::unbounded_async};
 use tokio_util::sync::CancellationToken;
+use tracing::error;
 
-use super::message::ControlMessage;
+use super::contract::message::ControlMessage;
 use super::rtmp::RtmpServer;
 use super::srt::SrtServer;
 use crate::config::{RtmpConfig, SrtConfig};
@@ -48,7 +48,7 @@ impl TransportServer {
         let port_allocator = match self.srt_config.srt_port_range() {
             Ok((start, end)) => PortAllocator::new(start, end),
             Err(e) => {
-                eprintln!("Failed to create port allocator: {}", e);
+                error!("Failed to create port allocator: {}", e);
                 anyhow::bail!("Failed to create port allocator: {}", e);
             }
         };
@@ -59,8 +59,8 @@ impl TransportServer {
     }
 
     pub async fn run(self) -> Result<()> {
-        let (rtmp_msg_tx, rtmp_msg_rx) = crossfire::spsc::unbounded_async();
-        let (srt_msg_tx, srt_msg_rx) = crossfire::spsc::unbounded_async();
+        let (rtmp_msg_tx, rtmp_msg_rx) = unbounded_async();
+        let (srt_msg_tx, srt_msg_rx) = unbounded_async();
 
         tokio::try_join!(
             self.run_rtmp_server(rtmp_msg_rx),

@@ -7,8 +7,8 @@ use tokio_util::sync::CancellationToken;
 use crate::media::input::InputContext;
 use crate::media::options::SrtInputStreamOptions;
 use crate::media::packet::{Packet, PacketReadResult};
-use crate::transport::message::StreamEvent;
-use crate::transport::{SessionState, SrtState};
+use crate::transport::contract::message::StreamEvent;
+use crate::transport::contract::state::{SessionState, SrtState};
 
 pub struct SrtConnection {
     live_id: String,

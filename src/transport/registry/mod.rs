@@ -11,7 +11,7 @@ pub mod global {
 
     use super::SessionEntry;
     use super::session::global_registry as global_session;
-    use crate::transport::{SessionDescriptor, SessionState};
+    use crate::transport::contract::state::{SessionDescriptor, SessionState};
 
     pub async fn register_session(session: SessionDescriptor, ct: CancellationToken) -> Result<()> {
         let session = Arc::new(RwLock::new(session));
@@ -23,10 +23,6 @@ pub mod global {
     ) -> Result<(String, SessionEntry)> {
         global_session().await.remove_session(session).await
     }
-
-    // pub async fn get(stream_key: &str) -> Option<SessionEntry> {
-    //     global_session().await.get(stream_key)
-    // }
 
     pub async fn get_session(stream_key: &str) -> Option<Arc<RwLock<SessionDescriptor>>> {
         global_session().await.get_session(stream_key)
