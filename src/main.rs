@@ -7,6 +7,7 @@ use crate::transport::TransportServer;
 
 mod abstraction;
 mod config;
+mod dispatcher;
 mod infra;
 mod pipeline;
 mod telemetry;
@@ -21,7 +22,7 @@ async fn main() -> Result<()> {
         "Starting LiveStream server"
     );
 
-    media::init();
+    infra::media::init();
 
     let config = config::load_config();
 

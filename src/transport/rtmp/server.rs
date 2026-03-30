@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use crossfire::{AsyncRx, MTx, mpsc, spsc};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
@@ -17,10 +17,6 @@ pub struct RtmpServer {
     appname: String,
 
     ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
-    event_rx: AsyncRx<mpsc::List<StreamEvent>>,
-
-    // For sending events back to the main server loop
-    // Passing the sender to the connection handlers
     event_tx: MTx<mpsc::List<StreamEvent>>,
 
     cancel_token: CancellationToken,
@@ -31,17 +27,15 @@ impl RtmpServer {
         addr: SocketAddr,
         appname: String,
         ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
+        event_tx: MTx<mpsc::List<StreamEvent>>,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
-
-        let (event_tx, event_rx) = mpsc::unbounded_async();
 
         Ok(Self {
             listener,
             appname,
             ctrl_rx,
-            event_rx,
             event_tx,
             cancel_token,
         })
@@ -59,13 +53,6 @@ impl RtmpServer {
                     match msg {
                         Ok(msg) => self.handle_control_message(msg).await?,
                         Err(e) => warn!(error = %e, "Error receiving control message"),
-                    }
-                }
-
-                event = self.event_rx.recv() => {
-                    match event {
-                        Ok(event) => self.handle_stream_event(event).await?,
-                        Err(e) => warn!(error = %e, "Error receiving stream event"),
                     }
                 }
 
@@ -96,23 +83,6 @@ impl RtmpServer {
                     token.cancel();
                 }
 
-                Ok(())
-            }
-        }
-    }
-
-    async fn handle_stream_event(&mut self, event: StreamEvent) -> Result<()> {
-        match event {
-            StreamEvent::StateChange { live_id, new_state } => {
-                debug!(live_id = %live_id, new_state = ?new_state, "Stream state changed");
-                if let Err(e) = global::update_session_state(&live_id, new_state).await {
-                    error!(error = %e, live_id = %live_id, "Failed to update session state, cancelling stream");
-                    let cancel_token = global::get_cancel_token(&live_id).await.ok_or(anyhow!(
-                        "No cancellation token found for live_id: {}",
-                        live_id
-                    ))?;
-                    cancel_token.cancel();
-                }
                 Ok(())
             }
         }

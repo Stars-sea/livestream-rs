@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use crossfire::{AsyncRx, MTx, mpsc, spsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
@@ -11,9 +11,8 @@ use crate::transport::registry::global;
 
 pub struct SrtServer {
     ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
-    event_rx: AsyncRx<mpsc::List<StreamEvent>>,
-
     event_tx: MTx<mpsc::List<StreamEvent>>,
+
     host: String,
     port_allocator: PortAllocator,
 
@@ -23,14 +22,13 @@ pub struct SrtServer {
 impl SrtServer {
     pub fn new(
         ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
+        event_tx: MTx<mpsc::List<StreamEvent>>,
         host: String,
         port_allocator: PortAllocator,
         cancel_token: CancellationToken,
     ) -> Self {
-        let (event_tx, event_rx) = mpsc::unbounded_async();
         Self {
             ctrl_rx,
-            event_rx,
             event_tx,
             host,
             port_allocator,
@@ -50,13 +48,6 @@ impl SrtServer {
                     match msg {
                         Ok(msg) => self.handle_control_message(msg).await?,
                         Err(e) => debug!("Error receiving control message: {:?}", e),
-                    }
-                }
-
-                event = self.event_rx.recv() => {
-                    match event {
-                        Ok(event) => self.handle_stream_event(event).await?,
-                        Err(e) => debug!("Error receiving stream event: {:?}", e),
                     }
                 }
             }
@@ -80,25 +71,7 @@ impl SrtServer {
         }
     }
 
-    async fn handle_stream_event(&mut self, event: StreamEvent) -> Result<()> {
-        match event {
-            StreamEvent::StateChange { live_id, new_state } => {
-                debug!(live_id = %live_id, new_state = ?new_state, "Stream state changed");
-                if let Err(e) = global::update_session_state(&live_id, new_state).await {
-                    error!(error = %e, live_id = %live_id, "Failed to update session state, cancelling stream");
-                    let cancel_token = global::get_cancel_token(&live_id).await.ok_or(anyhow!(
-                        "No cancellation token found for live_id: {}",
-                        live_id
-                    ))?;
-                    cancel_token.cancel();
-                }
-                Ok(())
-            }
-        }
-    }
-
     async fn spawn_connection_handler(&mut self, live_id: String) -> Result<()> {
-        let event_tx = self.event_tx.clone();
         let cancel_token = self.cancel_token.child_token();
 
         let port = match self.port_allocator.allocate_safe_port().await {
@@ -120,7 +93,7 @@ impl SrtServer {
             port,
             live_id,
             "passphrase".to_string(), // TODO
-            event_tx,
+            self.event_tx.clone(),
         );
 
         spawn_connection_handler(builder, cancel_token);
