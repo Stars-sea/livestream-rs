@@ -1,8 +1,11 @@
 use anyhow::Result;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use crate::pipeline::PipeBus;
+use crate::pipeline::middleware::BroadcastMiddleware;
+use crate::pipeline::middleware::SegmentMiddleware;
+use crate::pipeline::{PipeBus, PipeFactory, UnifiedPacketContext, UnifiedPipeFactory};
 use crate::transport::TransportServer;
 
 mod abstraction;
@@ -28,7 +31,10 @@ async fn main() -> Result<()> {
 
     let cancel_token = CancellationToken::new();
 
-    let packet_bus = PipeBus::new();
+    let broadcast = Arc::new(BroadcastMiddleware::<UnifiedPacketContext>::new());
+    let segment = Arc::new(SegmentMiddleware::new());
+    let packet_pipe = Arc::new(UnifiedPipeFactory::new(broadcast, segment).create());
+    let _packet_bus = PipeBus::new(packet_pipe);
 
     let transport_server = TransportServer::new(
         config.rtmp.clone(),

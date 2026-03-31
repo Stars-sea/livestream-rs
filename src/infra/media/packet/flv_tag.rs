@@ -1,10 +1,10 @@
 use anyhow::Result;
 use bytes::Bytes;
 use ffmpeg_sys_next::{AVRational, av_malloc, av_rescale_q};
-use rml_rtmp::sessions::StreamMetadata;
+use std::sync::Arc;
 
 use super::Packet;
-use crate::infra::media::{StreamTrait, stream::DummyStream};
+use crate::infra::media::{Metadata, StreamTrait, stream::DummyStream};
 
 #[derive(Clone, Debug)]
 pub enum FlvTag {
@@ -17,7 +17,7 @@ pub enum FlvTag {
         payload: Bytes,
         is_keyframe: bool,
     },
-    ScriptData(StreamMetadata),
+    ScriptData(Arc<dyn Metadata>),
 }
 
 impl FlvTag {
@@ -34,7 +34,7 @@ impl FlvTag {
         }
     }
 
-    pub fn script_data(metadata: StreamMetadata) -> Self {
+    pub fn script_data(metadata: Arc<dyn Metadata>) -> Self {
         FlvTag::ScriptData(metadata)
     }
 

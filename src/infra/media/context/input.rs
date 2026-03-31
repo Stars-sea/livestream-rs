@@ -55,7 +55,7 @@ impl Drop for InputContext {
 }
 
 impl Context for InputContext {
-    fn get_ctx(&self) -> *mut AVFormatContext {
+    unsafe fn ptr(&self) -> *mut AVFormatContext {
         self.ctx
     }
 }

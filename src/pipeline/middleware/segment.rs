@@ -1,15 +1,27 @@
-use dashmap::DashMap;
+use anyhow::Result;
 
-use crate::infra::media::context::HlsOutputContext;
+use crate::abstraction::MiddlewareTrait;
+use crate::pipeline::UnifiedPacketContext;
 
-pub struct SegmentMiddleware {
-    ctxs: DashMap<String, HlsOutputContext>,
-}
+pub struct SegmentMiddleware {}
 
 impl SegmentMiddleware {
     pub fn new() -> Self {
-        Self {
-            ctxs: DashMap::new(),
-        }
+        Self {}
+    }
+}
+
+impl Default for SegmentMiddleware {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl MiddlewareTrait for SegmentMiddleware {
+    type Context = UnifiedPacketContext;
+
+    async fn send(&self, ctx: Self::Context) -> Result<Self::Context> {
+        Ok(ctx)
     }
 }

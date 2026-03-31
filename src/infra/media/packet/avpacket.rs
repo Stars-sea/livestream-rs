@@ -1,6 +1,7 @@
 //! FFmpeg packet wrapper for safe packet operations.
 
 use crate::infra::media::context::{Context, OutputContext};
+use crate::infra::media::stream::StreamCollection;
 use crate::infra::media::{StreamTrait, ffmpeg_error};
 
 use anyhow::{Result, anyhow};
@@ -38,7 +39,7 @@ impl Packet {
     }
 
     pub fn read(&mut self, ctx: &impl Context) -> PacketReadResult {
-        let ret = unsafe { av_read_frame(ctx.get_ctx(), self.packet) };
+        let ret = unsafe { av_read_frame(ctx.ptr(), self.packet) };
 
         if ret >= 0 {
             return PacketReadResult::Data;
@@ -89,7 +90,7 @@ impl Packet {
             return Err(anyhow!("Context is not available"));
         }
 
-        let ret = unsafe { av_interleaved_write_frame(ctx.get_ctx(), self.packet) };
+        let ret = unsafe { av_interleaved_write_frame(ctx.ptr(), self.packet) };
         if ret < 0 {
             Err(anyhow!(
                 "av_interleaved_write_frame failed: {}",
@@ -100,8 +101,8 @@ impl Packet {
         }
     }
 
-    pub fn stream_idx(&self) -> u32 {
-        unsafe { (*self.packet).stream_index as u32 }
+    pub fn stream_idx(&self) -> usize {
+        unsafe { (*self.packet).stream_index as usize }
     }
 
     pub fn size(&self) -> i32 {

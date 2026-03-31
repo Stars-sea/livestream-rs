@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use crossfire::{MAsyncTx, mpmc::List};
 use rml_rtmp::sessions::ServerSessionEvent;
@@ -72,7 +74,7 @@ impl HandlerTrait for PublishHandler {
                 self.flv_tag_tx.send(flv_tag).await?;
             }
             ServerSessionEvent::StreamMetadataChanged { metadata, .. } => {
-                let flv_tag = FlvTag::script_data(metadata);
+                let flv_tag = FlvTag::script_data(Arc::new(metadata));
                 self.flv_tag_tx.send(flv_tag).await?;
             }
 

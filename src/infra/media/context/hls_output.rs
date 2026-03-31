@@ -1,5 +1,7 @@
 //! MPEG-TS output context wrapper for FFmpeg.
 
+use crate::infra::media::stream::StreamCollection;
+
 use super::{Context, OutputContext};
 
 use anyhow::Result;
@@ -16,13 +18,13 @@ pub struct HlsOutputContext {
 }
 
 impl HlsOutputContext {
-    pub fn create(path: &PathBuf, input_ctx: &impl Context) -> Result<Self> {
+    pub fn create(path: &PathBuf, streams: &impl StreamCollection) -> Result<Self> {
         // Alloc output AVFormatContext
         let url = path.as_path().display().to_string();
         let output_ctx = Self::alloc_output_ctx("mpegts", Some(&url))?;
 
         // Copy parameters of streams
-        if let Err(e) = Self::copy_streams(output_ctx, input_ctx) {
+        if let Err(e) = Self::copy_streams(output_ctx, streams) {
             unsafe { avformat_free_context(output_ctx) };
             return Err(e);
         }
@@ -52,12 +54,12 @@ impl HlsOutputContext {
 
     pub fn create_segment<T: AsRef<Path>>(
         tmp_dir: T,
-        input_ctx: &impl Context,
+        streams: &impl StreamCollection,
         segment_id: u64,
     ) -> Result<Self> {
         let filename = format!("segment_{:04}.ts", segment_id);
         let path = PathBuf::from(tmp_dir.as_ref()).join(&filename);
-        Self::create(&path, input_ctx)
+        Self::create(&path, streams)
     }
 
     pub fn path(&self) -> &PathBuf {
@@ -81,7 +83,7 @@ impl Drop for HlsOutputContext {
 }
 
 impl Context for HlsOutputContext {
-    fn get_ctx(&self) -> *mut AVFormatContext {
+    unsafe fn ptr(&self) -> *mut AVFormatContext {
         self.ctx
     }
 }

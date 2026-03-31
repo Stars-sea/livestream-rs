@@ -1,8 +1,9 @@
 //! FLV output context for streaming to RTMP servers.
 
 use super::{Context, OutputContext};
+use crate::infra::media::codec::CodecParamsTrait;
 use crate::infra::media::ffmpeg_error;
-use crate::infra::media::stream::StreamTrait;
+use crate::infra::media::stream::{StreamCollection, StreamTrait};
 
 use anyhow::Result;
 use crossfire::{MTx, mpsc};
@@ -100,22 +101,22 @@ impl Drop for FlvOutputContext {
 }
 
 impl Context for FlvOutputContext {
-    fn get_ctx(&self) -> *mut AVFormatContext {
+    unsafe fn ptr(&self) -> *mut AVFormatContext {
         self.ctx
     }
 }
 
 impl OutputContext for FlvOutputContext {
-    fn copy_streams(ctx_ptr: *mut AVFormatContext, input_ctx: &impl Context) -> Result<()> {
-        for i in 0..input_ctx.nb_streams() {
-            let in_stream = input_ctx.stream(i).unwrap();
+    fn copy_streams(ctx_ptr: *mut AVFormatContext, streams: &impl StreamCollection) -> Result<()> {
+        for i in 0..streams.stream_count() {
+            let in_stream = streams.stream(i).unwrap();
             let out_stream = unsafe { avformat_new_stream(ctx_ptr, null_mut()) };
             if out_stream.is_null() {
                 anyhow::bail!("Failed to allocate output stream");
             }
 
             let ret = unsafe {
-                avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params())
+                avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params().ptr())
             };
 
             if ret < 0 {

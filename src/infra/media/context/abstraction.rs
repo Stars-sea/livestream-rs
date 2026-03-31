@@ -1,5 +1,7 @@
 //! Context trait and utilities for FFmpeg format contexts.
 
+use crate::infra::media::codec::CodecParamsTrait;
+use crate::infra::media::stream::StreamCollection;
 use crate::infra::media::{StreamTrait, ffmpeg_error};
 
 use anyhow::Result;
@@ -18,40 +20,19 @@ pub(crate) trait Context: Drop {
     ///
     /// # Safety
     /// The pointer must remain valid for the lifetime of the implementor.
-    fn get_ctx(&self) -> *mut AVFormatContext;
-
-    /// Returns the number of streams in the context.
-    fn nb_streams(&self) -> u32 {
-        unsafe { (*self.get_ctx()).nb_streams }
-    }
-
-    /// Gets a stream by index.
-    ///
-    /// # Arguments
-    /// * `id` - Stream index (must be < nb_streams())
-    ///
-    /// # Returns
-    /// Some(Stream) if the index is valid, None otherwise.
-    fn stream(&self, id: u32) -> Option<*mut AVStream> {
-        if id < self.nb_streams() {
-            let ptr = unsafe { (*self.get_ctx()).streams.offset(id as isize) };
-            unsafe { Some(*ptr) }
-        } else {
-            None
-        }
-    }
+    unsafe fn ptr(&self) -> *mut AVFormatContext;
 
     /// Checks if the context is available (pointer is not null).
     fn available(&self) -> bool {
-        !self.get_ctx().is_null()
+        !unsafe { self.ptr() }.is_null()
     }
 }
 
 pub trait OutputContext: Context {
     /// Copies stream parameters from an input context to this output context.
-    fn copy_streams(ctx_ptr: *mut AVFormatContext, input_ctx: &impl Context) -> Result<()> {
-        for i in 0..input_ctx.nb_streams() {
-            let in_stream = input_ctx
+    fn copy_streams(ctx_ptr: *mut AVFormatContext, streams: &impl StreamCollection) -> Result<()> {
+        for i in 0..streams.stream_count() {
+            let in_stream = streams
                 .stream(i)
                 .ok_or_else(|| anyhow::anyhow!("Stream not found in input context"))?;
             let out_stream = unsafe { avformat_new_stream(ctx_ptr, null_mut()) };
@@ -60,7 +41,7 @@ pub trait OutputContext: Context {
             }
 
             let ret = unsafe {
-                avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params())
+                avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params().ptr())
             };
             if ret < 0 {
                 anyhow::bail!("Failed to copy streams parameters: {}", ffmpeg_error(ret));
@@ -119,7 +100,7 @@ pub trait OutputContext: Context {
     }
 
     fn write_trailer(&self) -> Result<()> {
-        let ret = unsafe { av_write_trailer(self.get_ctx()) };
+        let ret = unsafe { av_write_trailer(self.ptr()) };
         if ret < 0 {
             anyhow::bail!("Failed to write trailer: {}", ffmpeg_error(ret));
         } else {
