@@ -1,21 +1,17 @@
-use std::sync::Arc;
-
+use crate::infra;
 use crate::pipeline::Pipe;
 use crate::pipeline::UnifiedPacketContext;
+use crate::pipeline::middleware::PersistenceMiddleware;
 use crate::pipeline::middleware::{BroadcastMiddleware, SegmentMiddleware};
 use crate::pipeline::pipe::PipeFactory;
 
 pub struct UnifiedPipeFactory {
-    broadcast: Arc<BroadcastMiddleware<UnifiedPacketContext>>,
-    segment: Arc<SegmentMiddleware>,
+    minio_client: infra::MinioClient,
 }
 
 impl UnifiedPipeFactory {
-    pub fn new(
-        broadcast: Arc<BroadcastMiddleware<UnifiedPacketContext>>,
-        segment: Arc<SegmentMiddleware>,
-    ) -> Self {
-        Self { broadcast, segment }
+    pub fn new(minio_client: infra::MinioClient) -> Self {
+        Self { minio_client }
     }
 }
 
@@ -23,11 +19,11 @@ impl PipeFactory for UnifiedPipeFactory {
     type Context = UnifiedPacketContext;
 
     fn create(&self) -> Pipe<Self::Context> {
-        let mut pipe = Pipe::new();
+        let minio_client = self.minio_client.clone();
+        let persistence = PersistenceMiddleware::new(minio_client);
+        let broadcast = BroadcastMiddleware::<UnifiedPacketContext>::new();
+        let segment = SegmentMiddleware::new();
 
-        pipe.add_middleware(self.segment.clone());
-        pipe.add_middleware(self.broadcast.clone());
-
-        pipe
+        Pipe::new().with(broadcast).with(segment).with(persistence)
     }
 }

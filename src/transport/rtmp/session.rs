@@ -264,7 +264,7 @@ impl SessionGuard {
             self.event_tx.send(StreamEvent::StateChange {
                 live_id: stream_key.clone(),
                 new_state: SessionState::Rtmp(RtmpState::Disconnected),
-            });
+            })?;
             self.reject_request(request_id, "StreamNotFound", "Stream not found", ct)
                 .await?;
             anyhow::bail!(
@@ -277,7 +277,7 @@ impl SessionGuard {
             self.event_tx.send(StreamEvent::StateChange {
                 live_id: stream_key.clone(),
                 new_state: SessionState::Rtmp(RtmpState::Connecting),
-            });
+            })?;
 
             let res = self.accept_request(request_id, ct).await;
 
@@ -289,7 +289,7 @@ impl SessionGuard {
             self.event_tx.send(StreamEvent::StateChange {
                 live_id: stream_key.clone(),
                 new_state: new_state,
-            });
+            })?;
 
             res?;
         } else {
@@ -297,7 +297,7 @@ impl SessionGuard {
             self.event_tx.send(StreamEvent::StateChange {
                 live_id: stream_key.clone(),
                 new_state: SessionState::Rtmp(RtmpState::Disconnected),
-            });
+            })?;
 
             self.reject_request(
                 request_id,

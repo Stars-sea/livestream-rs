@@ -9,14 +9,16 @@ use tracing::debug;
 use crate::infra::media::packet::FlvTag;
 use crate::transport::rtmp::handler::HandlerTrait;
 use crate::transport::rtmp::session::SessionGuard;
+use crate::transport::rtmp::tag::WrappedFlvTag;
 
 pub struct PublishHandler {
     session: SessionGuard,
 
+    #[allow(unused)]
     appname: String,
     stream_key: String,
 
-    flv_tag_tx: MAsyncTx<List<FlvTag>>,
+    tag_tx: MAsyncTx<List<WrappedFlvTag>>,
 
     cancel_token: CancellationToken,
 }
@@ -26,14 +28,14 @@ impl PublishHandler {
         session: SessionGuard,
         appname: String,
         stream_key: String,
-        flv_tag_tx: MAsyncTx<List<FlvTag>>,
+        tag_tx: MAsyncTx<List<WrappedFlvTag>>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             session,
             appname,
             stream_key,
-            flv_tag_tx,
+            tag_tx,
             cancel_token,
         }
     }
@@ -65,17 +67,23 @@ impl HandlerTrait for PublishHandler {
                 data, timestamp, ..
             } => {
                 let flv_tag = FlvTag::audio(timestamp.value, data);
-                self.flv_tag_tx.send(flv_tag).await?;
+                self.tag_tx
+                    .send(WrappedFlvTag::new(&self.stream_key, flv_tag))
+                    .await?;
             }
             ServerSessionEvent::VideoDataReceived {
                 data, timestamp, ..
             } => {
                 let flv_tag = FlvTag::video(timestamp.value, data);
-                self.flv_tag_tx.send(flv_tag).await?;
+                self.tag_tx
+                    .send(WrappedFlvTag::new(&self.stream_key, flv_tag))
+                    .await?;
             }
             ServerSessionEvent::StreamMetadataChanged { metadata, .. } => {
                 let flv_tag = FlvTag::script_data(Arc::new(metadata));
-                self.flv_tag_tx.send(flv_tag).await?;
+                self.tag_tx
+                    .send(WrappedFlvTag::new(&self.stream_key, flv_tag))
+                    .await?;
             }
 
             _ => {

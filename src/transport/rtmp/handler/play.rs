@@ -1,7 +1,6 @@
 use anyhow::Result;
-use crossfire::MAsyncRx;
-use crossfire::mpmc::List;
 use rml_rtmp::sessions::ServerSessionEvent;
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
@@ -12,11 +11,12 @@ use crate::transport::rtmp::session::SessionGuard;
 pub struct PlayHandler {
     session: SessionGuard,
 
+    #[allow(unused)]
     appname: String,
     stream_key: String,
     stream_id: u32,
 
-    flv_tag_rx: MAsyncRx<List<FlvTag>>,
+    tag_rx: broadcast::Receiver<FlvTag>,
 
     cancel_token: CancellationToken,
 }
@@ -27,7 +27,7 @@ impl PlayHandler {
         appname: String,
         stream_key: String,
         stream_id: u32,
-        flv_tag_rx: MAsyncRx<List<FlvTag>>,
+        tag_rx: broadcast::Receiver<FlvTag>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
@@ -35,7 +35,7 @@ impl PlayHandler {
             appname,
             stream_key,
             stream_id,
-            flv_tag_rx,
+            tag_rx,
             cancel_token,
         }
     }
@@ -71,12 +71,24 @@ impl HandlerTrait for PlayHandler {
     }
 
     async fn handle(&mut self) -> Result<()> {
-        let rx = self.flv_tag_rx.clone();
-        tokio::select! {
-            res = HandlerTrait::handle(self) => res,
+        let ct = self.cancel_token();
 
-            tag = rx.recv() => {
-                self.send_flv_tag(tag?).await
+        loop {
+            tokio::select! {
+                results = self.session.read_result(&ct) => {
+                    let results = results?;
+                    let events = self.session.handle_results(results, &ct).await?;
+
+                    for event in events {
+                        if let Some(event) = self.on_common_events(event).await? {
+                            self.on_custom_events(event).await?;
+                        }
+                    }
+                }
+
+                tag = self.tag_rx.recv() => {
+                    self.send_flv_tag(tag?).await?;
+                }
             }
         }
     }

@@ -22,6 +22,7 @@ impl<C: PipeContextTrait> Pipe<C> {
         }
     }
 
+    #[allow(unused)]
     pub fn with<M>(mut self, middleware: M) -> Self
     where
         M: MiddlewareTrait<Context = C> + 'static,
@@ -30,6 +31,7 @@ impl<C: PipeContextTrait> Pipe<C> {
         self
     }
 
+    #[allow(unused)]
     pub fn add_middleware<M>(&mut self, middleware: Arc<M>)
     where
         M: MiddlewareTrait<Context = C> + 'static,

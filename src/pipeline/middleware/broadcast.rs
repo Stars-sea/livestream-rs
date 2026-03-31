@@ -6,14 +6,14 @@ use crate::abstraction::{MiddlewareTrait, PipeContextTrait};
 
 pub struct BroadcastMiddleware<Context>
 where
-    Context: PipeContextTrait + Clone + 'static + Unpin,
+    Context: PipeContextTrait + Clone + 'static,
 {
     tx: DashMap<String, broadcast::Sender<Context>>,
 }
 
 impl<C> BroadcastMiddleware<C>
 where
-    C: PipeContextTrait + Clone + 'static + Unpin,
+    C: PipeContextTrait + Clone + 'static,
 {
     pub fn new() -> Self {
         Self { tx: DashMap::new() }
@@ -37,7 +37,7 @@ where
 
 impl<C> Default for BroadcastMiddleware<C>
 where
-    C: PipeContextTrait + Clone + 'static + Unpin,
+    C: PipeContextTrait + Clone + 'static,
 {
     fn default() -> Self {
         Self::new()
@@ -47,7 +47,7 @@ where
 #[async_trait::async_trait]
 impl<C> MiddlewareTrait for BroadcastMiddleware<C>
 where
-    C: PipeContextTrait + Clone + 'static + Unpin,
+    C: PipeContextTrait + Clone + 'static,
 {
     type Context = C;
 
@@ -55,7 +55,9 @@ where
         let stream_id = ctx.id();
 
         if let Some(tx) = self.tx.get(&stream_id) {
-            tx.send(ctx.clone());
+            if let Err(e) = tx.send(ctx.clone()) {
+                anyhow::bail!("Failed to broadcast packet for stream {}: {}", stream_id, e);
+            }
         }
         Ok(ctx)
     }

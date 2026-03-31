@@ -124,6 +124,10 @@ impl SrtConnectionBuilder {
         }
     }
 
+    pub fn live_id(&self) -> &str {
+        &self.live_id
+    }
+
     pub fn build(self, cancel_token: CancellationToken) -> Result<SrtConnection> {
         let options = SrtInputStreamOptions::new(
             self.host.clone(),

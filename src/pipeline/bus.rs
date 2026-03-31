@@ -5,6 +5,7 @@ use anyhow::Result;
 use super::{Pipe, UnifiedPacketContext};
 use crate::abstraction::PipeTrait;
 
+#[derive(Clone)]
 pub struct PipeBus {
     packet_pipe: Arc<Pipe<UnifiedPacketContext>>,
 }

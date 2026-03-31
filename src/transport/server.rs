@@ -8,20 +8,21 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 use super::TransportController;
-use super::contract::message::ControlMessage;
-use super::contract::state::ConnectionStateTrait;
+use super::contract::message::{ControlMessage, StreamEvent};
+use super::contract::state::{ConnectionStateTrait, SessionState};
+use super::registry::global;
 use super::rtmp::RtmpServer;
 use super::srt::SrtServer;
 use crate::config::{RtmpConfig, SrtConfig};
 use crate::dispatcher::{self, Protocal, SessionEvent};
 use crate::infra::PortAllocator;
-use crate::transport::contract::message::StreamEvent;
-use crate::transport::contract::state::SessionState;
-use crate::transport::registry::global;
+use crate::pipeline::PipeBus;
 
 pub struct TransportServer {
     rtmp_config: RtmpConfig,
     srt_config: SrtConfig,
+
+    bus: PipeBus,
 
     cancel_token: CancellationToken,
 }
@@ -30,11 +31,13 @@ impl TransportServer {
     pub fn new(
         rtmp_config: RtmpConfig,
         srt_config: SrtConfig,
+        bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             rtmp_config,
             srt_config,
+            bus,
             cancel_token,
         }
     }
@@ -48,7 +51,8 @@ impl TransportServer {
         let cancel_token = self.cancel_token.child_token();
 
         let addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.rtmp_config.port))?;
-        let server = RtmpServer::create(addr, appname, rx, event_tx, cancel_token).await?;
+        let server =
+            RtmpServer::create(addr, appname, rx, event_tx, self.bus.clone(), cancel_token).await?;
         Ok(server)
     }
 
@@ -68,7 +72,14 @@ impl TransportServer {
             }
         };
 
-        let server = SrtServer::new(rx, event_tx, host, port_allocator, cancel_token);
+        let server = SrtServer::new(
+            rx,
+            event_tx,
+            self.bus.clone(),
+            host,
+            port_allocator,
+            cancel_token,
+        );
         Ok(server)
     }
 

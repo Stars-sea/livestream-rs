@@ -1,10 +1,12 @@
 use anyhow::Result;
 use crossfire::{AsyncRx, MTx, mpsc, spsc};
+use dashmap::DashMap;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 use super::connection::SrtConnectionBuilder;
 use crate::infra::PortAllocator;
+use crate::pipeline::PipeBus;
 use crate::transport::contract::message::{ControlMessage, StreamEvent};
 use crate::transport::contract::state::{SessionDescriptor, SessionState, SrtState};
 use crate::transport::registry::global;
@@ -13,8 +15,11 @@ pub struct SrtServer {
     ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
     event_tx: MTx<mpsc::List<StreamEvent>>,
 
+    bus: PipeBus,
+
     host: String,
     port_allocator: PortAllocator,
+    port_cache: DashMap<String, u16>, // live_id -> port
 
     cancel_token: CancellationToken,
 }
@@ -23,6 +28,7 @@ impl SrtServer {
     pub fn new(
         ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
         event_tx: MTx<mpsc::List<StreamEvent>>,
+        bus: PipeBus,
         host: String,
         port_allocator: PortAllocator,
         cancel_token: CancellationToken,
@@ -30,8 +36,10 @@ impl SrtServer {
         Self {
             ctrl_rx,
             event_tx,
+            bus,
             host,
             port_allocator,
+            port_cache: DashMap::new(),
             cancel_token,
         }
     }
@@ -66,6 +74,15 @@ impl SrtServer {
                     cancel_token.cancel();
                 }
 
+                let port = match self.port_cache.remove(&live_id) {
+                    Some((_, port)) => port,
+                    None => {
+                        debug!(live_id = %live_id, "No port found for live_id in cache during StopStream");
+                        return Ok(()); // No port to release, just return
+                    }
+                };
+                self.port_allocator.release_port(port);
+
                 Ok(())
             }
         }
@@ -81,6 +98,7 @@ impl SrtServer {
                 anyhow::bail!("Failed to allocate port for new SRT connection");
             }
         };
+        self.port_cache.insert(live_id.clone(), port);
 
         let session = SessionDescriptor {
             id: live_id.clone(),
@@ -96,8 +114,7 @@ impl SrtServer {
             self.event_tx.clone(),
         );
 
-        spawn_connection_handler(builder, cancel_token);
-        Ok(())
+        spawn_connection_handler(builder, cancel_token)
     }
 }
 
@@ -107,11 +124,14 @@ fn spawn_connection_handler(
 ) -> Result<()> {
     let _cancel_guard = cancel_token.clone().drop_guard();
 
+    let live_id = builder.live_id().to_string();
     let connection = builder.build(cancel_token)?;
 
     std::thread::spawn(move || {
         let _cancel_guard = _cancel_guard;
-        connection.run()
+        if let Err(e) = connection.run() {
+            error!(live_id = %live_id, "Error in SRT connection handler: {:?}", e);
+        }
     });
 
     Ok(())

@@ -1,16 +1,20 @@
 use std::net::SocketAddr;
 
 use anyhow::Result;
-use crossfire::{AsyncRx, MTx, mpsc, spsc};
+use crossfire::{AsyncRx, MAsyncTx, MTx, mpmc, mpsc, spsc};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 use super::connection::RtmpConnection;
+use crate::infra::media::packet::FlvTag;
+use crate::pipeline::PipeBus;
 use crate::transport::contract::message::{ControlMessage, StreamEvent};
 use crate::transport::contract::state::{RtmpState, SessionDescriptor, SessionState};
 use crate::transport::registry::global;
 use crate::transport::rtmp::handler::HandlerBuilder;
+use crate::transport::rtmp::tag::WrappedFlvTag;
 
 pub struct RtmpServer {
     listener: TcpListener,
@@ -18,6 +22,8 @@ pub struct RtmpServer {
 
     ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
     event_tx: MTx<mpsc::List<StreamEvent>>,
+
+    bus: PipeBus,
 
     cancel_token: CancellationToken,
 }
@@ -28,6 +34,7 @@ impl RtmpServer {
         appname: String,
         ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
         event_tx: MTx<mpsc::List<StreamEvent>>,
+        bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
@@ -37,6 +44,7 @@ impl RtmpServer {
             appname,
             ctrl_rx,
             event_tx,
+            bus,
             cancel_token,
         })
     }
@@ -96,6 +104,8 @@ impl RtmpServer {
             self.appname.clone(),
             socket,
             self.event_tx.clone(),
+            todo!(),
+            |_| todo!(),
         ));
 
         Ok(())
@@ -106,6 +116,8 @@ async fn spawn_connection_handler(
     appname: String,
     socket: TcpStream,
     event_tx: MTx<mpsc::List<StreamEvent>>,
+    tag_tx: MAsyncTx<mpmc::List<WrappedFlvTag>>,
+    tag_rx: impl Fn(String) -> broadcast::Receiver<FlvTag>,
 ) {
     let cancel_token = CancellationToken::new();
     let _cancel_guard = cancel_token.drop_guard_ref();
@@ -152,8 +164,11 @@ async fn spawn_connection_handler(
         HandlerBuilder::Publish { .. } => Some(cancel_token.clone().drop_guard()),
     };
 
-    // TODO: call with_flv_tag_rx
-    let builder = builder.with_cancel_token(cancel_token);
+    let stream_key = builder.stream_key().to_string();
+    let builder = builder
+        .with_cancel_token(cancel_token)
+        .with_tag_tx(tag_tx)
+        .with_tag_rx(tag_rx(stream_key));
 
     match builder.build() {
         Ok(mut handler) => {

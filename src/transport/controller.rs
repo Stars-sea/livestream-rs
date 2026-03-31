@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use anyhow::Result;
 use crossfire::{Tx, spsc::List};
 use tokio::task::JoinHandle;
@@ -27,6 +29,24 @@ impl TransportController {
             handle,
             cancel_token,
         }
+    }
+
+    pub fn precreate_rtmp_session(&self, live_id: String) -> Result<()> {
+        let msg = ControlMessage::PrecreateStream { live_id };
+        self.rtmp_tx.send(msg)?;
+        Ok(())
+    }
+
+    pub fn precreate_srt_session(&self, live_id: String) -> Result<()> {
+        let msg = ControlMessage::PrecreateStream { live_id };
+        self.srt_tx.send(msg)?;
+        Ok(())
+    }
+
+    pub fn close_session(&self, live_id: String) -> Result<()> {
+        let msg = ControlMessage::StopStream { live_id };
+        self.rtmp_tx.send(msg)?;
+        Ok(())
     }
 
     pub async fn wait(self) -> Result<()> {

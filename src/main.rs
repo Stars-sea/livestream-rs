@@ -3,9 +3,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use crate::pipeline::middleware::BroadcastMiddleware;
-use crate::pipeline::middleware::SegmentMiddleware;
-use crate::pipeline::{PipeBus, PipeFactory, UnifiedPacketContext, UnifiedPipeFactory};
+use crate::pipeline::{PipeBus, PipeFactory, UnifiedPipeFactory};
 use crate::transport::TransportServer;
 
 mod abstraction;
@@ -31,14 +29,14 @@ async fn main() -> Result<()> {
 
     let cancel_token = CancellationToken::new();
 
-    let broadcast = Arc::new(BroadcastMiddleware::<UnifiedPacketContext>::new());
-    let segment = Arc::new(SegmentMiddleware::new());
-    let packet_pipe = Arc::new(UnifiedPipeFactory::new(broadcast, segment).create());
-    let _packet_bus = PipeBus::new(packet_pipe);
+    let minio_client = infra::MinioClient::create(config.minio.clone().unwrap()).await?;
+    let packet_pipe = Arc::new(UnifiedPipeFactory::new(minio_client).create());
+    let packet_bus = PipeBus::new(packet_pipe);
 
     let transport_server = TransportServer::new(
         config.rtmp.clone(),
         config.srt.clone(),
+        packet_bus,
         cancel_token.child_token(),
     );
 
