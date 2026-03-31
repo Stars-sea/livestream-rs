@@ -6,14 +6,17 @@ use tracing::{debug, error};
 
 use super::connection::SrtConnectionBuilder;
 use crate::infra::PortAllocator;
-use crate::pipeline::PipeBus;
+use crate::pipeline::{PipeBus, UnifiedPacketContext};
 use crate::transport::contract::message::{ControlMessage, StreamEvent};
 use crate::transport::contract::state::{SessionDescriptor, SessionState, SrtState};
 use crate::transport::registry::global;
+use crate::transport::srt::packet::WrappedPacket;
 
 pub struct SrtServer {
     ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
     event_tx: MTx<mpsc::List<StreamEvent>>,
+    packet_rx: AsyncRx<mpsc::List<WrappedPacket>>,
+    packet_tx: MTx<mpsc::List<WrappedPacket>>,
 
     bus: PipeBus,
 
@@ -33,9 +36,12 @@ impl SrtServer {
         port_allocator: PortAllocator,
         cancel_token: CancellationToken,
     ) -> Self {
+        let (packet_tx, packet_rx) = mpsc::unbounded_async();
         Self {
             ctrl_rx,
             event_tx,
+            packet_rx,
+            packet_tx,
             bus,
             host,
             port_allocator,
@@ -56,6 +62,17 @@ impl SrtServer {
                     match msg {
                         Ok(msg) => self.handle_control_message(msg).await?,
                         Err(e) => debug!("Error receiving control message: {:?}", e),
+                    }
+                }
+
+                packet = self.packet_rx.recv() => {
+                    match packet {
+                        Ok(packet) => {
+                            if let Err(e) = self.handle_packet_received(packet).await {
+                                debug!("Error handling received packet: {:?}", e);
+                            }
+                        }
+                        Err(e) => debug!("Error receiving packet: {:?}", e),
                     }
                 }
             }
@@ -88,6 +105,15 @@ impl SrtServer {
         }
     }
 
+    async fn handle_packet_received(&mut self, packet: WrappedPacket) -> Result<()> {
+        let WrappedPacket { stream_id, packet } = packet;
+
+        let context =
+            UnifiedPacketContext::new(stream_id.clone(), packet.into(), self.cancel_token.clone());
+        self.bus.send_packet(context).await?;
+        Ok(())
+    }
+
     async fn spawn_connection_handler(&mut self, live_id: String) -> Result<()> {
         let cancel_token = self.cancel_token.child_token();
 
@@ -111,6 +137,7 @@ impl SrtServer {
             port,
             live_id,
             "passphrase".to_string(), // TODO
+            self.packet_tx.clone(),
             self.event_tx.clone(),
         );
 

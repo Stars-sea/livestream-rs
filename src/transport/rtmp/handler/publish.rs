@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use crossfire::{MAsyncTx, mpmc::List};
+use crossfire::{MAsyncTx, mpsc::List};
 use rml_rtmp::sessions::ServerSessionEvent;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;

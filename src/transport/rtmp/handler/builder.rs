@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossfire::{MAsyncTx, mpmc::List};
+use crossfire::{MAsyncTx, mpsc::List};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 

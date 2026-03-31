@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use anyhow::Result;
-use crossfire::{AsyncRx, MAsyncTx, MTx, mpmc, mpsc, spsc};
+use crossfire::{AsyncRx, MAsyncTx, MTx, mpsc, spsc};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -9,7 +9,7 @@ use tracing::{debug, error, warn};
 
 use super::connection::RtmpConnection;
 use crate::infra::media::packet::FlvTag;
-use crate::pipeline::PipeBus;
+use crate::pipeline::{PipeBus, UnifiedPacketContext};
 use crate::transport::contract::message::{ControlMessage, StreamEvent};
 use crate::transport::contract::state::{RtmpState, SessionDescriptor, SessionState};
 use crate::transport::registry::global;
@@ -22,6 +22,8 @@ pub struct RtmpServer {
 
     ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
     event_tx: MTx<mpsc::List<StreamEvent>>,
+    tag_rx: AsyncRx<mpsc::List<WrappedFlvTag>>,
+    tag_tx: MTx<mpsc::List<WrappedFlvTag>>,
 
     bus: PipeBus,
 
@@ -39,11 +41,15 @@ impl RtmpServer {
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
 
+        let (tag_tx, tag_rx) = mpsc::unbounded_async();
+
         Ok(Self {
             listener,
             appname,
             ctrl_rx,
             event_tx,
+            tag_rx,
+            tag_tx,
             bus,
             cancel_token,
         })
@@ -67,6 +73,17 @@ impl RtmpServer {
                 accept_res = self.listener.accept() => {
                     let (socket, addr) = accept_res?;
                     self.accept_client(socket, addr)?;
+                }
+
+                tag = self.tag_rx.recv() => {
+                    match tag {
+                        Ok(tag) => {
+                            if let Err(e) = self.handle_packet_received(tag).await {
+                                debug!("Error handling received packet: {:?}", e);
+                            }
+                        }
+                        Err(e) => debug!("Error receiving packet: {:?}", e),
+                    }
                 }
             }
         }
@@ -104,10 +121,18 @@ impl RtmpServer {
             self.appname.clone(),
             socket,
             self.event_tx.clone(),
-            todo!(),
+            self.tag_tx.clone().into_async(),
             |_| todo!(),
         ));
 
+        Ok(())
+    }
+
+    async fn handle_packet_received(&mut self, packet: WrappedFlvTag) -> Result<()> {
+        let WrappedFlvTag { stream_key, tag } = packet;
+
+        let context = UnifiedPacketContext::new(stream_key, tag.into(), self.cancel_token.clone());
+        self.bus.send_packet(context).await?;
         Ok(())
     }
 }
@@ -116,7 +141,7 @@ async fn spawn_connection_handler(
     appname: String,
     socket: TcpStream,
     event_tx: MTx<mpsc::List<StreamEvent>>,
-    tag_tx: MAsyncTx<mpmc::List<WrappedFlvTag>>,
+    tag_tx: MAsyncTx<mpsc::List<WrappedFlvTag>>,
     tag_rx: impl Fn(String) -> broadcast::Receiver<FlvTag>,
 ) {
     let cancel_token = CancellationToken::new();

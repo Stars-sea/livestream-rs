@@ -9,6 +9,7 @@ use crate::infra::media::options::SrtInputStreamOptions;
 use crate::infra::media::packet::{Packet, PacketReadResult};
 use crate::transport::contract::message::StreamEvent;
 use crate::transport::contract::state::{SessionState, SrtState};
+use crate::transport::srt::packet::WrappedPacket;
 
 pub struct SrtConnection {
     live_id: String,
@@ -16,6 +17,7 @@ pub struct SrtConnection {
     av_ctx: InputContext,
 
     event_tx: MTx<List<StreamEvent>>,
+    packet_tx: MTx<List<WrappedPacket>>,
 
     cancel_token: CancellationToken,
 }
@@ -27,6 +29,7 @@ pub struct SrtConnectionBuilder {
     live_id: String,
     passphrase: String,
 
+    packet_tx: MTx<List<WrappedPacket>>,
     event_tx: MTx<List<StreamEvent>>,
 }
 
@@ -35,12 +38,14 @@ impl SrtConnection {
         live_id: String,
         av_ctx: InputContext,
         event_tx: MTx<List<StreamEvent>>,
+        packet_tx: MTx<List<WrappedPacket>>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             live_id,
             event_tx,
             av_ctx,
+            packet_tx,
             cancel_token,
         }
     }
@@ -64,7 +69,8 @@ impl SrtConnection {
                 Err(e) => anyhow::bail!("Error reading packet: {}", e),
             }
 
-            // TODO: Process packet and forward to media pipeline
+            self.packet_tx
+                .send(WrappedPacket::new(&self.live_id, packet.clone()))?;
         }
 
         state = SrtState::Disconnected;
@@ -113,6 +119,7 @@ impl SrtConnectionBuilder {
         port: u16,
         live_id: String,
         passphrase: String,
+        packet_tx: MTx<List<WrappedPacket>>,
         event_tx: MTx<List<StreamEvent>>,
     ) -> Self {
         Self {
@@ -120,6 +127,7 @@ impl SrtConnectionBuilder {
             port,
             live_id,
             passphrase,
+            packet_tx,
             event_tx,
         }
     }
@@ -141,6 +149,7 @@ impl SrtConnectionBuilder {
             self.live_id,
             av_ctx,
             self.event_tx,
+            self.packet_tx,
             cancel_token,
         ))
     }
