@@ -18,7 +18,7 @@ pub struct HlsOutputContext {
 }
 
 impl HlsOutputContext {
-    pub fn create(path: &PathBuf, streams: &impl StreamCollection) -> Result<Self> {
+    pub fn create(path: &PathBuf, streams: &dyn StreamCollection) -> Result<Self> {
         // Alloc output AVFormatContext
         let url = path.as_path().display().to_string();
         let output_ctx = Self::alloc_output_ctx("mpegts", Some(&url))?;
@@ -59,7 +59,7 @@ impl HlsOutputContext {
 
     pub fn create_segment<T: AsRef<Path>>(
         tmp_dir: T,
-        streams: &impl StreamCollection,
+        streams: &dyn StreamCollection,
         segment_id: u64,
     ) -> Result<Self> {
         let filename = format!("segment_{:04}.ts", segment_id);
@@ -71,6 +71,8 @@ impl HlsOutputContext {
         &self.path
     }
 }
+
+unsafe impl Send for HlsOutputContext {}
 
 impl Drop for HlsOutputContext {
     fn drop(&mut self) {

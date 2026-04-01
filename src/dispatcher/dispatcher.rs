@@ -27,6 +27,20 @@ impl EventDispatcher {
         self.sender.subscribe()
     }
 
+    #[allow(unused)]
+    pub fn on_session_event<Fut, F>(&self, callback: F)
+    where
+        F: Fn(SessionEvent) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut rx = self.subscribe();
+        tokio::spawn(async move {
+            while let Ok(event) = rx.recv().await {
+                callback(event).await;
+            }
+        });
+    }
+
     pub fn send(&self, event: SessionEvent) {
         let _ = self.sender.send(event);
     }

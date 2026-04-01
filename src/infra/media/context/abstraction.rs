@@ -1,7 +1,7 @@
 //! Context trait and utilities for FFmpeg format contexts.
 
-use crate::infra::media::stream::StreamCollection;
 use crate::infra::media::ffmpeg_error;
+use crate::infra::media::stream::StreamCollection;
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
@@ -29,7 +29,7 @@ pub(crate) trait Context: Drop {
 
 pub trait OutputContext: Context {
     /// Copies stream parameters from an input context to this output context.
-    fn copy_streams(ctx_ptr: *mut AVFormatContext, streams: &impl StreamCollection) -> Result<()> {
+    fn copy_streams(ctx_ptr: *mut AVFormatContext, streams: &dyn StreamCollection) -> Result<()> {
         for i in 0..streams.stream_count() {
             let in_stream = streams
                 .stream(i)
@@ -39,8 +39,9 @@ pub trait OutputContext: Context {
                 anyhow::bail!("Failed to allocate output stream");
             }
 
-            let ret =
-                unsafe { avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params_ptr()) };
+            let ret = unsafe {
+                avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params_ptr())
+            };
             if ret < 0 {
                 anyhow::bail!("Failed to copy streams parameters: {}", ffmpeg_error(ret));
             }

@@ -20,7 +20,7 @@ pub mod options;
 pub mod packet;
 mod stream;
 
-pub use stream::StreamTrait;
+pub use stream::{StreamCollection, StreamTrait};
 
 /// Initializes FFmpeg network components.
 /// Must be called before using network protocols like SRT.
