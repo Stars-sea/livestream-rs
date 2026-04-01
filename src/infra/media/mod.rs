@@ -16,12 +16,10 @@ use ffmpeg_sys_next::*;
 mod codec;
 pub mod context;
 pub mod log;
-mod metadata;
 pub mod options;
 pub mod packet;
 mod stream;
 
-pub use metadata::*;
 pub use stream::StreamTrait;
 
 /// Initializes FFmpeg network components.

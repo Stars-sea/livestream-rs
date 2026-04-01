@@ -1,9 +1,8 @@
 //! FLV output context for streaming to RTMP servers.
 
 use super::{Context, OutputContext};
-use crate::infra::media::codec::CodecParamsTrait;
 use crate::infra::media::ffmpeg_error;
-use crate::infra::media::stream::{StreamCollection, StreamTrait};
+use crate::infra::media::stream::StreamCollection;
 
 use anyhow::Result;
 use crossfire::{MTx, mpsc};
@@ -115,9 +114,8 @@ impl OutputContext for FlvOutputContext {
                 anyhow::bail!("Failed to allocate output stream");
             }
 
-            let ret = unsafe {
-                avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params().ptr())
-            };
+            let ret =
+                unsafe { avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params_ptr()) };
 
             if ret < 0 {
                 anyhow::bail!("Failed to copy streams parameters: {}", ffmpeg_error(ret));

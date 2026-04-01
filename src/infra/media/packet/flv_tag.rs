@@ -1,10 +1,10 @@
 use anyhow::Result;
 use bytes::Bytes;
 use ffmpeg_sys_next::{AVRational, av_malloc, av_rescale_q};
-use std::sync::Arc;
+use rml_rtmp::sessions::StreamMetadata;
 
 use super::Packet;
-use crate::infra::media::{Metadata, StreamTrait, stream::DummyStream};
+use crate::infra::media::StreamTrait;
 
 #[derive(Clone, Debug)]
 pub enum FlvTag {
@@ -17,7 +17,7 @@ pub enum FlvTag {
         payload: Bytes,
         is_keyframe: bool,
     },
-    ScriptData(Arc<dyn Metadata>),
+    ScriptData(StreamMetadata),
 }
 
 impl FlvTag {
@@ -34,7 +34,7 @@ impl FlvTag {
         }
     }
 
-    pub fn script_data(metadata: Arc<dyn Metadata>) -> Self {
+    pub fn script_data(metadata: StreamMetadata) -> Self {
         FlvTag::ScriptData(metadata)
     }
 
@@ -116,8 +116,20 @@ impl FlvTag {
 impl Into<Option<Packet>> for FlvTag {
     fn into(self) -> Option<Packet> {
         match self {
-            FlvTag::Audio { .. } => self.to_packet(&DummyStream::Audio).ok()?,
-            FlvTag::Video { .. } => self.to_packet(&DummyStream::Video).ok()?,
+            FlvTag::Audio { timestamp, payload } => FlvTag::Audio { timestamp, payload }
+                .convert_packet(AVRational { num: 1, den: 1000 }, 1)
+                .ok()?,
+            FlvTag::Video {
+                timestamp,
+                payload,
+                is_keyframe,
+            } => FlvTag::Video {
+                timestamp,
+                payload,
+                is_keyframe,
+            }
+            .convert_packet(AVRational { num: 1, den: 1000 }, 0)
+            .ok()?,
             FlvTag::ScriptData(_) => None,
         }
     }

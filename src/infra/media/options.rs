@@ -2,7 +2,6 @@ use std::ptr::null_mut;
 
 use ffmpeg_sys_next::*;
 
-#[allow(drop_bounds)]
 pub trait StreamOptions {
     fn filename(&self) -> String;
 
@@ -33,6 +32,7 @@ pub struct SrtInputStreamOptions {
     passphrase: String,
 }
 
+#[allow(unused)]
 impl SrtInputStreamOptions {
     pub fn new(host: String, port: u16, live_id: String, passphrase: String) -> Self {
         Self {

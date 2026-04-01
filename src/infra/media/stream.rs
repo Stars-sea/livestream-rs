@@ -1,8 +1,7 @@
 //! FFmpeg stream wrapper with safe access to stream properties.
 
-use std::ptr::null;
-
 use ffmpeg_sys_next::*;
+use rml_rtmp::sessions::StreamMetadata;
 
 use crate::infra::media::codec::{CodecParamsTrait, OwnedCodecParams};
 use crate::infra::media::context::Context;
@@ -21,8 +20,8 @@ pub trait StreamTrait {
         unsafe { (*self.ptr()).index as usize }
     }
 
-    /// Returns the codec parameters for this stream.
-    fn codec_params(&self) -> impl CodecParamsTrait {
+    /// Returns the codec parameters pointer for this stream.
+    fn codec_params_ptr(&self) -> *const AVCodecParameters {
         unsafe { (*self.ptr()).codecpar }
     }
 }
@@ -30,7 +29,7 @@ pub trait StreamTrait {
 pub trait StreamCollection {
     fn stream_count(&self) -> usize;
 
-    fn stream(&self, index: usize) -> Option<&impl StreamTrait>;
+    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait>>;
 }
 
 impl StreamTrait for *mut AVStream {
@@ -58,20 +57,39 @@ impl<C: Context> StreamCollection for C {
     ///
     /// # Returns
     /// Some(Stream) if the index is valid, None otherwise.
-    fn stream(&self, index: usize) -> Option<&impl StreamTrait> {
+    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait>> {
         if index < self.stream_count() {
-            let ptr = unsafe { &*(*self.ptr()).streams.offset(index as isize) };
-            Some(ptr)
+            let ptr = unsafe { *(*self.ptr()).streams.offset(index as isize) };
+            Some(Box::new(ptr))
         } else {
             None
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl StreamCollection for StreamMetadata {
+    fn stream_count(&self) -> usize {
+        2
+    }
+
+    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait>> {
+        match index {
+            0 => {
+                let params = OwnedCodecParams::create_dummy_video(self).ok()?;
+                Some(Box::new(DummyStream::Video(params)))
+            }
+            1 => {
+                let params = OwnedCodecParams::create_dummy_audio(self).ok()?;
+                Some(Box::new(DummyStream::Audio(params)))
+            }
+            _ => None,
+        }
+    }
+}
+
 pub enum DummyStream {
-    Video,
-    Audio,
+    Video(OwnedCodecParams),
+    Audio(OwnedCodecParams),
 }
 
 impl StreamTrait for DummyStream {
@@ -85,12 +103,15 @@ impl StreamTrait for DummyStream {
 
     fn index(&self) -> usize {
         match self {
-            DummyStream::Video => 0,
-            DummyStream::Audio => 1,
+            DummyStream::Video(..) => 0,
+            DummyStream::Audio(..) => 1,
         }
     }
 
-    fn codec_params(&self) -> impl CodecParamsTrait {
-        OwnedCodecParams::new(null())
+    fn codec_params_ptr(&self) -> *const AVCodecParameters {
+        match self {
+            DummyStream::Video(params) => unsafe { params.ptr() },
+            DummyStream::Audio(params) => unsafe { params.ptr() },
+        }
     }
 }
