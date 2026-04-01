@@ -22,8 +22,8 @@ pub struct RtmpServer {
 
     ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
     event_tx: MTx<mpsc::List<StreamEvent>>,
-    tag_rx: AsyncRx<mpsc::List<WrappedFlvTag>>,
-    tag_tx: MTx<mpsc::List<WrappedFlvTag>>,
+    publish_tag_rx: AsyncRx<mpsc::List<WrappedFlvTag>>,
+    publish_tag_tx: MTx<mpsc::List<WrappedFlvTag>>,
 
     bus: PipeBus,
 
@@ -48,8 +48,8 @@ impl RtmpServer {
             appname,
             ctrl_rx,
             event_tx,
-            tag_rx,
-            tag_tx,
+            publish_tag_rx: tag_rx,
+            publish_tag_tx: tag_tx,
             bus,
             cancel_token,
         })
@@ -75,7 +75,7 @@ impl RtmpServer {
                     self.accept_client(socket, addr)?;
                 }
 
-                tag = self.tag_rx.recv() => {
+                tag = self.publish_tag_rx.recv() => {
                     match tag {
                         Ok(tag) => {
                             if let Err(e) = self.handle_packet_received(tag).await {
@@ -121,17 +121,21 @@ impl RtmpServer {
             self.appname.clone(),
             socket,
             self.event_tx.clone(),
-            self.tag_tx.clone().into_async(),
-            |_| todo!(),
+            self.publish_tag_tx.clone().into_async(),
+            |stream_key| todo!(),
         ));
 
         Ok(())
     }
 
     async fn handle_packet_received(&mut self, packet: WrappedFlvTag) -> Result<()> {
-        let WrappedFlvTag { stream_key, tag } = packet;
+        let WrappedFlvTag {
+            stream_key,
+            tag,
+            cancel_token,
+        } = packet;
 
-        let context = UnifiedPacketContext::new(stream_key, tag.into(), self.cancel_token.clone());
+        let context = UnifiedPacketContext::new(stream_key, tag.into(), cancel_token);
         self.bus.send_packet(context).await?;
         Ok(())
     }

@@ -79,7 +79,7 @@ impl Into<UnifiedPacketContext> for AVPacketContext {
 
 impl Into<Option<AVPacketContext>> for UnifiedPacketContext {
     fn into(self) -> Option<AVPacketContext> {
-        let packet: Option<Packet> = self.packet.into();
+        let packet: Option<Packet> = self.packet.try_into().ok();
         packet.map(|pkt| AVPacketContext::new(self.id, pkt, self.cancel_token))
     }
 }

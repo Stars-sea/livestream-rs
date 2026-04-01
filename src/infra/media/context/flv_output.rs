@@ -2,32 +2,17 @@
 
 use super::{Context, OutputContext};
 use crate::infra::media::ffmpeg_error;
+use crate::infra::media::packet::FlvTag;
 use crate::infra::media::stream::StreamCollection;
 
 use anyhow::Result;
+use bytes::Bytes;
 use crossfire::{MTx, mpsc};
 use ffmpeg_sys_next::*;
 
 use std::ffi::{c_int, c_void};
 use std::ptr::null_mut;
 use std::sync::Arc;
-
-use bytes::Bytes;
-
-#[derive(Debug, Clone)]
-pub enum FlvPacket {
-    Data { live_id: String, data: Bytes },
-    EndOfStream { live_id: String },
-}
-
-impl FlvPacket {
-    pub fn live_id(&self) -> &str {
-        match self {
-            FlvPacket::Data { live_id, .. } => live_id,
-            FlvPacket::EndOfStream { live_id } => live_id,
-        }
-    }
-}
 
 /// Wrapper for FFmpeg output context configured for FLV streaming to RTMP servers.
 #[derive(Debug)]
@@ -37,22 +22,18 @@ pub struct FlvOutputContext {
 
 impl FlvOutputContext {
     pub fn create(
-        live_id: String,
-        flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
-        input_ctx: &impl Context,
+        flv_tag_tx: MTx<mpsc::List<FlvTag>>,
+        streams: &dyn StreamCollection,
     ) -> Result<Self> {
         let ctx = Self::alloc_output_ctx("flv", None)?;
 
-        if let Err(e) = Self::copy_streams(ctx, input_ctx) {
+        if let Err(e) = Self::copy_streams(ctx, streams) {
             unsafe { avformat_free_context(ctx) };
             return Err(e);
         }
 
         if unsafe { (*ctx).pb.is_null() } {
-            let opaque = Arc::new(FlvAvioOpaque {
-                live_id,
-                flv_packet_tx,
-            });
+            let opaque = Arc::new(FlvAvioOpaque { flv_tag_tx });
             let opaque_ptr = Arc::into_raw(opaque) as *mut c_void;
             match Self::open_io(opaque_ptr, None, AVIO_FLAG_WRITE) {
                 Ok(pb) => unsafe {
@@ -169,8 +150,7 @@ impl FlvOutputContext {
         unsafe { avformat_free_context(ctx) };
     }
 
-    #[allow(dead_code)]
-    pub fn get_flv_packet_sender(&self) -> Option<MTx<mpsc::List<FlvPacket>>> {
+    pub fn get_flv_tag_sender(&self) -> Option<MTx<mpsc::List<FlvTag>>> {
         if self.ctx.is_null() {
             return None;
         }
@@ -186,14 +166,13 @@ impl FlvOutputContext {
             }
 
             let opaque = &*opaque_ptr;
-            Some(opaque.flv_packet_tx.clone())
+            Some(opaque.flv_tag_tx.clone())
         }
     }
 }
 
-pub struct FlvAvioOpaque {
-    live_id: String,
-    flv_packet_tx: MTx<mpsc::List<FlvPacket>>,
+struct FlvAvioOpaque {
+    flv_tag_tx: MTx<mpsc::List<FlvTag>>,
 }
 
 extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int) -> c_int {
@@ -204,15 +183,16 @@ extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int)
     // Do not use the Arc here since we only need to read from it and it will be dropped when the context is dropped
     let opaque_ref = unsafe { &*(opaque as *const FlvAvioOpaque) };
 
-    // Convert the raw buffer to a Rust slice and then to a Bytes for sending through the channel
+    // Convert the raw buffer to a Rust Bytes and parse into a single FLV tag.
     let data_slice = unsafe { std::slice::from_raw_parts(buf, buf_size as usize) };
     let data = Bytes::copy_from_slice(data_slice);
 
-    // Attempt to send the data to the async channel. If the receiver has been dropped, return EOF.
-    match opaque_ref.flv_packet_tx.send(FlvPacket::Data {
-        live_id: opaque_ref.live_id.clone(),
-        data,
-    }) {
+    let tag = match FlvTag::try_from(data) {
+        Ok(tag) => tag,
+        Err(_) => return AVERROR(EINVAL),
+    };
+
+    match opaque_ref.flv_tag_tx.send(tag) {
         Ok(_) => buf_size,
         Err(_) => AVERROR_EOF,
     }

@@ -69,8 +69,11 @@ impl SrtConnection {
                 Err(e) => anyhow::bail!("Error reading packet: {}", e),
             }
 
-            self.packet_tx
-                .send(WrappedPacket::new(&self.live_id, packet.clone()))?;
+            self.packet_tx.send(WrappedPacket::new(
+                &self.live_id,
+                packet.clone(),
+                &self.cancel_token,
+            ))?;
         }
 
         state = SrtState::Disconnected;

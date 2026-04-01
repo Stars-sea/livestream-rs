@@ -106,10 +106,13 @@ impl SrtServer {
     }
 
     async fn handle_packet_received(&mut self, packet: WrappedPacket) -> Result<()> {
-        let WrappedPacket { stream_id, packet } = packet;
+        let WrappedPacket {
+            stream_id,
+            packet,
+            cancel_token,
+        } = packet;
 
-        let context =
-            UnifiedPacketContext::new(stream_id.clone(), packet.into(), self.cancel_token.clone());
+        let context = UnifiedPacketContext::new(stream_id.clone(), packet.into(), cancel_token);
         self.bus.send_packet(context).await?;
         Ok(())
     }

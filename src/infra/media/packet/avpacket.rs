@@ -1,8 +1,8 @@
 //! FFmpeg packet wrapper for safe packet operations.
 
 use crate::infra::media::context::{Context, OutputContext};
-use crate::infra::media::stream::StreamCollection;
 use crate::infra::media::ffmpeg_error;
+use crate::infra::media::stream::StreamCollection;
 
 use anyhow::{Result, anyhow};
 use ffmpeg_sys_next::*;

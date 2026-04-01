@@ -14,7 +14,7 @@ use std::ptr::{null, null_mut};
 /// # Safety
 /// Implementors must ensure the context pointer is valid and properly managed.
 #[allow(drop_bounds)]
-pub(crate) trait Context: Drop {
+pub trait Context: Drop {
     /// Returns the underlying AVFormatContext pointer.
     ///
     /// # Safety

@@ -66,7 +66,11 @@ impl HandlerTrait for PublishHandler {
             } => {
                 let flv_tag = FlvTag::audio(timestamp.value, data);
                 self.tag_tx
-                    .send(WrappedFlvTag::new(&self.stream_key, flv_tag))
+                    .send(WrappedFlvTag::new(
+                        &self.stream_key,
+                        flv_tag,
+                        &self.cancel_token,
+                    ))
                     .await?;
             }
             ServerSessionEvent::VideoDataReceived {
@@ -74,13 +78,21 @@ impl HandlerTrait for PublishHandler {
             } => {
                 let flv_tag = FlvTag::video(timestamp.value, data);
                 self.tag_tx
-                    .send(WrappedFlvTag::new(&self.stream_key, flv_tag))
+                    .send(WrappedFlvTag::new(
+                        &self.stream_key,
+                        flv_tag,
+                        &self.cancel_token,
+                    ))
                     .await?;
             }
             ServerSessionEvent::StreamMetadataChanged { metadata, .. } => {
                 let flv_tag = FlvTag::script_data(metadata);
                 self.tag_tx
-                    .send(WrappedFlvTag::new(&self.stream_key, flv_tag))
+                    .send(WrappedFlvTag::new(
+                        &self.stream_key,
+                        flv_tag,
+                        &self.cancel_token,
+                    ))
                     .await?;
             }
 

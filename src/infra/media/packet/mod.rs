@@ -41,12 +41,16 @@ impl From<FlvTag> for UnifiedPacket {
     }
 }
 
-impl Into<Option<Packet>> for UnifiedPacket {
-    fn into(self) -> Option<Packet> {
-        match self {
-            UnifiedPacket::AVPacket(pkt) => Some(pkt),
-            UnifiedPacket::FlvTag(tag) => tag.into(),
-            UnifiedPacket::Init(..) => None,
+impl TryFrom<UnifiedPacket> for Packet {
+    type Error = anyhow::Error;
+
+    fn try_from(value: UnifiedPacket) -> Result<Self, Self::Error> {
+        match value {
+            UnifiedPacket::AVPacket(pkt) => Ok(pkt),
+            UnifiedPacket::FlvTag(tag) => tag.try_into(),
+            UnifiedPacket::Init(_) => {
+                anyhow::bail!("Init packets cannot be converted to AVPackets")
+            }
         }
     }
 }

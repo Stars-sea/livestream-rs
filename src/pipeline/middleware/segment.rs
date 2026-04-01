@@ -179,7 +179,7 @@ impl MiddlewareTrait for SegmentMiddleware {
                     .await?;
             }
             UnifiedPacket::FlvTag(tag) => {
-                let maybe_packet: Option<Packet> = tag.clone().into();
+                let maybe_packet: Option<Packet> = tag.clone().try_into().ok();
 
                 if let Some(packet) = maybe_packet {
                     self.write_packet_for_stream(&stream_id, packet).await?;

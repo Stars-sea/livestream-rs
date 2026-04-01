@@ -1,6 +1,9 @@
+use std::io::Cursor;
+
 use anyhow::Result;
 use bytes::Bytes;
 use ffmpeg_sys_next::{AVRational, av_malloc, av_rescale_q};
+use rml_rtmp::rml_amf0::Amf0Value;
 use rml_rtmp::sessions::StreamMetadata;
 
 use super::Packet;
@@ -38,37 +41,40 @@ impl FlvTag {
         FlvTag::ScriptData(metadata)
     }
 
-    pub fn to_packet(self, stream: &impl StreamTrait) -> Result<Option<Packet>> {
-        self.convert_packet(stream.time_base(), stream.index())
+    #[allow(unused)]
+    pub fn to_packet(self, stream: &impl StreamTrait) -> Result<Packet> {
+        self.convert_packet(stream.time_base(), stream.index(), stream.index())
     }
 
     pub fn convert_packet(
         self,
         time_base: AVRational,
-        stream_idx: usize,
-    ) -> Result<Option<Packet>> {
-        let packet = match self {
-            FlvTag::Audio { timestamp, payload } => Some(Self::make_packet(
-                payload.clone(),
+        audio_stream_idx: usize,
+        video_stream_idx: usize,
+    ) -> Result<Packet> {
+        match self {
+            FlvTag::Audio { timestamp, payload } => Ok(Self::make_packet(
+                payload,
                 timestamp,
                 time_base,
                 false,
-                stream_idx,
+                audio_stream_idx,
             )?),
             FlvTag::Video {
                 timestamp,
                 payload,
                 is_keyframe,
-            } => Some(Self::make_packet(
-                payload.clone(),
+            } => Ok(Self::make_packet(
+                payload,
                 timestamp,
                 time_base,
                 is_keyframe,
-                stream_idx,
+                video_stream_idx,
             )?),
-            FlvTag::ScriptData(_) => None,
-        };
-        Ok(packet)
+            FlvTag::ScriptData(_) => {
+                anyhow::bail!("ScriptData tags cannot be converted to AVPackets")
+            }
+        }
     }
 
     fn make_packet(
@@ -113,25 +119,72 @@ impl FlvTag {
     }
 }
 
-impl Into<Option<Packet>> for FlvTag {
-    fn into(self) -> Option<Packet> {
-        match self {
-            FlvTag::Audio { timestamp, payload } => FlvTag::Audio { timestamp, payload }
-                .convert_packet(AVRational { num: 1, den: 1000 }, 1)
-                .ok()?,
-            FlvTag::Video {
-                timestamp,
-                payload,
-                is_keyframe,
-            } => FlvTag::Video {
-                timestamp,
-                payload,
-                is_keyframe,
-            }
-            .convert_packet(AVRational { num: 1, den: 1000 }, 0)
-            .ok()?,
-            FlvTag::ScriptData(_) => None,
+impl TryFrom<Bytes> for FlvTag {
+    type Error = anyhow::Error;
+
+    fn try_from(data: Bytes) -> Result<Self, Self::Error> {
+        // Expect one complete FLV tag block: header(11) + payload(data_size) + previous_tag_size(4)
+        if data.len() < 15 {
+            anyhow::bail!("FLV tag buffer too small: {}", data.len());
         }
+
+        let tag_type = data[0];
+        let data_size = ((data[1] as usize) << 16) | ((data[2] as usize) << 8) | (data[3] as usize);
+        let expected_len = 11 + data_size + 4;
+        if data.len() < expected_len {
+            anyhow::bail!(
+                "Incomplete FLV tag buffer: have {}, expect {}",
+                data.len(),
+                expected_len
+            );
+        }
+
+        let ts_low = ((data[4] as u32) << 16) | ((data[5] as u32) << 8) | (data[6] as u32);
+        let ts_ext = data[7] as u32;
+        let timestamp = (ts_ext << 24) | ts_low;
+
+        let payload = data.slice(11..(11 + data_size));
+
+        match tag_type {
+            8 => Ok(FlvTag::audio(timestamp, payload)),
+            9 => Ok(FlvTag::video(timestamp, payload)),
+            18 => {
+                let metadata = parse_script_data_metadata(payload)?;
+                Ok(FlvTag::script_data(metadata))
+            }
+            _ => anyhow::bail!("Unsupported FLV tag type: {}", tag_type),
+        }
+    }
+}
+
+fn parse_script_data_metadata(payload: Bytes) -> Result<StreamMetadata> {
+    let mut cursor = Cursor::new(payload);
+    let mut values = rml_rtmp::rml_amf0::deserialize(&mut cursor)?;
+
+    if values.len() < 2 {
+        anyhow::bail!("ScriptData payload is missing required AMF values");
+    }
+
+    match &values[0] {
+        Amf0Value::Utf8String(name) if name == "onMetaData" => {}
+        _ => anyhow::bail!("ScriptData event is not onMetaData"),
+    }
+
+    let object = values.remove(1);
+    let mut metadata = StreamMetadata::new();
+    if let Some(properties) = object.get_object_properties() {
+        metadata.apply_metadata_values(properties);
+    }
+
+    Ok(metadata)
+}
+
+impl TryFrom<FlvTag> for Packet {
+    type Error = anyhow::Error;
+
+    fn try_from(value: FlvTag) -> Result<Self, Self::Error> {
+        // FLV default stream layout in this project: video=0, audio=1.
+        value.convert_packet(AVRational { num: 1, den: 1000 }, 1, 0)
     }
 }
 
