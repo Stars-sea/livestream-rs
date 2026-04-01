@@ -1,22 +1,28 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use crossfire::MTx;
+use crossfire::mpsc::List;
 
 use crate::config::AppConfig;
 use crate::infra;
 use crate::pipeline::Pipe;
 use crate::pipeline::UnifiedPacketContext;
 use crate::pipeline::handler::SegmentPersistenceHandler;
-use crate::pipeline::middleware::{BroadcastMiddleware, SegmentMiddleware};
+use crate::pipeline::middleware::{
+    BroadcastMiddleware, FlvMuxForwardMiddleware, SegmentMiddleware,
+};
 use crate::pipeline::pipe::PipeFactory;
+use crate::transport::contract::message::StreamFlvTag;
 
 pub struct UnifiedPipeFactory {
     minio_client: infra::MinioClient,
     segment_duration: Duration,
+    rtmp_tag_tx: MTx<List<StreamFlvTag>>,
 }
 
 impl UnifiedPipeFactory {
-    pub async fn new(config: &AppConfig) -> Result<Self> {
+    pub async fn new(config: &AppConfig, rtmp_tag_tx: MTx<List<StreamFlvTag>>) -> Result<Self> {
         let minio = config
             .minio
             .clone()
@@ -27,6 +33,7 @@ impl UnifiedPipeFactory {
         Ok(Self {
             minio_client,
             segment_duration,
+            rtmp_tag_tx,
         })
     }
 }
@@ -37,9 +44,10 @@ impl PipeFactory for UnifiedPipeFactory {
     fn create(&self) -> Pipe<Self::Context> {
         let minio_client = self.minio_client.clone();
         SegmentPersistenceHandler::spawn(minio_client);
-        let broadcast = BroadcastMiddleware::<UnifiedPacketContext>::new();
-        let segment = SegmentMiddleware::new(self.segment_duration);
 
-        Pipe::new().with(broadcast).with(segment)
+        Pipe::new()
+            .with(BroadcastMiddleware::new())
+            .with(FlvMuxForwardMiddleware::new(self.rtmp_tag_tx.clone()))
+            .with(SegmentMiddleware::new(self.segment_duration))
     }
 }

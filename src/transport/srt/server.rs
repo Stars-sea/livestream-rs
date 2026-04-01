@@ -112,6 +112,7 @@ impl SrtServer {
             cancel_token,
         } = packet;
 
+        // TODO: Send UnifiedPacket::Init
         let context = UnifiedPacketContext::new(stream_id.clone(), packet.into(), cancel_token);
         self.bus.send_packet(context).await?;
         Ok(())

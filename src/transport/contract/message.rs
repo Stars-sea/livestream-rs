@@ -1,4 +1,5 @@
 use super::state::SessionState;
+use crate::infra::media::packet::FlvTag;
 
 #[derive(Debug, Clone)]
 pub enum ControlMessage {
@@ -12,4 +13,16 @@ pub enum StreamEvent {
         live_id: String,
         new_state: SessionState,
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamFlvTag {
+    pub stream_id: String,
+    pub tag: FlvTag,
+}
+
+impl StreamFlvTag {
+    pub fn new(stream_id: String, tag: FlvTag) -> Self {
+        Self { stream_id, tag }
+    }
 }

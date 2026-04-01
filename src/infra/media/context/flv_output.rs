@@ -59,6 +59,8 @@ impl FlvOutputContext {
     }
 }
 
+unsafe impl Send for FlvOutputContext {}
+
 impl Drop for FlvOutputContext {
     fn drop(&mut self) {
         if self.ctx.is_null() {

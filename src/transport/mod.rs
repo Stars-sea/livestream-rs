@@ -1,4 +1,4 @@
-mod contract;
+pub mod contract;
 mod controller;
 mod registry;
 mod server;

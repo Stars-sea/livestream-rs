@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 use super::TransportController;
-use super::contract::message::{ControlMessage, StreamEvent};
+use super::contract::message::{ControlMessage, StreamEvent, StreamFlvTag};
 use super::contract::state::{ConnectionStateTrait, SessionState};
 use super::registry::global;
 use super::rtmp::RtmpServer;
@@ -21,6 +21,7 @@ use crate::pipeline::PipeBus;
 pub struct TransportServer {
     rtmp_config: RtmpConfig,
     srt_config: SrtConfig,
+    rtmp_tag_rx: Option<AsyncRx<spsc::List<StreamFlvTag>>>,
 
     bus: PipeBus,
 
@@ -31,28 +32,42 @@ impl TransportServer {
     pub fn new(
         rtmp_config: RtmpConfig,
         srt_config: SrtConfig,
+        rtmp_tag_rx: AsyncRx<spsc::List<StreamFlvTag>>,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             rtmp_config,
             srt_config,
+            rtmp_tag_rx: Some(rtmp_tag_rx),
             bus,
             cancel_token,
         }
     }
 
     async fn rtmp_server(
-        &self,
+        &mut self,
         rx: AsyncRx<spsc::List<ControlMessage>>,
         event_tx: MTx<mpsc::List<StreamEvent>>,
     ) -> Result<RtmpServer> {
         let appname = self.rtmp_config.appname.clone();
         let cancel_token = self.cancel_token.child_token();
+        let rtmp_tag_rx = self
+            .rtmp_tag_rx
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("RTMP forwarded tag receiver already taken"))?;
 
         let addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.rtmp_config.port))?;
-        let server =
-            RtmpServer::create(addr, appname, rx, event_tx, self.bus.clone(), cancel_token).await?;
+        let server = RtmpServer::create(
+            addr,
+            appname,
+            rx,
+            event_tx,
+            rtmp_tag_rx,
+            self.bus.clone(),
+            cancel_token,
+        )
+        .await?;
         Ok(server)
     }
 
@@ -83,7 +98,7 @@ impl TransportServer {
         Ok(server)
     }
 
-    pub async fn spawn_task(self) -> Result<TransportController> {
+    pub async fn spawn_task(mut self) -> Result<TransportController> {
         let (rtmp_msg_tx, rtmp_msg_rx) = spsc::unbounded_async();
         let (srt_msg_tx, srt_msg_rx) = spsc::unbounded_async();
         let (event_tx, event_rx) = mpsc::unbounded_async();

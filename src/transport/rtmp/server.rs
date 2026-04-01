@@ -1,7 +1,9 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::Result;
 use crossfire::{AsyncRx, MAsyncTx, MTx, mpsc, spsc};
+use dashmap::DashMap;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -10,7 +12,7 @@ use tracing::{debug, error, warn};
 use super::connection::RtmpConnection;
 use crate::infra::media::packet::FlvTag;
 use crate::pipeline::{PipeBus, UnifiedPacketContext};
-use crate::transport::contract::message::{ControlMessage, StreamEvent};
+use crate::transport::contract::message::{ControlMessage, StreamEvent, StreamFlvTag};
 use crate::transport::contract::state::{RtmpState, SessionDescriptor, SessionState};
 use crate::transport::registry::global;
 use crate::transport::rtmp::handler::HandlerBuilder;
@@ -24,6 +26,8 @@ pub struct RtmpServer {
     event_tx: MTx<mpsc::List<StreamEvent>>,
     publish_tag_rx: AsyncRx<mpsc::List<WrappedFlvTag>>,
     publish_tag_tx: MTx<mpsc::List<WrappedFlvTag>>,
+    play_tag_senders: Arc<DashMap<String, broadcast::Sender<FlvTag>>>,
+    rtmp_tag_rx: AsyncRx<mpsc::List<StreamFlvTag>>,
 
     bus: PipeBus,
 
@@ -36,6 +40,7 @@ impl RtmpServer {
         appname: String,
         ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
         event_tx: MTx<mpsc::List<StreamEvent>>,
+        rtmp_tag_rx: AsyncRx<mpsc::List<StreamFlvTag>>,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
@@ -50,6 +55,8 @@ impl RtmpServer {
             event_tx,
             publish_tag_rx: tag_rx,
             publish_tag_tx: tag_tx,
+            play_tag_senders: Arc::new(DashMap::new()),
+            rtmp_tag_rx,
             bus,
             cancel_token,
         })
@@ -85,6 +92,13 @@ impl RtmpServer {
                         Err(e) => debug!("Error receiving packet: {:?}", e),
                     }
                 }
+
+                tag = self.rtmp_tag_rx.recv() => {
+                    match tag {
+                        Ok(tag) => self.handle_forwarded_tag(tag),
+                        Err(e) => debug!("Error receiving forwarded RTMP tag: {:?}", e),
+                    }
+                }
             }
         }
 
@@ -115,6 +129,7 @@ impl RtmpServer {
 
     fn accept_client(&self, socket: TcpStream, addr: SocketAddr) -> Result<()> {
         debug!(client_addr = %addr, "Accepted new RTMP connection");
+        let play_tag_senders = self.play_tag_senders.clone();
 
         // Handle the connection in a separate task
         tokio::spawn(spawn_connection_handler(
@@ -122,10 +137,26 @@ impl RtmpServer {
             socket,
             self.event_tx.clone(),
             self.publish_tag_tx.clone().into_async(),
-            |stream_key| todo!(),
+            move |stream_key| {
+                let tx = play_tag_senders.entry(stream_key).or_insert_with(|| {
+                    let (sender, _) = broadcast::channel(1024);
+                    sender
+                });
+                tx.subscribe()
+            },
         ));
 
         Ok(())
+    }
+
+    fn handle_forwarded_tag(&self, packet: StreamFlvTag) {
+        let StreamFlvTag { stream_id, tag } = packet;
+
+        if let Some(tx) = self.play_tag_senders.get(&stream_id) {
+            if tx.send(tag).is_err() {
+                debug!(stream_id = %stream_id, "No active RTMP play subscribers");
+            }
+        }
     }
 
     async fn handle_packet_received(&mut self, packet: WrappedFlvTag) -> Result<()> {
