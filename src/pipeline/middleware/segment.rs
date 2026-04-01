@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -5,6 +6,7 @@ use anyhow::Result;
 use dashmap::DashMap;
 use tempfile::{Builder, TempDir};
 use tokio::sync::Mutex;
+use tracing::warn;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait};
 use crate::dispatcher::{self, SessionEvent};
@@ -12,6 +14,7 @@ use crate::infra::media::StreamCollection;
 use crate::infra::media::context::HlsOutputContext;
 use crate::infra::media::packet::{Packet, UnifiedPacket};
 use crate::pipeline::UnifiedPacketContext;
+use crate::pipeline::normalize::normalize_component;
 
 struct SegmentState {
     hls_ctx: Option<HlsOutputContext>,
@@ -40,7 +43,13 @@ impl SegmentState {
         packet.is_key_frame() && self.segment_started_at.elapsed() >= segment_duration
     }
 
-    fn rollover(&mut self) -> Result<()> {
+    fn rollover(&mut self) -> Result<PathBuf> {
+        let completed_segment_path = self
+            .hls_ctx
+            .as_ref()
+            .map(|ctx| ctx.path().clone())
+            .ok_or_else(|| anyhow::anyhow!("Missing active HLS context during rollover"))?;
+
         self.segment_id = self.segment_id.saturating_add(1);
         let next_ctx = HlsOutputContext::create_segment(
             self.temp_dir.path(),
@@ -49,7 +58,7 @@ impl SegmentState {
         )?;
         self.hls_ctx = Some(next_ctx);
         self.segment_started_at = Instant::now();
-        Ok(())
+        Ok(completed_segment_path)
     }
 }
 
@@ -79,6 +88,15 @@ impl SegmentMiddleware {
         }
     }
 
+    async fn emit_segment_complete(live_id: String, segment_path: PathBuf) {
+        dispatcher::singleton()
+            .await
+            .send(SessionEvent::SegmentComplete {
+                live_id,
+                path: segment_path,
+            });
+    }
+
     fn spawn_cleanup_listener(contexts: Arc<DashMap<String, Arc<Mutex<Option<SegmentState>>>>>) {
         tokio::spawn(async move {
             let dispatcher = dispatcher::singleton().await;
@@ -88,7 +106,16 @@ impl SegmentMiddleware {
                 if let SessionEvent::SessionEnded { live_id, .. } = event {
                     if let Some((_, slot)) = contexts.remove(&live_id) {
                         let mut guard = slot.lock().await;
+
+                        let completed_segment_path = guard
+                            .as_ref()
+                            .and_then(|state| state.hls_ctx.as_ref().map(|ctx| ctx.path().clone()));
+
                         *guard = None;
+
+                        if let Some(segment_path) = completed_segment_path {
+                            Self::emit_segment_complete(live_id, segment_path).await;
+                        }
                     }
                 }
             }
@@ -102,8 +129,11 @@ impl SegmentMiddleware {
             .clone()
     }
 
-    fn create_stream_temp_dir() -> Result<TempDir> {
-        Ok(Builder::new().prefix("livestream-rs-segment-").tempdir()?)
+    fn create_stream_temp_dir(stream_id: &str) -> Result<TempDir> {
+        let sanitized = normalize_component(stream_id);
+        let prefix = format!("livestream-rs-segment-{}-", sanitized);
+
+        Ok(Builder::new().prefix(&prefix).tempdir()?)
     }
 
     async fn write_packet_for_stream(&self, stream_id: &str, packet: Packet) -> Result<()> {
@@ -112,12 +142,15 @@ impl SegmentMiddleware {
 
         if let Some(state) = guard.as_mut() {
             if state.should_rollover(&packet, self.segment_duration) {
-                state.rollover()?;
+                let completed_segment_path = state.rollover()?;
+                Self::emit_segment_complete(stream_id.to_string(), completed_segment_path).await;
             }
 
             if let Some(hls_ctx) = state.hls_ctx.as_mut() {
                 packet.write(hls_ctx)?;
             }
+        } else {
+            warn!(stream_id = %stream_id, "Uninitialized before packet write, ignored.");
         }
 
         Ok(())
@@ -133,7 +166,7 @@ impl MiddlewareTrait for SegmentMiddleware {
 
         match ctx.payload() {
             UnifiedPacket::Init(streams) => {
-                let temp_dir = Self::create_stream_temp_dir()?;
+                let temp_dir = Self::create_stream_temp_dir(&stream_id)?;
                 let hls_ctx =
                     HlsOutputContext::create_segment(temp_dir.path(), streams.as_ref(), 0)?;
 

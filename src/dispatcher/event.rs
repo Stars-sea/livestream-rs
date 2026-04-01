@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 #[derive(Clone, Copy, Debug)]
 pub enum Protocal {
     Rtmp,
@@ -10,4 +12,6 @@ pub enum SessionEvent {
 
     // TODO: add more fields, such as error code, error message, etc.
     SessionEnded { live_id: String, protocal: Protocal },
+
+    SegmentComplete { live_id: String, path: PathBuf },
 }
