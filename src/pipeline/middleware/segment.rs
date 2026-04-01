@@ -7,7 +7,6 @@ use tempfile::{Builder, TempDir};
 use tokio::sync::Mutex;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait};
-use crate::config;
 use crate::dispatcher::{self, SessionEvent};
 use crate::infra::media::StreamCollection;
 use crate::infra::media::context::HlsOutputContext;
@@ -70,14 +69,13 @@ pub struct SegmentMiddleware {
 }
 
 impl SegmentMiddleware {
-    pub fn new() -> Self {
+    pub fn new(segment_duration: Duration) -> Self {
         let contexts = Arc::new(DashMap::new());
         Self::spawn_cleanup_listener(contexts.clone());
-        let duration_secs = config::load_config().srt.duration.max(1) as u64;
 
         Self {
             contexts,
-            segment_duration: Duration::from_secs(duration_secs),
+            segment_duration,
         }
     }
 
@@ -123,12 +121,6 @@ impl SegmentMiddleware {
         }
 
         Ok(())
-    }
-}
-
-impl Default for SegmentMiddleware {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

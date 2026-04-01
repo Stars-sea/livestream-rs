@@ -29,8 +29,8 @@ async fn main() -> Result<()> {
 
     let cancel_token = CancellationToken::new();
 
-    let minio_client = infra::MinioClient::create(config.minio.clone().unwrap()).await?;
-    let packet_pipe = Arc::new(UnifiedPipeFactory::new(minio_client).create());
+    let factory = UnifiedPipeFactory::new(&config).await?;
+    let packet_pipe = Arc::new(factory.create());
     let packet_bus = PipeBus::new(packet_pipe);
 
     let transport_server = TransportServer::new(
