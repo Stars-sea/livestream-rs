@@ -42,7 +42,12 @@ impl HlsOutputContext {
 
         // Write header
         if let Err(e) = Self::write_header(output_ctx) {
-            unsafe { avformat_free_context(output_ctx) };
+            unsafe {
+                if !(*output_ctx).pb.is_null() {
+                    avio_closep(&mut (*output_ctx).pb);
+                }
+                avformat_free_context(output_ctx)
+            };
             return Err(e);
         }
 

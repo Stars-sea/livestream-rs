@@ -60,6 +60,9 @@ impl FlvOutputContext {
                     (*ctx).flags |= AVFMT_FLAG_CUSTOM_IO;
                 },
                 Err(e) => {
+                    unsafe {
+                        let _ = Arc::from_raw(opaque_ptr as *const FlvAvioOpaque);
+                    }
                     unsafe { avformat_free_context(ctx) };
                     return Err(e);
                 }
@@ -67,7 +70,7 @@ impl FlvOutputContext {
         }
 
         if let Err(e) = Self::write_header(ctx) {
-            unsafe { avformat_free_context(ctx) };
+            unsafe { Self::cleanup_ctx(ctx) };
             return Err(e);
         }
 
@@ -82,19 +85,7 @@ impl Drop for FlvOutputContext {
         }
 
         self.write_trailer().ok();
-        unsafe {
-            let pb = (*self.ctx).pb;
-            if !pb.is_null() {
-                if !(*pb).opaque.is_null() {
-                    let _ = Arc::from_raw((*pb).opaque as *const FlvAvioOpaque);
-                    (*pb).opaque = null_mut();
-                }
-                av_freep(&mut (*pb).buffer as *mut _ as *mut c_void);
-            }
-
-            avio_context_free(&mut (*self.ctx).pb);
-            avformat_free_context(self.ctx);
-        }
+        unsafe { Self::cleanup_ctx(self.ctx) };
         self.ctx = null_mut();
     }
 }
@@ -159,6 +150,24 @@ impl OutputContext for FlvOutputContext {
 }
 
 impl FlvOutputContext {
+    unsafe fn cleanup_ctx(ctx: *mut AVFormatContext) {
+        if ctx.is_null() {
+            return;
+        }
+
+        let pb = unsafe { (*ctx).pb };
+        if !pb.is_null() {
+            if unsafe { !(*pb).opaque.is_null() } {
+                let _ = unsafe { Arc::from_raw((*pb).opaque as *const FlvAvioOpaque) };
+                unsafe { (*pb).opaque = null_mut() };
+            }
+            unsafe { av_freep(&mut (*pb).buffer as *mut _ as *mut c_void) };
+        }
+
+        unsafe { avio_context_free(&mut (*ctx).pb) };
+        unsafe { avformat_free_context(ctx) };
+    }
+
     #[allow(dead_code)]
     pub fn get_flv_packet_sender(&self) -> Option<MTx<mpsc::List<FlvPacket>>> {
         if self.ctx.is_null() {

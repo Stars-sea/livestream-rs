@@ -29,7 +29,7 @@ pub trait StreamTrait {
 pub trait StreamCollection {
     fn stream_count(&self) -> usize;
 
-    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait>>;
+    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait + '_>>;
 }
 
 impl StreamTrait for *mut AVStream {
@@ -57,7 +57,7 @@ impl<C: Context> StreamCollection for C {
     ///
     /// # Returns
     /// Some(Stream) if the index is valid, None otherwise.
-    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait>> {
+    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait + '_>> {
         if index < self.stream_count() {
             let ptr = unsafe { *(*self.ptr()).streams.offset(index as isize) };
             Some(Box::new(ptr))
@@ -72,7 +72,7 @@ impl StreamCollection for StreamMetadata {
         2
     }
 
-    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait>> {
+    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait + '_>> {
         match index {
             0 => {
                 let params = OwnedCodecParams::create_dummy_video(self).ok()?;

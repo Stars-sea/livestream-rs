@@ -82,11 +82,17 @@ fn free_input_context(ctx: *mut AVFormatContext) {
         return;
     }
     unsafe {
-        let opaque = (*ctx).interrupt_callback.opaque;
+        // Keep opaque alive while closing to avoid callback accessing freed memory.
+        let opaque = (*ctx).interrupt_callback.opaque as *mut CancellationToken;
+        (*ctx).interrupt_callback.callback = None;
+        (*ctx).interrupt_callback.opaque = null_mut();
+
+        let mut ctx_ptr = ctx;
+        avformat_close_input(&mut ctx_ptr);
+
         if !opaque.is_null() {
-            let _ = Box::from_raw(opaque as *mut CancellationToken);
+            let _ = Box::from_raw(opaque);
         }
-        avformat_close_input(&mut { ctx });
     }
 }
 

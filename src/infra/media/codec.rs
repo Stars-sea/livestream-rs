@@ -111,6 +111,8 @@ impl OwnedCodecParams {
             anyhow::bail!("Failed to copy codec parameters: {}", err_msg);
         }
 
+        unsafe { avcodec_free_context(&mut codec_ctx) };
+
         Ok(Self { ptr: codec_params })
     }
 
@@ -155,6 +157,9 @@ impl OwnedCodecParams {
             let err_msg = ffmpeg_error(ret);
             anyhow::bail!("Failed to copy codec parameters: {}", err_msg);
         }
+
+        unsafe { avcodec_free_context(&mut codec_ctx) };
+
         Ok(Self { ptr: codec_params })
     }
 }

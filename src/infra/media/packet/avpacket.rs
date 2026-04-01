@@ -133,6 +133,10 @@ unsafe impl Sync for Packet {}
 impl Clone for Packet {
     fn clone(&self) -> Self {
         let pkt_ptr = unsafe { av_packet_clone(self.packet) };
+        assert!(
+            !pkt_ptr.is_null(),
+            "av_packet_clone returned null (allocation failure)"
+        );
         Self { packet: pkt_ptr }
     }
 }
