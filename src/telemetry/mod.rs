@@ -1,16 +1,11 @@
 #[cfg(feature = "opentelemetry")]
 mod init;
 
-#[cfg(feature = "opentelemetry")]
-pub mod metrics;
-
-#[cfg(not(feature = "opentelemetry"))]
-#[path = "metrics_noop.rs"]
 pub mod metrics;
 
 #[cfg(feature = "opentelemetry")]
 #[allow(unused_imports)]
-pub use init::{setup_telemetry, OtelGuard};
+pub use init::{OtelGuard, setup_telemetry};
 
 #[cfg(not(feature = "opentelemetry"))]
 pub struct OtelGuard;
