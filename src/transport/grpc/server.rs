@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -8,6 +9,7 @@ use tokio::time::{Instant, sleep};
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
+use tracing::warn;
 
 use super::api;
 use crate::config::{GrpcConfig, RtmpConfig};
@@ -18,6 +20,9 @@ use crate::transport::contract::state::{
 use crate::transport::registry::global;
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
+const DESCRIPTOR_READY_TIMEOUT: Duration = Duration::from_secs(2);
+const SESSION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 pub struct GrpcServer {
     grpc_config: GrpcConfig,
@@ -62,23 +67,46 @@ impl IngestGrpcService {
         }
     }
 
-    async fn wait_for_descriptor(
-        &self,
-        live_id: &str,
-        timeout: Duration,
-    ) -> Option<SessionDescriptor> {
+    async fn wait_until<T, F, Fut>(&self, timeout: Duration, mut check: F) -> Option<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Option<T>>,
+    {
         let deadline = Instant::now() + timeout;
         loop {
-            if let Some(descriptor) = global::get_session_descriptor(live_id).await {
-                return Some(descriptor);
+            if let Some(value) = check().await {
+                return Some(value);
             }
 
             if Instant::now() >= deadline {
                 return None;
             }
 
-            sleep(Duration::from_millis(20)).await;
+            sleep(POLL_INTERVAL).await;
         }
+    }
+
+    async fn wait_for_descriptor(
+        &self,
+        live_id: &str,
+        timeout: Duration,
+    ) -> Option<SessionDescriptor> {
+        self.wait_until(timeout, || async {
+            global::get_session_descriptor(live_id).await
+        })
+        .await
+    }
+
+    async fn wait_for_session_removed(&self, live_id: &str, timeout: Duration) -> bool {
+        self.wait_until(timeout, || async {
+            if global::get_session(live_id).await.is_none() {
+                Some(())
+            } else {
+                None
+            }
+        })
+        .await
+        .is_some()
     }
 }
 
@@ -131,13 +159,29 @@ impl api::livestream_server::Livestream for IngestGrpcService {
             }
         }
 
-        // TODO:
-        // if we cannot get the descriptor within a reasonable time,
-        // we should probably clean up the session and return an error
         let descriptor = self
-            .wait_for_descriptor(&live_id, Duration::from_secs(2))
-            .await
-            .ok_or_else(|| Status::internal("stream descriptor creation timed out"))?;
+            .wait_for_descriptor(&live_id, DESCRIPTOR_READY_TIMEOUT)
+            .await;
+
+        let descriptor = match descriptor {
+            Some(descriptor) => descriptor,
+            None => {
+                if let Err(e) = self.control.lock().await.close_session(live_id.clone()) {
+                    warn!(live_id = %live_id, error = %e, "failed to cleanup timed-out stream session");
+                }
+
+                if !self
+                    .wait_for_session_removed(&live_id, SESSION_CLEANUP_TIMEOUT)
+                    .await
+                {
+                    warn!(live_id = %live_id, "timed out waiting for session cleanup after start timeout");
+                }
+
+                return Err(Status::deadline_exceeded(
+                    "stream descriptor creation timed out",
+                ));
+            }
+        };
 
         Ok(Response::new(api::StartIngestStreamResponse {
             stream: Some(self.descriptor_to_proto(descriptor)),
@@ -161,13 +205,18 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         self.control
             .lock()
             .await
-            .close_session(live_id)
+            .close_session(live_id.clone())
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // TODO: wait until the session is fully cleaned up before returning success
-        Ok(Response::new(api::StopIngestStreamResponse {
-            is_success: true,
-        }))
+        let is_success = self
+            .wait_for_session_removed(&live_id, SESSION_CLEANUP_TIMEOUT)
+            .await;
+
+        if !is_success {
+            warn!(live_id = %live_id, "timed out waiting for stream cleanup after stop request");
+        }
+
+        Ok(Response::new(api::StopIngestStreamResponse { is_success }))
     }
 
     async fn list_ingest_streams(

@@ -11,7 +11,9 @@ pub enum ControlMessage {
         passphrase: Option<String>,
     },
 
-    StopStream { live_id: String },
+    StopStream {
+        live_id: String,
+    },
 }
 
 pub enum StreamEvent {
