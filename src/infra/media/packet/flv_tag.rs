@@ -2,12 +2,13 @@ use std::io::Cursor;
 
 use anyhow::Result;
 use bytes::Bytes;
-use ffmpeg_sys_next::{AVRational, av_malloc, av_rescale_q};
+use ffmpeg_sys_next::{AVMediaType, AVRational, av_malloc, av_rescale_q};
 use rml_rtmp::rml_amf0::Amf0Value;
 use rml_rtmp::sessions::StreamMetadata;
 
 use super::Packet;
-use crate::infra::media::StreamTrait;
+use crate::infra::media::codec::CodecParamsTrait;
+use crate::infra::media::stream::StreamCollection;
 
 #[derive(Clone, Debug)]
 pub enum FlvTag {
@@ -41,24 +42,16 @@ impl FlvTag {
         FlvTag::ScriptData(metadata)
     }
 
-    #[allow(unused)]
-    pub fn to_packet(self, stream: &impl StreamTrait) -> Result<Packet> {
-        self.convert_packet(stream.time_base(), stream.index(), stream.index())
-    }
+    pub fn to_packet(self, streams: &dyn StreamCollection) -> Result<Packet> {
+        let mapping = FlvStreamMapping::from_streams(streams)?;
 
-    pub fn convert_packet(
-        self,
-        time_base: AVRational,
-        audio_stream_idx: usize,
-        video_stream_idx: usize,
-    ) -> Result<Packet> {
         match self {
             FlvTag::Audio { timestamp, payload } => Ok(Self::make_packet(
                 payload,
                 timestamp,
-                time_base,
+                mapping.audio_time_base,
                 false,
-                audio_stream_idx,
+                mapping.audio_stream_idx,
             )?),
             FlvTag::Video {
                 timestamp,
@@ -67,9 +60,9 @@ impl FlvTag {
             } => Ok(Self::make_packet(
                 payload,
                 timestamp,
-                time_base,
+                mapping.video_time_base,
                 is_keyframe,
-                video_stream_idx,
+                mapping.video_stream_idx,
             )?),
             FlvTag::ScriptData(_) => {
                 anyhow::bail!("ScriptData tags cannot be converted to AVPackets")
@@ -116,6 +109,57 @@ impl FlvTag {
             }
         }
         Ok(pkt)
+    }
+}
+
+struct FlvStreamMapping {
+    audio_stream_idx: usize,
+    video_stream_idx: usize,
+    audio_time_base: AVRational,
+    video_time_base: AVRational,
+}
+
+impl FlvStreamMapping {
+    fn from_streams(streams: &dyn StreamCollection) -> Result<Self> {
+        let mut audio_stream_idx: Option<usize> = None;
+        let mut video_stream_idx: Option<usize> = None;
+        let mut audio_time_base: Option<AVRational> = None;
+        let mut video_time_base: Option<AVRational> = None;
+
+        for i in 0..streams.stream_count() {
+            let Some(stream) = streams.stream(i) else {
+                continue;
+            };
+
+            let codec_params = stream.codec_params_ptr();
+            match codec_params.codec_type() {
+                AVMediaType::AVMEDIA_TYPE_AUDIO if audio_stream_idx.is_none() => {
+                    audio_stream_idx = Some(stream.index());
+                    audio_time_base = Some(stream.time_base());
+                }
+                AVMediaType::AVMEDIA_TYPE_VIDEO if video_stream_idx.is_none() => {
+                    video_stream_idx = Some(stream.index());
+                    video_time_base = Some(stream.time_base());
+                }
+                _ => {}
+            }
+        }
+
+        let audio_stream_idx =
+            audio_stream_idx.ok_or_else(|| anyhow::anyhow!("Audio stream index not found"))?;
+        let video_stream_idx =
+            video_stream_idx.ok_or_else(|| anyhow::anyhow!("Video stream index not found"))?;
+        let audio_time_base =
+            audio_time_base.ok_or_else(|| anyhow::anyhow!("Audio stream time base not found"))?;
+        let video_time_base =
+            video_time_base.ok_or_else(|| anyhow::anyhow!("Video stream time base not found"))?;
+
+        Ok(Self {
+            audio_stream_idx,
+            video_stream_idx,
+            audio_time_base,
+            video_time_base,
+        })
     }
 }
 
@@ -177,15 +221,6 @@ fn parse_script_data_metadata(payload: Bytes) -> Result<StreamMetadata> {
     }
 
     Ok(metadata)
-}
-
-impl TryFrom<FlvTag> for Packet {
-    type Error = anyhow::Error;
-
-    fn try_from(value: FlvTag) -> Result<Self, Self::Error> {
-        // FLV default stream layout in this project: video=0, audio=1.
-        value.convert_packet(AVRational { num: 1, den: 1000 }, 1, 0)
-    }
 }
 
 fn is_video_keyframe(payload: &Bytes) -> bool {

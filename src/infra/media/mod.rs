@@ -18,9 +18,7 @@ pub mod context;
 pub mod log;
 pub mod options;
 pub mod packet;
-mod stream;
-
-pub use stream::{StaticStreamCollection, StreamCollection, StreamTrait};
+pub mod stream;
 
 /// Initializes FFmpeg network components.
 /// Must be called before using network protocols like SRT.

@@ -9,9 +9,9 @@ use tracing::warn;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait};
 use crate::dispatcher::{self, SessionEvent};
-use crate::infra::media::StreamCollection;
 use crate::infra::media::context::HlsOutputContext;
 use crate::infra::media::packet::{Packet, UnifiedPacket};
+use crate::infra::media::stream::StreamCollection;
 use crate::pipeline::UnifiedPacketContext;
 use crate::pipeline::normalize::normalize_component;
 
@@ -151,10 +151,18 @@ impl MiddlewareTrait for SegmentMiddleware {
                 self.write_packet(packet.clone()).await?;
             }
             UnifiedPacket::FlvTag(tag) => {
-                let maybe_packet: Option<Packet> = tag.clone().try_into().ok();
+                let streams = {
+                    let state = self.state.lock().await;
+                    state.streams.clone()
+                };
 
-                if let Some(packet) = maybe_packet {
-                    self.write_packet(packet).await?;
+                match tag.clone().to_packet(streams.as_ref()) {
+                    Ok(packet) => {
+                        self.write_packet(packet).await?;
+                    }
+                    Err(e) => {
+                        warn!(stream_id = %stream_id, error = %e, "Failed to convert FLV tag to packet with stream mapping");
+                    }
                 }
             }
         }

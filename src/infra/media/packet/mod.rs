@@ -32,14 +32,3 @@ impl From<FlvTag> for UnifiedPacket {
         UnifiedPacket::FlvTag(tag)
     }
 }
-
-impl TryFrom<UnifiedPacket> for Packet {
-    type Error = anyhow::Error;
-
-    fn try_from(value: UnifiedPacket) -> Result<Self, Self::Error> {
-        match value {
-            UnifiedPacket::AVPacket(pkt) => Ok(pkt),
-            UnifiedPacket::FlvTag(tag) => tag.try_into(),
-        }
-    }
-}

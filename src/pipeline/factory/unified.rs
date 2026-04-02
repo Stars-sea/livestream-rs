@@ -7,7 +7,7 @@ use crossfire::mpsc::List;
 
 use crate::config::AppConfig;
 use crate::infra;
-use crate::infra::media::StreamCollection;
+use crate::infra::media::stream::StreamCollection;
 use crate::pipeline::Pipe;
 use crate::pipeline::UnifiedPacketContext;
 use crate::pipeline::handler::SegmentPersistenceHandler;

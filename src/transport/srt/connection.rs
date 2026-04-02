@@ -6,10 +6,10 @@ use retry::OperationResult;
 use retry::delay::{Exponential, jitter};
 use tokio_util::sync::CancellationToken;
 
-use crate::infra::media::StaticStreamCollection;
 use crate::infra::media::context::InputContext;
 use crate::infra::media::options::SrtInputStreamOptions;
 use crate::infra::media::packet::{Packet, PacketReadResult};
+use crate::infra::media::stream::StaticStreamCollection;
 use crate::transport::contract::message::StreamEvent;
 use crate::transport::contract::state::{SessionState, SrtState};
 use crate::transport::srt::packet::WrappedPacket;

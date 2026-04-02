@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::infra::media::StreamCollection;
+use crate::infra::media::stream::StreamCollection;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Protocal {

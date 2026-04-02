@@ -5,9 +5,9 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait};
-use crate::infra::media::StreamCollection;
 use crate::infra::media::context::FlvOutputContext;
 use crate::infra::media::packet::{FlvTag, UnifiedPacket};
+use crate::infra::media::stream::StreamCollection;
 use crate::pipeline::UnifiedPacketContext;
 use crate::transport::contract::message::StreamFlvTag;
 

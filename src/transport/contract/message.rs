@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use super::state::SessionState;
-use crate::infra::media::StreamCollection;
 use crate::infra::media::packet::FlvTag;
+use crate::infra::media::stream::StreamCollection;
 
 #[derive(Debug, Clone)]
 pub enum ControlMessage {
