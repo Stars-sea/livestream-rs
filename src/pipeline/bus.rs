@@ -10,6 +10,7 @@ use super::{Pipe, UnifiedPacketContext, UnifiedPipeFactory};
 use crate::abstraction::{PipeContextTrait, PipeTrait};
 use crate::dispatcher::{self, SessionEvent};
 use crate::pipeline::PipeFactory;
+use crate::telemetry::metrics;
 
 #[derive(Clone)]
 pub struct PipeBus {
@@ -81,9 +82,12 @@ impl PipeBus {
             SessionEvent::SessionInit { live_id, streams } => {
                 let pipe = factory.create(live_id.clone(), streams)?;
                 self.register_pipe(live_id, Arc::new(pipe));
+                metrics::get_metrics().pipeline_stream_started();
             }
             SessionEvent::SessionEnded { live_id, .. } => {
-                let _ = self.remove_pipe(&live_id);
+                if self.remove_pipe(&live_id).is_some() {
+                    metrics::get_metrics().pipeline_stream_ended();
+                }
             }
             _ => {}
         }

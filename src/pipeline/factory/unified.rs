@@ -11,7 +11,7 @@ use crate::infra::media::stream::StreamCollection;
 use crate::pipeline::Pipe;
 use crate::pipeline::UnifiedPacketContext;
 use crate::pipeline::handler::SegmentPersistenceHandler;
-use crate::pipeline::middleware::{FlvMuxForwardMiddleware, SegmentMiddleware};
+use crate::pipeline::middleware::{FlvMuxForwardMiddleware, OTelMiddleware, SegmentMiddleware};
 use crate::pipeline::pipe::PipeFactory;
 use crate::transport::contract::message::StreamFlvTag;
 
@@ -44,6 +44,7 @@ impl PipeFactory for UnifiedPipeFactory {
 
     fn create(&self, id: String, args: Self::Args) -> Result<Pipe<Self::Context>> {
         let mut pipe = Pipe::new();
+        pipe.add_middleware(Arc::new(OTelMiddleware::new(id.clone())));
         pipe.add_middleware(Arc::new(FlvMuxForwardMiddleware::new(
             id.clone(),
             args.clone(),

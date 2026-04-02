@@ -2,6 +2,7 @@ pub struct OTelMetrics {
     pub rtmp_sessions: NoopCounter,
     pub ingest_streams: NoopCounter,
     pub egress_connections: NoopCounter,
+    pub pipeline_active_streams: NoopCounter,
 }
 
 pub struct NoopCounter;
@@ -11,12 +12,23 @@ pub fn get_metrics() -> &'static OTelMetrics {
         rtmp_sessions: NoopCounter,
         ingest_streams: NoopCounter,
         egress_connections: NoopCounter,
+        pipeline_active_streams: NoopCounter,
     };
 
     &METRICS
 }
 
 impl OTelMetrics {
+    pub fn pipeline_stream_started(&self) {}
+
+    pub fn pipeline_stream_ended(&self) {}
+
+    pub fn record_pipeline_packet(&self, _packet_kind: &'static str, _bytes: u64) {}
+
+    pub fn record_pipeline_error(&self, _stage: &'static str) {}
+
+    pub fn record_middleware_latency(&self, _middleware: &'static str, _duration_us: u64) {}
+
     pub fn add_network_bytes_in(&self, _value: u64, _labels: &[()]) {}
 
     pub fn add_network_bytes_out(&self, _value: u64, _labels: &[()]) {}

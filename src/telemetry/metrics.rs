@@ -1,6 +1,6 @@
 use opentelemetry::{
     KeyValue, global,
-    metrics::{Counter, ObservableGauge, UpDownCounter},
+    metrics::{Counter, Histogram, ObservableGauge, UpDownCounter},
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -11,6 +11,11 @@ pub struct OTelMetrics {
     pub rtmp_sessions: UpDownCounter<i64>,
     pub ingest_streams: UpDownCounter<i64>,
     pub egress_connections: UpDownCounter<i64>,
+    pub pipeline_active_streams: UpDownCounter<i64>,
+    pub pipeline_packets_total: Counter<u64>,
+    pub pipeline_bytes_total: Counter<u64>,
+    pub pipeline_errors_total: Counter<u64>,
+    pub pipeline_middleware_latency_us: Histogram<u64>,
     pub network_bytes_in: Counter<u64>,
     pub network_bytes_out: Counter<u64>,
     pub ingest_packets_total: Counter<u64>,
@@ -77,6 +82,29 @@ pub fn get_metrics() -> &'static OTelMetrics {
             egress_connections: meter
                 .i64_up_down_counter("egress_connections")
                 .with_description("Active egress stream consumers")
+                .build(),
+            pipeline_active_streams: meter
+                .i64_up_down_counter("pipeline_active_streams")
+                .with_description("Active stream-scoped pipeline instances")
+                .build(),
+            pipeline_packets_total: meter
+                .u64_counter("pipeline_packets_total")
+                .with_description("Total packets observed by pipeline middleware")
+                .with_unit("{packet}")
+                .build(),
+            pipeline_bytes_total: meter
+                .u64_counter("pipeline_bytes_total")
+                .with_description("Total payload bytes observed by pipeline middleware")
+                .with_unit("By")
+                .build(),
+            pipeline_errors_total: meter
+                .u64_counter("pipeline_errors_total")
+                .with_description("Total recoverable pipeline processing errors")
+                .build(),
+            pipeline_middleware_latency_us: meter
+                .u64_histogram("pipeline_middleware_latency_us")
+                .with_description("Middleware processing latency in microseconds")
+                .with_unit("us")
                 .build(),
             network_bytes_in: meter
                 .u64_counter("network_bytes_in")
@@ -146,6 +174,30 @@ pub fn get_metrics() -> &'static OTelMetrics {
 }
 
 impl OTelMetrics {
+    pub fn pipeline_stream_started(&self) {
+        self.pipeline_active_streams.add(1, &[]);
+    }
+
+    pub fn pipeline_stream_ended(&self) {
+        self.pipeline_active_streams.add(-1, &[]);
+    }
+
+    pub fn record_pipeline_packet(&self, packet_kind: &'static str, bytes: u64) {
+        let labels = [KeyValue::new("packet.kind", packet_kind)];
+        self.pipeline_packets_total.add(1, &labels);
+        self.pipeline_bytes_total.add(bytes, &labels);
+    }
+
+    pub fn record_pipeline_error(&self, stage: &'static str) {
+        self.pipeline_errors_total
+            .add(1, &[KeyValue::new("pipeline.stage", stage)]);
+    }
+
+    pub fn record_middleware_latency(&self, middleware: &'static str, duration_us: u64) {
+        self.pipeline_middleware_latency_us
+            .record(duration_us, &[KeyValue::new("middleware", middleware)]);
+    }
+
     pub fn add_network_bytes_in(&self, value: u64, labels: &[KeyValue]) {
         self.network_bytes_in.add(value, labels);
         self.rate_state

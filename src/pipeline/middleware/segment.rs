@@ -14,6 +14,7 @@ use crate::infra::media::packet::{Packet, UnifiedPacket};
 use crate::infra::media::stream::StreamCollection;
 use crate::pipeline::UnifiedPacketContext;
 use crate::pipeline::normalize::normalize_component;
+use crate::telemetry::metrics;
 
 struct SegmentState {
     hls_ctx: Option<HlsOutputContext>,
@@ -161,6 +162,7 @@ impl MiddlewareTrait for SegmentMiddleware {
                         self.write_packet(packet).await?;
                     }
                     Err(e) => {
+                        metrics::get_metrics().record_pipeline_error("segment_flv_convert");
                         warn!(stream_id = %stream_id, error = %e, "Failed to convert FLV tag to packet with stream mapping");
                     }
                 }

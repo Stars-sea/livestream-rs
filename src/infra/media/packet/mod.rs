@@ -12,6 +12,15 @@ pub enum UnifiedPacket {
     FlvTag(FlvTag),
 }
 
+impl UnifiedPacket {
+    pub fn size(&self) -> usize {
+        match self {
+            UnifiedPacket::AVPacket(pkt) => pkt.size().max(0) as usize,
+            UnifiedPacket::FlvTag(tag) => tag.payload_size(),
+        }
+    }
+}
+
 impl Debug for UnifiedPacket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

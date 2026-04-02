@@ -69,6 +69,14 @@ impl FlvTag {
             }
         }
     }
+
+    pub fn payload_size(&self) -> usize {
+        match self {
+            FlvTag::Audio { payload, .. } => payload.len(),
+            FlvTag::Video { payload, .. } => payload.len(),
+            FlvTag::ScriptData(_) => 0,
+        }
+    }
 }
 
 struct FlvStreamMapping {
