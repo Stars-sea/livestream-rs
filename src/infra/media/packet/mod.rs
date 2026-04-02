@@ -1,19 +1,15 @@
 mod avpacket;
 mod flv_tag;
 
-use std::sync::Arc;
 use std::{fmt, fmt::Debug};
 
 pub use avpacket::{Packet, PacketReadResult};
 pub use flv_tag::FlvTag;
 
-use crate::infra::media::stream::StreamCollection;
-
 #[derive(Clone)]
 pub enum UnifiedPacket {
     AVPacket(Packet),
     FlvTag(FlvTag),
-    Init(Arc<dyn StreamCollection + Send + Sync>), // For initial metadata packets that contain stream info
 }
 
 impl Debug for UnifiedPacket {
@@ -21,7 +17,6 @@ impl Debug for UnifiedPacket {
         match self {
             UnifiedPacket::AVPacket(pkt) => f.debug_tuple("AVPacket").field(pkt).finish(),
             UnifiedPacket::FlvTag(tag) => f.debug_tuple("FlvTag").field(tag).finish(),
-            UnifiedPacket::Init(..) => f.write_str("Init(<stream collection>)"),
         }
     }
 }
@@ -34,10 +29,7 @@ impl From<Packet> for UnifiedPacket {
 
 impl From<FlvTag> for UnifiedPacket {
     fn from(tag: FlvTag) -> Self {
-        match tag {
-            FlvTag::Audio { .. } | FlvTag::Video { .. } => UnifiedPacket::FlvTag(tag),
-            FlvTag::ScriptData(meta) => UnifiedPacket::Init(Arc::new(meta)),
-        }
+        UnifiedPacket::FlvTag(tag)
     }
 }
 
@@ -48,9 +40,6 @@ impl TryFrom<UnifiedPacket> for Packet {
         match value {
             UnifiedPacket::AVPacket(pkt) => Ok(pkt),
             UnifiedPacket::FlvTag(tag) => tag.try_into(),
-            UnifiedPacket::Init(_) => {
-                anyhow::bail!("Init packets cannot be converted to AVPackets")
-            }
         }
     }
 }

@@ -125,6 +125,8 @@ impl TransportServer {
 }
 
 async fn handle_stream_event(event: StreamEvent) -> Result<()> {
+    let dispatcher = dispatcher::singleton().await;
+
     match event {
         StreamEvent::StateChange { live_id, new_state } => {
             debug!(live_id = %live_id, new_state = ?new_state, "Stream state changed");
@@ -139,28 +141,28 @@ async fn handle_stream_event(event: StreamEvent) -> Result<()> {
             }
 
             if new_state.is_active() {
-                dispatcher::singleton()
-                    .await
-                    .send(SessionEvent::SessionStarted {
-                        live_id: live_id.clone(),
-                        protocal: match new_state {
-                            SessionState::Rtmp(_) => Protocal::Rtmp,
-                            SessionState::Srt(_) => Protocal::Srt,
-                        },
-                    });
+                dispatcher.send(SessionEvent::SessionStarted {
+                    live_id: live_id.clone(),
+                    protocal: match new_state {
+                        SessionState::Rtmp(_) => Protocal::Rtmp,
+                        SessionState::Srt(_) => Protocal::Srt,
+                    },
+                });
             }
 
             if new_state.is_stopped() {
-                dispatcher::singleton()
-                    .await
-                    .send(SessionEvent::SessionEnded {
-                        live_id: live_id.clone(),
-                        protocal: match new_state {
-                            SessionState::Rtmp(_) => Protocal::Rtmp,
-                            SessionState::Srt(_) => Protocal::Srt,
-                        },
-                    });
+                dispatcher.send(SessionEvent::SessionEnded {
+                    live_id: live_id.clone(),
+                    protocal: match new_state {
+                        SessionState::Rtmp(_) => Protocal::Rtmp,
+                        SessionState::Srt(_) => Protocal::Srt,
+                    },
+                });
             }
+            Ok(())
+        }
+        StreamEvent::Init { live_id, streams } => {
+            dispatcher.send(SessionEvent::SessionInit { live_id, streams });
             Ok(())
         }
     }

@@ -3,13 +3,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use dashmap::DashMap;
 use tempfile::{Builder, TempDir};
-use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait};
 use crate::dispatcher::{self, SessionEvent};
+use crate::infra::ContextSlotMap;
 use crate::infra::media::StreamCollection;
 use crate::infra::media::context::HlsOutputContext;
 use crate::infra::media::packet::{Packet, UnifiedPacket};
@@ -73,14 +72,14 @@ impl Drop for SegmentState {
 }
 
 pub struct SegmentMiddleware {
-    contexts: Arc<DashMap<String, Arc<Mutex<Option<SegmentState>>>>>,
+    contexts: ContextSlotMap<SegmentState>,
     segment_duration: Duration,
 }
 
 impl SegmentMiddleware {
     pub fn new(segment_duration: Duration) -> Self {
-        let contexts = Arc::new(DashMap::new());
-        Self::spawn_cleanup_listener(contexts.clone());
+        let contexts = ContextSlotMap::new();
+        Self::spawn_event_listener(contexts.clone());
 
         Self {
             contexts,
@@ -97,36 +96,54 @@ impl SegmentMiddleware {
             });
     }
 
-    fn spawn_cleanup_listener(contexts: Arc<DashMap<String, Arc<Mutex<Option<SegmentState>>>>>) {
+    fn spawn_event_listener(contexts: ContextSlotMap<SegmentState>) {
         tokio::spawn(async move {
             let dispatcher = dispatcher::singleton().await;
             let mut rx = dispatcher.subscribe();
 
             while let Ok(event) = rx.recv().await {
-                if let SessionEvent::SessionEnded { live_id, .. } = event {
-                    if let Some((_, slot)) = contexts.remove(&live_id) {
-                        let mut guard = slot.lock().await;
-
-                        let completed_segment_path = guard
-                            .as_ref()
-                            .and_then(|state| state.hls_ctx.as_ref().map(|ctx| ctx.path().clone()));
-
-                        *guard = None;
-
-                        if let Some(segment_path) = completed_segment_path {
-                            Self::emit_segment_complete(live_id, segment_path).await;
-                        }
-                    }
+                if let Err(e) = Self::session_event_handler(&contexts, event).await {
+                    warn!(error = %e, "Error handling session event in SegmentMiddleware");
                 }
             }
         });
     }
 
-    fn get_or_create_ctx_slot(&self, stream_id: &str) -> Arc<Mutex<Option<SegmentState>>> {
-        self.contexts
-            .entry(stream_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(None)))
-            .clone()
+    async fn session_event_handler(
+        contexts: &ContextSlotMap<SegmentState>,
+        event: SessionEvent,
+    ) -> Result<()> {
+        match event {
+            SessionEvent::SessionInit { live_id, streams } => {
+                let temp_dir = Self::create_stream_temp_dir(&live_id)?;
+                let hls_ctx =
+                    HlsOutputContext::create_segment(temp_dir.path(), streams.as_ref(), 0)?;
+
+                contexts
+                    .with_or_create(&live_id, |state| {
+                        *state = Some(SegmentState::new(temp_dir, hls_ctx, streams));
+                    })
+                    .await;
+            }
+            SessionEvent::SessionEnded { live_id, .. } => {
+                if let Some(completed_segment_path) = contexts
+                    .with_removed(&live_id, |state| {
+                        let completed = state
+                            .as_ref()
+                            .and_then(|s| s.hls_ctx.as_ref().map(|ctx| ctx.path().clone()));
+                        *state = None;
+                        completed
+                    })
+                    .await
+                    .flatten()
+                {
+                    Self::emit_segment_complete(live_id, completed_segment_path).await;
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
     }
 
     fn create_stream_temp_dir(stream_id: &str) -> Result<TempDir> {
@@ -137,21 +154,31 @@ impl SegmentMiddleware {
     }
 
     async fn write_packet_for_stream(&self, stream_id: &str, mut packet: Packet) -> Result<()> {
-        let slot = self.get_or_create_ctx_slot(stream_id);
-        let mut guard = slot.lock().await;
+        let completed_segment_path = self
+            .contexts
+            .with_or_create(stream_id, |state| -> Result<Option<PathBuf>> {
+                if let Some(state) = state.as_mut() {
+                    let mut completed: Option<PathBuf> = None;
 
-        if let Some(state) = guard.as_mut() {
-            if state.should_rollover(&packet, self.segment_duration) {
-                let completed_segment_path = state.rollover()?;
-                Self::emit_segment_complete(stream_id.to_string(), completed_segment_path).await;
-            }
+                    if state.should_rollover(&packet, self.segment_duration) {
+                        completed = Some(state.rollover()?);
+                    }
 
-            if let Some(hls_ctx) = state.hls_ctx.as_mut() {
-                packet.rescale_ts_for_stream(state.streams.as_ref(), hls_ctx)?;
-                packet.write(hls_ctx)?;
-            }
-        } else {
-            warn!(stream_id = %stream_id, "Uninitialized before packet write, ignored.");
+                    if let Some(hls_ctx) = state.hls_ctx.as_mut() {
+                        packet.rescale_ts_for_stream(state.streams.as_ref(), hls_ctx)?;
+                        packet.write(hls_ctx)?;
+                    }
+
+                    Ok(completed)
+                } else {
+                    warn!(stream_id = %stream_id, "Uninitialized before packet write, ignored.");
+                    Ok(None)
+                }
+            })
+            .await?;
+
+        if let Some(path) = completed_segment_path {
+            Self::emit_segment_complete(stream_id.to_string(), path).await;
         }
 
         Ok(())
@@ -166,15 +193,6 @@ impl MiddlewareTrait for SegmentMiddleware {
         let stream_id = ctx.id();
 
         match ctx.payload() {
-            UnifiedPacket::Init(streams) => {
-                let temp_dir = Self::create_stream_temp_dir(&stream_id)?;
-                let hls_ctx =
-                    HlsOutputContext::create_segment(temp_dir.path(), streams.as_ref(), 0)?;
-
-                let slot = self.get_or_create_ctx_slot(&stream_id);
-                let mut guard = slot.lock().await;
-                *guard = Some(SegmentState::new(temp_dir, hls_ctx, streams.clone()));
-            }
             UnifiedPacket::AVPacket(packet) => {
                 self.write_packet_for_stream(&stream_id, packet.clone())
                     .await?;

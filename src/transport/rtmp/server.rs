@@ -166,6 +166,15 @@ impl RtmpServer {
             cancel_token,
         } = packet;
 
+        if let FlvTag::ScriptData(meta) = &tag {
+            self.event_tx.send(StreamEvent::Init {
+                live_id: stream_key.clone(),
+                streams: Arc::new(meta.clone()),
+            })?;
+        }
+
+        // TODO: Consider using a more efficient way to send packets to the pipeline
+        // TODO: Consider how to handle ScriptData properly
         let context = UnifiedPacketContext::new(stream_key, tag.into(), cancel_token);
         self.bus.send_packet(context).await?;
         Ok(())

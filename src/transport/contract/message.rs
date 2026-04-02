@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use super::state::SessionState;
+use crate::infra::media::StreamCollection;
 use crate::infra::media::packet::FlvTag;
 
 #[derive(Debug, Clone)]
@@ -12,6 +15,10 @@ pub enum StreamEvent {
     StateChange {
         live_id: String,
         new_state: SessionState,
+    },
+    Init {
+        live_id: String,
+        streams: Arc<dyn StreamCollection + Send + Sync>,
     },
 }
 

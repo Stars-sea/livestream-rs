@@ -9,9 +9,7 @@ use crate::infra;
 use crate::pipeline::Pipe;
 use crate::pipeline::UnifiedPacketContext;
 use crate::pipeline::handler::SegmentPersistenceHandler;
-use crate::pipeline::middleware::{
-    BroadcastMiddleware, FlvMuxForwardMiddleware, SegmentMiddleware,
-};
+use crate::pipeline::middleware::{FlvMuxForwardMiddleware, SegmentMiddleware};
 use crate::pipeline::pipe::PipeFactory;
 use crate::transport::contract::message::StreamFlvTag;
 
@@ -46,7 +44,7 @@ impl PipeFactory for UnifiedPipeFactory {
         SegmentPersistenceHandler::spawn(minio_client);
 
         Pipe::new()
-            .with(BroadcastMiddleware::new())
+            // .with(BroadcastMiddleware::new())
             .with(FlvMuxForwardMiddleware::new(self.rtmp_tag_tx.clone()))
             .with(SegmentMiddleware::new(self.segment_duration))
     }

@@ -15,7 +15,7 @@ use crate::transport::contract::state::{SessionState, SrtState};
 use crate::transport::srt::packet::WrappedPacket;
 
 pub struct SrtConnection {
-    live_id: String,
+    stream_id: String,
 
     av_ctx: InputContext,
 
@@ -29,7 +29,7 @@ pub struct SrtConnectionBuilder {
     host: String,
     port: u16,
 
-    live_id: String,
+    stream_id: String,
     passphrase: String,
 
     packet_tx: MTx<List<WrappedPacket>>,
@@ -38,14 +38,14 @@ pub struct SrtConnectionBuilder {
 
 impl SrtConnection {
     fn new(
-        live_id: String,
+        stream_id: String,
         av_ctx: InputContext,
         event_tx: MTx<List<StreamEvent>>,
         packet_tx: MTx<List<WrappedPacket>>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
-            live_id,
+            stream_id,
             event_tx,
             av_ctx,
             packet_tx,
@@ -55,7 +55,7 @@ impl SrtConnection {
 
     fn emit_state_change(&self, state: SrtState) -> Result<()> {
         self.event_tx.send(StreamEvent::StateChange {
-            live_id: self.live_id.clone(),
+            live_id: self.stream_id.clone(),
             new_state: SessionState::Srt(state),
         })?;
         Ok(())
@@ -66,11 +66,10 @@ impl SrtConnection {
             StaticStreamCollection::from_streams(&self.av_ctx)
                 .map_err(|e| anyhow::anyhow!("Failed to snapshot SRT stream info: {}", e))?,
         );
-        self.packet_tx.send(WrappedPacket::init(
-            &self.live_id,
-            init_streams,
-            &self.cancel_token,
-        ))?;
+        self.event_tx.send(StreamEvent::Init {
+            live_id: self.stream_id.clone(),
+            streams: init_streams,
+        })?;
 
         Ok(())
     }
@@ -88,10 +87,10 @@ impl SrtConnection {
                         self.emit_state_change(state)?;
                     }
 
-                    self.packet_tx.send(WrappedPacket::packet(
-                        &self.live_id,
+                    self.packet_tx.send(WrappedPacket::new(
+                        self.stream_id.clone(),
                         packet,
-                        &self.cancel_token,
+                        self.cancel_token.clone(),
                     ))?;
                 }
                 Ok(ReadResult::Eof) => break,
@@ -140,7 +139,7 @@ impl SrtConnectionBuilder {
     pub fn new(
         host: String,
         port: u16,
-        live_id: String,
+        stream_id: String,
         passphrase: String,
         packet_tx: MTx<List<WrappedPacket>>,
         event_tx: MTx<List<StreamEvent>>,
@@ -148,28 +147,28 @@ impl SrtConnectionBuilder {
         Self {
             host,
             port,
-            live_id,
+            stream_id,
             passphrase,
             packet_tx,
             event_tx,
         }
     }
 
-    pub fn live_id(&self) -> &str {
-        &self.live_id
+    pub fn stream_id(&self) -> &str {
+        &self.stream_id
     }
 
     pub fn build(self, cancel_token: CancellationToken) -> Result<SrtConnection> {
         let options = SrtInputStreamOptions::new(
             self.host.clone(),
             self.port,
-            self.live_id.clone(),
+            self.stream_id.clone(),
             self.passphrase.clone(),
         );
 
         let av_ctx = InputContext::open(&options, cancel_token.clone())?;
         Ok(SrtConnection::new(
-            self.live_id,
+            self.stream_id,
             av_ctx,
             self.event_tx,
             self.packet_tx,

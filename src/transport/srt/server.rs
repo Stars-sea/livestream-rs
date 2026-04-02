@@ -6,12 +6,11 @@ use tracing::{debug, error};
 
 use super::connection::SrtConnectionBuilder;
 use crate::infra::PortAllocator;
-use crate::infra::media::packet::UnifiedPacket;
 use crate::pipeline::{PipeBus, UnifiedPacketContext};
 use crate::transport::contract::message::{ControlMessage, StreamEvent};
 use crate::transport::contract::state::{SessionDescriptor, SessionState, SrtState};
 use crate::transport::registry::global;
-use crate::transport::srt::packet::{WrappedPacket, WrappedPacketPayload};
+use crate::transport::srt::packet::WrappedPacket;
 
 pub struct SrtServer {
     ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
@@ -109,17 +108,13 @@ impl SrtServer {
     async fn handle_packet_received(&mut self, packet: WrappedPacket) -> Result<()> {
         let WrappedPacket {
             stream_id,
-            payload,
+            packet: payload,
             cancel_token,
         } = packet;
 
-        let unified_packet = match payload {
-            WrappedPacketPayload::Init(streams) => UnifiedPacket::Init(streams),
-            WrappedPacketPayload::Packet(packet) => packet.into(),
-        };
-
-        let context = UnifiedPacketContext::new(stream_id.clone(), unified_packet, cancel_token);
+        let context = UnifiedPacketContext::new(stream_id, payload.into(), cancel_token);
         self.bus.send_packet(context).await?;
+
         Ok(())
     }
 
@@ -160,13 +155,13 @@ fn spawn_connection_handler(
 ) -> Result<()> {
     let _cancel_guard = cancel_token.clone().drop_guard();
 
-    let live_id = builder.live_id().to_string();
+    let stream_id = builder.stream_id().to_string();
     let connection = builder.build(cancel_token)?;
 
     std::thread::spawn(move || {
         let _cancel_guard = _cancel_guard;
         if let Err(e) = connection.run() {
-            error!(live_id = %live_id, "Error in SRT connection handler: {:?}", e);
+            error!(stream_id = %stream_id, "Error in SRT connection handler: {:?}", e);
         }
     });
 
