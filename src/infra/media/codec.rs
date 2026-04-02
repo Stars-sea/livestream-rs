@@ -6,13 +6,30 @@ use rml_rtmp::sessions::StreamMetadata;
 
 use crate::infra::media::ffmpeg_error;
 
-pub trait CodecParamsTrait {
+#[allow(unused)]
+pub trait CodecParamsPtrTrait {
     unsafe fn ptr(&self) -> *const AVCodecParameters;
 
     fn available(&self) -> bool {
-        !unsafe { self.ptr() }.is_null()
+        unsafe { !self.ptr().is_null() }
     }
+}
 
+#[allow(unused)]
+pub trait CodecParamsDescriptorTrait {
+    fn codec_type(&self) -> AVMediaType;
+
+    fn codec_id(&self) -> AVCodecID;
+
+    fn profile_name(&self) -> String;
+
+    fn codec_name(&self) -> String;
+}
+
+impl<T> CodecParamsDescriptorTrait for T
+where
+    T: CodecParamsPtrTrait + ?Sized,
+{
     fn codec_type(&self) -> AVMediaType {
         unsafe { (*self.ptr()).codec_type }
     }
@@ -36,13 +53,13 @@ pub trait CodecParamsTrait {
     }
 }
 
-impl CodecParamsTrait for *mut AVCodecParameters {
+impl CodecParamsPtrTrait for *mut AVCodecParameters {
     unsafe fn ptr(&self) -> *const AVCodecParameters {
         *self
     }
 }
 
-impl CodecParamsTrait for *const AVCodecParameters {
+impl CodecParamsPtrTrait for *const AVCodecParameters {
     unsafe fn ptr(&self) -> *const AVCodecParameters {
         *self
     }
@@ -56,18 +73,8 @@ unsafe impl Send for OwnedCodecParams {}
 unsafe impl Sync for OwnedCodecParams {}
 
 impl OwnedCodecParams {
-    pub fn new(ptr: *const AVCodecParameters) -> Self {
-        Self { ptr }
-    }
-
-    pub fn null() -> Self {
-        Self {
-            ptr: std::ptr::null(),
-        }
-    }
-
-    pub fn copy_from(params: &dyn CodecParamsTrait) -> Result<Self> {
-        if !params.available() {
+    pub fn copy_from(params: &dyn CodecParamsPtrTrait) -> Result<Self> {
+        if unsafe { params.ptr() }.is_null() {
             anyhow::bail!("Codec parameters are not available for copying");
         }
 
@@ -182,7 +189,7 @@ impl OwnedCodecParams {
     }
 }
 
-impl CodecParamsTrait for OwnedCodecParams {
+impl CodecParamsPtrTrait for OwnedCodecParams {
     unsafe fn ptr(&self) -> *const AVCodecParameters {
         self.ptr
     }

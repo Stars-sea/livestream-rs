@@ -7,7 +7,7 @@ use rml_rtmp::rml_amf0::Amf0Value;
 use rml_rtmp::sessions::StreamMetadata;
 
 use super::Packet;
-use crate::infra::media::codec::CodecParamsTrait;
+use crate::infra::media::codec::CodecParamsDescriptorTrait;
 use crate::infra::media::stream::StreamCollection;
 
 #[derive(Clone, Debug)]
@@ -46,69 +46,28 @@ impl FlvTag {
         let mapping = FlvStreamMapping::from_streams(streams)?;
 
         match self {
-            FlvTag::Audio { timestamp, payload } => Ok(Self::make_packet(
+            FlvTag::Audio { timestamp, payload } => make_packet(
                 payload,
                 timestamp,
                 mapping.audio_time_base,
                 false,
                 mapping.audio_stream_idx,
-            )?),
+            ),
             FlvTag::Video {
                 timestamp,
                 payload,
                 is_keyframe,
-            } => Ok(Self::make_packet(
+            } => make_packet(
                 payload,
                 timestamp,
                 mapping.video_time_base,
                 is_keyframe,
                 mapping.video_stream_idx,
-            )?),
+            ),
             FlvTag::ScriptData(_) => {
                 anyhow::bail!("ScriptData tags cannot be converted to AVPackets")
             }
         }
-    }
-
-    fn make_packet(
-        payload: Bytes,
-        timestamp: u32,
-        time_base: AVRational,
-        is_keyframe: bool,
-        stream_idx: usize,
-    ) -> Result<Packet> {
-        let pkt = Packet::alloc()?;
-
-        let len = payload.len();
-        unsafe {
-            let pkt = &mut *pkt.packet;
-
-            let buf = av_malloc(len) as *mut u8;
-            if buf.is_null() {
-                anyhow::bail!("Failed to allocate memory for packet data")
-            }
-            buf.copy_from_nonoverlapping(payload.as_ptr(), len);
-
-            // FLV timestamps are in milliseconds, convert to stream time base
-            // AVRational { num: 1, den: 1000 } represents milliseconds
-            let pts = av_rescale_q(
-                timestamp as i64,
-                AVRational { num: 1, den: 1000 },
-                time_base,
-            );
-
-            (*pkt).data = buf;
-            (*pkt).size = len as i32;
-            (*pkt).stream_index = stream_idx as i32;
-
-            (*pkt).pts = pts;
-            (*pkt).dts = pts;
-
-            if is_keyframe {
-                (*pkt).flags |= ffmpeg_sys_next::AV_PKT_FLAG_KEY;
-            }
-        }
-        Ok(pkt)
     }
 }
 
@@ -221,6 +180,47 @@ fn parse_script_data_metadata(payload: Bytes) -> Result<StreamMetadata> {
     }
 
     Ok(metadata)
+}
+
+fn make_packet(
+    payload: Bytes,
+    timestamp: u32,
+    time_base: AVRational,
+    is_keyframe: bool,
+    stream_idx: usize,
+) -> Result<Packet> {
+    let pkt = Packet::alloc()?;
+
+    let len = payload.len();
+    unsafe {
+        let pkt = &mut *pkt.packet;
+
+        let buf = av_malloc(len) as *mut u8;
+        if buf.is_null() {
+            anyhow::bail!("Failed to allocate memory for packet data")
+        }
+        buf.copy_from_nonoverlapping(payload.as_ptr(), len);
+
+        // FLV timestamps are in milliseconds, convert to stream time base
+        // AVRational { num: 1, den: 1000 } represents milliseconds
+        let pts = av_rescale_q(
+            timestamp as i64,
+            AVRational { num: 1, den: 1000 },
+            time_base,
+        );
+
+        (*pkt).data = buf;
+        (*pkt).size = len as i32;
+        (*pkt).stream_index = stream_idx as i32;
+
+        (*pkt).pts = pts;
+        (*pkt).dts = pts;
+
+        if is_keyframe {
+            (*pkt).flags |= ffmpeg_sys_next::AV_PKT_FLAG_KEY;
+        }
+    }
+    Ok(pkt)
 }
 
 fn is_video_keyframe(payload: &Bytes) -> bool {

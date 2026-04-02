@@ -4,24 +4,41 @@ use anyhow::Result;
 use ffmpeg_sys_next::*;
 use rml_rtmp::sessions::StreamMetadata;
 
-use crate::infra::media::codec::{CodecParamsTrait, OwnedCodecParams};
+use crate::infra::media::codec::{CodecParamsPtrTrait, OwnedCodecParams};
 use crate::infra::media::context::Context;
 
-/// FFmpeg's AVStream accessor methods.
-pub trait StreamTrait {
+/// Trait for types that can provide a real FFmpeg AVStream pointer.
+pub trait StreamPtrTrait {
     unsafe fn ptr(&self) -> *const AVStream;
+}
 
+/// Metadata access trait for stream descriptors used across the pipeline.
+///
+/// This trait is pointer-free for callers. Implementors may compute values from
+/// owned snapshots or from a real AVStream pointer.
+pub trait StreamDescriptorTrait {
     /// Returns the time base for this stream.
+    fn time_base(&self) -> AVRational;
+
+    /// Returns the index of this stream within the parent stream collection.
+    fn index(&self) -> usize;
+
+    /// Returns the codec parameters pointer for this stream.
+    fn codec_params_ptr(&self) -> *const AVCodecParameters;
+}
+
+impl<T> StreamDescriptorTrait for T
+where
+    T: StreamPtrTrait + ?Sized,
+{
     fn time_base(&self) -> AVRational {
         unsafe { (*self.ptr()).time_base }
     }
 
-    /// Returns the index of this stream within the parent AVFormatContext.
     fn index(&self) -> usize {
         unsafe { (*self.ptr()).index as usize }
     }
 
-    /// Returns the codec parameters pointer for this stream.
     fn codec_params_ptr(&self) -> *const AVCodecParameters {
         unsafe { (*self.ptr()).codecpar }
     }
@@ -31,16 +48,16 @@ pub trait StreamCollection {
     fn stream_count(&self) -> usize;
 
     // We return boxed trait objects to keep callers decoupled from concrete stream storage.
-    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait + '_>>;
+    fn stream(&self, index: usize) -> Option<Box<dyn StreamDescriptorTrait + '_>>;
 }
 
-impl StreamTrait for *mut AVStream {
+impl StreamPtrTrait for *mut AVStream {
     unsafe fn ptr(&self) -> *const AVStream {
         *self
     }
 }
 
-impl StreamTrait for *const AVStream {
+impl StreamPtrTrait for *const AVStream {
     unsafe fn ptr(&self) -> *const AVStream {
         *self
     }
@@ -59,7 +76,7 @@ impl<C: Context> StreamCollection for C {
     ///
     /// # Returns
     /// Some(Stream) if the index is valid, None otherwise.
-    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait + '_>> {
+    fn stream(&self, index: usize) -> Option<Box<dyn StreamDescriptorTrait + '_>> {
         if index < self.stream_count() {
             let ptr = unsafe { *(*self.ptr()).streams.offset(index as isize) };
             Some(Box::new(ptr))
@@ -74,7 +91,7 @@ impl StreamCollection for StreamMetadata {
         2
     }
 
-    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait + '_>> {
+    fn stream(&self, index: usize) -> Option<Box<dyn StreamDescriptorTrait + '_>> {
         match index {
             0 => {
                 let params = OwnedCodecParams::create_dummy_video(self).ok()?;
@@ -94,11 +111,7 @@ pub enum DummyStream {
     Audio(OwnedCodecParams),
 }
 
-impl StreamTrait for DummyStream {
-    unsafe fn ptr(&self) -> *const AVStream {
-        std::ptr::null()
-    }
-
+impl StreamDescriptorTrait for DummyStream {
     fn time_base(&self) -> AVRational {
         AVRational { num: 1, den: 1000 }
     }
@@ -125,14 +138,10 @@ pub struct StaticStream {
     codec_params: OwnedCodecParams,
 }
 
-// Borrowed view wrapper used to return Box<dyn StreamTrait + '_> without cloning codec params.
+// Borrowed view wrapper used to return Box<dyn StreamDescriptorTrait + '_> without cloning codec params.
 struct StaticStreamRef<'a>(&'a StaticStream);
 
-impl StreamTrait for StaticStreamRef<'_> {
-    unsafe fn ptr(&self) -> *const AVStream {
-        std::ptr::null()
-    }
-
+impl StreamDescriptorTrait for StaticStreamRef<'_> {
     fn time_base(&self) -> AVRational {
         self.0.time_base
     }
@@ -180,10 +189,10 @@ impl StreamCollection for StaticStreamCollection {
         self.streams.len()
     }
 
-    fn stream(&self, index: usize) -> Option<Box<dyn StreamTrait + '_>> {
+    fn stream(&self, index: usize) -> Option<Box<dyn StreamDescriptorTrait + '_>> {
         // Return a borrowed trait-object view to avoid copying codec params per call.
         self.streams
             .get(index)
-            .map(|s| Box::new(StaticStreamRef(s)) as Box<dyn StreamTrait + '_>)
+            .map(|s| Box::new(StaticStreamRef(s)) as Box<dyn StreamDescriptorTrait + '_>)
     }
 }
