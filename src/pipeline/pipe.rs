@@ -11,8 +11,9 @@ pub struct Pipe<C: PipeContextTrait> {
 
 pub trait PipeFactory {
     type Context: PipeContextTrait;
+    type Args;
 
-    fn create(&self) -> Pipe<Self::Context>;
+    fn create(&self, id: String, args: Self::Args) -> Result<Pipe<Self::Context>>;
 }
 
 impl<C: PipeContextTrait> Pipe<C> {

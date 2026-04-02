@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use crate::pipeline::{PipeBus, PipeFactory, UnifiedPipeFactory};
+use crate::pipeline::{PipeBus, UnifiedPipeFactory};
 use crate::transport::TransportServer;
 
 mod abstraction;
@@ -31,9 +31,9 @@ async fn main() -> Result<()> {
     let cancel_token = CancellationToken::new();
     let (rtmp_tag_tx, rtmp_tag_rx) = mpsc::unbounded_async();
 
-    let factory = UnifiedPipeFactory::new(&config, rtmp_tag_tx).await?;
-    let packet_pipe = Arc::new(factory.create());
-    let packet_bus = PipeBus::new(packet_pipe);
+    let factory = Arc::new(UnifiedPipeFactory::new(&config, rtmp_tag_tx).await?);
+    let packet_bus = PipeBus::new();
+    packet_bus.spawn_session_listener(factory);
 
     let transport_server = TransportServer::new(
         config.rtmp.clone(),

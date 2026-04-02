@@ -4,11 +4,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tempfile::{Builder, TempDir};
+use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait};
 use crate::dispatcher::{self, SessionEvent};
-use crate::infra::ContextSlotMap;
 use crate::infra::media::StreamCollection;
 use crate::infra::media::context::HlsOutputContext;
 use crate::infra::media::packet::{Packet, UnifiedPacket};
@@ -72,19 +72,25 @@ impl Drop for SegmentState {
 }
 
 pub struct SegmentMiddleware {
-    contexts: ContextSlotMap<SegmentState>,
+    stream_id: String,
+    state: Mutex<SegmentState>,
     segment_duration: Duration,
 }
 
 impl SegmentMiddleware {
-    pub fn new(segment_duration: Duration) -> Self {
-        let contexts = ContextSlotMap::new();
-        Self::spawn_event_listener(contexts.clone());
+    pub fn new(
+        stream_id: String,
+        streams: Arc<dyn StreamCollection + Send + Sync>,
+        segment_duration: Duration,
+    ) -> Result<Self> {
+        let temp_dir = Self::create_stream_temp_dir(&stream_id)?;
+        let hls_ctx = HlsOutputContext::create_segment(temp_dir.path(), streams.as_ref(), 0)?;
 
-        Self {
-            contexts,
+        Ok(Self {
+            stream_id,
+            state: Mutex::new(SegmentState::new(temp_dir, hls_ctx, streams)),
             segment_duration,
-        }
+        })
     }
 
     async fn emit_segment_complete(live_id: String, segment_path: PathBuf) {
@@ -96,56 +102,6 @@ impl SegmentMiddleware {
             });
     }
 
-    fn spawn_event_listener(contexts: ContextSlotMap<SegmentState>) {
-        tokio::spawn(async move {
-            let dispatcher = dispatcher::singleton().await;
-            let mut rx = dispatcher.subscribe();
-
-            while let Ok(event) = rx.recv().await {
-                if let Err(e) = Self::session_event_handler(&contexts, event).await {
-                    warn!(error = %e, "Error handling session event in SegmentMiddleware");
-                }
-            }
-        });
-    }
-
-    async fn session_event_handler(
-        contexts: &ContextSlotMap<SegmentState>,
-        event: SessionEvent,
-    ) -> Result<()> {
-        match event {
-            SessionEvent::SessionInit { live_id, streams } => {
-                let temp_dir = Self::create_stream_temp_dir(&live_id)?;
-                let hls_ctx =
-                    HlsOutputContext::create_segment(temp_dir.path(), streams.as_ref(), 0)?;
-
-                contexts
-                    .with_or_create(&live_id, |state| {
-                        *state = Some(SegmentState::new(temp_dir, hls_ctx, streams));
-                    })
-                    .await;
-            }
-            SessionEvent::SessionEnded { live_id, .. } => {
-                if let Some(completed_segment_path) = contexts
-                    .with_removed(&live_id, |state| {
-                        let completed = state
-                            .as_ref()
-                            .and_then(|s| s.hls_ctx.as_ref().map(|ctx| ctx.path().clone()));
-                        *state = None;
-                        completed
-                    })
-                    .await
-                    .flatten()
-                {
-                    Self::emit_segment_complete(live_id, completed_segment_path).await;
-                }
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
-
     fn create_stream_temp_dir(stream_id: &str) -> Result<TempDir> {
         let sanitized = normalize_component(stream_id);
         let prefix = format!("livestream-rs-segment-{}-", sanitized);
@@ -153,32 +109,26 @@ impl SegmentMiddleware {
         Ok(Builder::new().prefix(&prefix).tempdir()?)
     }
 
-    async fn write_packet_for_stream(&self, stream_id: &str, mut packet: Packet) -> Result<()> {
-        let completed_segment_path = self
-            .contexts
-            .with_or_create(stream_id, |state| -> Result<Option<PathBuf>> {
-                if let Some(state) = state.as_mut() {
-                    let mut completed: Option<PathBuf> = None;
+    async fn write_packet(&self, mut packet: Packet) -> Result<()> {
+        let completed_segment_path = {
+            let mut state = self.state.lock().await;
+            let mut completed: Option<PathBuf> = None;
 
-                    if state.should_rollover(&packet, self.segment_duration) {
-                        completed = Some(state.rollover()?);
-                    }
+            if state.should_rollover(&packet, self.segment_duration) {
+                completed = Some(state.rollover()?);
+            }
 
-                    if let Some(hls_ctx) = state.hls_ctx.as_mut() {
-                        packet.rescale_ts_for_stream(state.streams.as_ref(), hls_ctx)?;
-                        packet.write(hls_ctx)?;
-                    }
+            let streams = state.streams.clone();
+            if let Some(hls_ctx) = state.hls_ctx.as_mut() {
+                packet.rescale_ts_for_stream(streams.as_ref(), hls_ctx)?;
+                packet.write(hls_ctx)?;
+            }
 
-                    Ok(completed)
-                } else {
-                    warn!(stream_id = %stream_id, "Uninitialized before packet write, ignored.");
-                    Ok(None)
-                }
-            })
-            .await?;
+            completed
+        };
 
         if let Some(path) = completed_segment_path {
-            Self::emit_segment_complete(stream_id.to_string(), path).await;
+            Self::emit_segment_complete(self.stream_id.clone(), path).await;
         }
 
         Ok(())
@@ -191,17 +141,20 @@ impl MiddlewareTrait for SegmentMiddleware {
 
     async fn send(&self, ctx: Self::Context) -> Result<Self::Context> {
         let stream_id = ctx.id();
+        if stream_id != self.stream_id {
+            warn!(expected = %self.stream_id, got = %stream_id, "Stream id mismatch in SegmentMiddleware");
+            return Ok(ctx);
+        }
 
         match ctx.payload() {
             UnifiedPacket::AVPacket(packet) => {
-                self.write_packet_for_stream(&stream_id, packet.clone())
-                    .await?;
+                self.write_packet(packet.clone()).await?;
             }
             UnifiedPacket::FlvTag(tag) => {
                 let maybe_packet: Option<Packet> = tag.clone().try_into().ok();
 
                 if let Some(packet) = maybe_packet {
-                    self.write_packet_for_stream(&stream_id, packet).await?;
+                    self.write_packet(packet).await?;
                 }
             }
         }

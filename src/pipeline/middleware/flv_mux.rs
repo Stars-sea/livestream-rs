@@ -1,11 +1,10 @@
 use anyhow::Result;
 use crossfire::mpsc::List;
 use crossfire::{AsyncRx, MTx, mpsc};
+use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait};
-use crate::dispatcher::{self, SessionEvent};
-use crate::infra::ContextSlotMap;
 use crate::infra::media::StreamCollection;
 use crate::infra::media::context::FlvOutputContext;
 use crate::infra::media::packet::{FlvTag, UnifiedPacket};
@@ -20,69 +19,29 @@ struct ForwardState {
 }
 
 pub struct FlvMuxForwardMiddleware {
+    stream_id: String,
     rtmp_tag_tx: MTx<List<StreamFlvTag>>,
-    contexts: ContextSlotMap<ForwardState>,
+    state: Mutex<ForwardState>,
 }
 
 impl FlvMuxForwardMiddleware {
-    pub fn new(rtmp_tag_tx: MTx<List<StreamFlvTag>>) -> Self {
-        let contexts = ContextSlotMap::new();
-        Self::spawn_event_listener(contexts.clone(), rtmp_tag_tx.clone());
-
-        Self {
-            rtmp_tag_tx,
-            contexts,
-        }
-    }
-
-    fn spawn_event_listener(
-        contexts: ContextSlotMap<ForwardState>,
+    pub fn new(
+        stream_id: String,
+        streams: Arc<dyn StreamCollection + Send + Sync>,
         rtmp_tag_tx: MTx<List<StreamFlvTag>>,
-    ) {
-        tokio::spawn(async move {
-            let dispatcher = dispatcher::singleton().await;
-            let mut rx = dispatcher.subscribe();
+    ) -> Result<Self> {
+        let (flv_tx, flv_rx) = mpsc::unbounded_async();
+        let flv_ctx = FlvOutputContext::create(flv_tx, streams.as_ref())?;
+        Self::spawn_flv_relay(flv_rx, rtmp_tag_tx.clone(), stream_id.clone());
 
-            while let Ok(event) = rx.recv().await {
-                if let Err(e) = Self::session_event_handler(&contexts, &rtmp_tag_tx, event).await {
-                    warn!(error = %e, "Error handling session event in FlvMuxForwardMiddleware");
-                }
-            }
-        });
+        Ok(Self {
+            stream_id,
+            rtmp_tag_tx,
+            state: Mutex::new(ForwardState { flv_ctx, streams }),
+        })
     }
 
-    async fn session_event_handler(
-        contexts: &ContextSlotMap<ForwardState>,
-        rtmp_tag_tx: &MTx<List<StreamFlvTag>>,
-        event: SessionEvent,
-    ) -> Result<()> {
-        match event {
-            SessionEvent::SessionInit { live_id, streams } => {
-                let (flv_tx, flv_rx) = mpsc::unbounded_async();
-                let flv_ctx = FlvOutputContext::create(flv_tx, streams.as_ref())?;
-
-                Self::spawn_flv_relay(flv_rx, rtmp_tag_tx.clone(), live_id.clone()).await;
-
-                contexts
-                    .with_or_create(&live_id, |state| {
-                        *state = Some(ForwardState { flv_ctx, streams });
-                    })
-                    .await;
-            }
-            SessionEvent::SessionEnded { live_id, .. } => {
-                let _ = contexts
-                    .with_removed(&live_id, |state| {
-                        *state = None;
-                    })
-                    .await;
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
-
-    async fn spawn_flv_relay(
+    fn spawn_flv_relay(
         rx: AsyncRx<List<FlvTag>>,
         rtmp_tag_tx: MTx<List<StreamFlvTag>>,
         stream_id: String,
@@ -106,21 +65,17 @@ impl MiddlewareTrait for FlvMuxForwardMiddleware {
 
     async fn send(&self, ctx: Self::Context) -> Result<Self::Context> {
         let stream_id = ctx.id();
+        if stream_id != self.stream_id {
+            warn!(expected = %self.stream_id, got = %stream_id, "Stream id mismatch in FlvMuxForwardMiddleware");
+            return Ok(ctx);
+        }
 
         match ctx.payload() {
             UnifiedPacket::AVPacket(packet) => {
-                self.contexts
-                    .with_or_create(&stream_id, |state| -> Result<()> {
-                        if let Some(state) = state.as_mut() {
-                            let mut packet = packet.clone();
-                            packet.rescale_ts_for_stream(state.streams.as_ref(), &state.flv_ctx)?;
-                            packet.write(&state.flv_ctx)?;
-                        } else {
-                            warn!(stream_id = %stream_id, "RTMP forward context not initialized");
-                        }
-                        Ok(())
-                    })
-                    .await?;
+                let mut packet = packet.clone();
+                let state = self.state.lock().await;
+                packet.rescale_ts_for_stream(state.streams.as_ref(), &state.flv_ctx)?;
+                packet.write(&state.flv_ctx)?;
             }
             UnifiedPacket::FlvTag(tag) => {
                 if let Err(e) = self
