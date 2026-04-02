@@ -26,11 +26,10 @@ pub struct SrtConnection {
 }
 
 pub struct SrtConnectionBuilder {
-    host: String,
     port: u16,
 
     stream_id: String,
-    passphrase: String,
+    passphrase: Option<String>,
 
     packet_tx: MTx<List<WrappedPacket>>,
     event_tx: MTx<List<StreamEvent>>,
@@ -137,15 +136,13 @@ fn read_packet_with_retry(input_ctx: &InputContext, packet: &mut Packet) -> Resu
 
 impl SrtConnectionBuilder {
     pub fn new(
-        host: String,
         port: u16,
         stream_id: String,
-        passphrase: String,
+        passphrase: Option<String>,
         packet_tx: MTx<List<WrappedPacket>>,
         event_tx: MTx<List<StreamEvent>>,
     ) -> Self {
         Self {
-            host,
             port,
             stream_id,
             passphrase,
@@ -159,12 +156,8 @@ impl SrtConnectionBuilder {
     }
 
     pub fn build(self, cancel_token: CancellationToken) -> Result<SrtConnection> {
-        let options = SrtInputStreamOptions::new(
-            self.host.clone(),
-            self.port,
-            self.stream_id.clone(),
-            self.passphrase.clone(),
-        );
+        let options =
+            SrtInputStreamOptions::new(self.port, self.stream_id.clone(), self.passphrase);
 
         let av_ctx = InputContext::open(&options, cancel_token.clone())?;
         Ok(SrtConnection::new(

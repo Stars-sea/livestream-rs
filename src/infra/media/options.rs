@@ -25,34 +25,28 @@ fn dict_set_int(dict: *mut *mut AVDictionary, key: &str, value: i64) {
 
 #[derive(Debug)]
 pub struct SrtInputStreamOptions {
-    host: String,
     port: u16,
 
     live_id: String,
-    passphrase: String,
+    passphrase: Option<String>,
 }
 
 #[allow(unused)]
 impl SrtInputStreamOptions {
-    pub fn new(host: String, port: u16, live_id: String, passphrase: String) -> Self {
+    pub fn new(port: u16, live_id: String, passphrase: Option<String>) -> Self {
         Self {
-            host,
             port,
             live_id,
             passphrase,
         }
     }
 
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-
     pub fn port(&self) -> u16 {
         self.port
     }
 
-    pub fn passphrase(&self) -> &str {
-        &self.passphrase
+    pub fn passphrase(&self) -> Option<&str> {
+        self.passphrase.as_deref()
     }
 }
 
@@ -66,8 +60,11 @@ impl StreamOptions for SrtInputStreamOptions {
 
         dict_set(&mut dict, "mode", "listener");
         dict_set(&mut dict, "srt_streamid", &self.live_id);
-        dict_set(&mut dict, "passphrase", &self.passphrase);
-        dict_set_int(&mut dict, "enforced_encryption", 1);
+
+        if let Some(passphrase) = &self.passphrase {
+            dict_set_int(&mut dict, "enforced_encryption", 1);
+            dict_set(&mut dict, "passphrase", &passphrase);
+        }
 
         // Set UDP receive buf to 5MB to accommodate higher latency and prevent buffer underruns,
         // which can help improve stream stability in less-than-ideal network conditions

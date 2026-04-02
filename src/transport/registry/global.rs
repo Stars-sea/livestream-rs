@@ -33,6 +33,14 @@ pub async fn get_session_state(stream_key: &str) -> Option<SessionState> {
     global_session().await.get_state(stream_key).await
 }
 
+pub async fn get_session_descriptor(stream_key: &str) -> Option<SessionDescriptor> {
+    global_session().await.get_descriptor(stream_key).await
+}
+
+pub async fn list_session_descriptors() -> Vec<SessionDescriptor> {
+    global_session().await.list_descriptors().await
+}
+
 pub async fn update_session_state(stream_key: &str, new_state: SessionState) -> Result<()> {
     global_session()
         .await

@@ -6,7 +6,10 @@ use crate::infra::media::stream::StreamCollection;
 
 #[derive(Debug, Clone)]
 pub enum ControlMessage {
-    PrecreateStream { live_id: String },
+    PrecreateStream {
+        live_id: String,
+        passphrase: Option<String>,
+    },
 
     StopStream { live_id: String },
 }

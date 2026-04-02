@@ -8,7 +8,9 @@ use super::connection::SrtConnectionBuilder;
 use crate::infra::PortAllocator;
 use crate::pipeline::{PipeBus, UnifiedPacketContext};
 use crate::transport::contract::message::{ControlMessage, StreamEvent};
-use crate::transport::contract::state::{SessionDescriptor, SessionState, SrtState};
+use crate::transport::contract::state::{
+    SessionDescriptor, SessionEndpoint, SessionProtocol, SessionState, SrtState,
+};
 use crate::transport::registry::global;
 use crate::transport::srt::packet::WrappedPacket;
 
@@ -20,7 +22,6 @@ pub struct SrtServer {
 
     bus: PipeBus,
 
-    host: String,
     port_allocator: PortAllocator,
     port_cache: DashMap<String, u16>, // live_id -> port
 
@@ -32,7 +33,6 @@ impl SrtServer {
         ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
         event_tx: MTx<mpsc::List<StreamEvent>>,
         bus: PipeBus,
-        host: String,
         port_allocator: PortAllocator,
         cancel_token: CancellationToken,
     ) -> Self {
@@ -43,7 +43,6 @@ impl SrtServer {
             packet_rx,
             packet_tx,
             bus,
-            host,
             port_allocator,
             port_cache: DashMap::new(),
             cancel_token,
@@ -83,9 +82,10 @@ impl SrtServer {
 
     async fn handle_control_message(&mut self, msg: ControlMessage) -> Result<()> {
         match msg {
-            ControlMessage::PrecreateStream { live_id } => {
-                self.spawn_connection_handler(live_id).await
-            }
+            ControlMessage::PrecreateStream {
+                live_id,
+                passphrase,
+            } => self.spawn_connection_handler(live_id, passphrase).await,
             ControlMessage::StopStream { live_id } => {
                 if let Some(cancel_token) = global::get_cancel_token(&live_id).await {
                     cancel_token.cancel();
@@ -118,7 +118,11 @@ impl SrtServer {
         Ok(())
     }
 
-    async fn spawn_connection_handler(&mut self, live_id: String) -> Result<()> {
+    async fn spawn_connection_handler(
+        &mut self,
+        live_id: String,
+        passphrase: Option<String>,
+    ) -> Result<()> {
         let cancel_token = self.cancel_token.child_token();
 
         let port = match self.port_allocator.allocate_safe_port().await {
@@ -132,15 +136,19 @@ impl SrtServer {
 
         let session = SessionDescriptor {
             id: live_id.clone(),
+            protocol: SessionProtocol::Srt,
+            endpoint: SessionEndpoint {
+                port: Some(port),
+                passphrase: passphrase.clone(),
+            },
             state: SessionState::Srt(SrtState::Pending),
         };
         global::register_session(session, cancel_token.clone()).await?;
 
         let builder = SrtConnectionBuilder::new(
-            self.host.clone(),
             port,
             live_id,
-            "passphrase".to_string(), // TODO
+            passphrase,
             self.packet_tx.clone(),
             self.event_tx.clone(),
         );

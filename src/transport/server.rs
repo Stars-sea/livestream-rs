@@ -4,6 +4,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use crossfire::MTx;
 use crossfire::{AsyncRx, mpsc, spsc};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
@@ -76,7 +77,6 @@ impl TransportServer {
         rx: AsyncRx<spsc::List<ControlMessage>>,
         event_tx: MTx<mpsc::List<StreamEvent>>,
     ) -> Result<SrtServer> {
-        let host = self.srt_config.host.clone();
         let cancel_token = self.cancel_token.child_token();
 
         let port_allocator = match self.srt_config.srt_port_range() {
@@ -87,18 +87,11 @@ impl TransportServer {
             }
         };
 
-        let server = SrtServer::new(
-            rx,
-            event_tx,
-            self.bus.clone(),
-            host,
-            port_allocator,
-            cancel_token,
-        );
+        let server = SrtServer::new(rx, event_tx, self.bus.clone(), port_allocator, cancel_token);
         Ok(server)
     }
 
-    pub async fn spawn_task(mut self) -> Result<TransportController> {
+    pub async fn spawn_task(mut self) -> Result<(TransportController, JoinHandle<Result<()>>)> {
         let (rtmp_msg_tx, rtmp_msg_rx) = spsc::unbounded_async();
         let (srt_msg_tx, srt_msg_rx) = spsc::unbounded_async();
         let (event_tx, event_rx) = mpsc::unbounded_async();
@@ -115,12 +108,8 @@ impl TransportServer {
             Ok(())
         });
 
-        Ok(TransportController::new(
-            rtmp_msg_tx,
-            srt_msg_tx,
-            handle,
-            self.cancel_token,
-        ))
+        let controller = TransportController::new(rtmp_msg_tx, srt_msg_tx);
+        Ok((controller, handle))
     }
 }
 

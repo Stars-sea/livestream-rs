@@ -1,61 +1,52 @@
-#![allow(unused)]
-
 use anyhow::Result;
 use crossfire::{Tx, spsc::List};
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 
 use super::contract::message::ControlMessage;
 
 pub struct TransportController {
     rtmp_tx: Tx<List<ControlMessage>>,
     srt_tx: Tx<List<ControlMessage>>,
-
-    handle: JoinHandle<Result<()>>,
-
-    cancel_token: CancellationToken,
 }
 
 impl TransportController {
-    pub fn new(
-        rtmp_tx: Tx<List<ControlMessage>>,
-        srt_tx: Tx<List<ControlMessage>>,
-        handle: JoinHandle<Result<()>>,
-        cancel_token: CancellationToken,
-    ) -> Self {
-        Self {
-            rtmp_tx,
-            srt_tx,
-            handle,
-            cancel_token,
-        }
+    pub fn new(rtmp_tx: Tx<List<ControlMessage>>, srt_tx: Tx<List<ControlMessage>>) -> Self {
+        Self { rtmp_tx, srt_tx }
     }
 
     pub fn precreate_rtmp_session(&self, live_id: String) -> Result<()> {
-        let msg = ControlMessage::PrecreateStream { live_id };
+        let msg = ControlMessage::PrecreateStream {
+            live_id,
+            passphrase: None,
+        };
         self.rtmp_tx.send(msg)?;
         Ok(())
     }
 
-    pub fn precreate_srt_session(&self, live_id: String) -> Result<()> {
-        let msg = ControlMessage::PrecreateStream { live_id };
+    pub fn precreate_srt_session(&self, live_id: String, passphrase: String) -> Result<()> {
+        let msg = ControlMessage::PrecreateStream {
+            live_id,
+            passphrase: Some(passphrase),
+        };
         self.srt_tx.send(msg)?;
         Ok(())
     }
 
     pub fn close_session(&self, live_id: String) -> Result<()> {
-        let msg = ControlMessage::StopStream { live_id };
-        self.rtmp_tx.send(msg)?;
-        Ok(())
-    }
+        let msg = ControlMessage::StopStream {
+            live_id: live_id.clone(),
+        };
 
-    pub async fn wait(self) -> Result<()> {
-        self.handle.await??;
-        Ok(())
-    }
+        let rtmp_err = self.rtmp_tx.send(msg.clone()).err();
+        let srt_err = self.srt_tx.send(msg).err();
 
-    pub fn abort(&self) {
-        self.cancel_token.cancel();
-        self.handle.abort();
+        if let (Some(rtmp_err), Some(srt_err)) = (rtmp_err, srt_err) {
+            anyhow::bail!(
+                "Failed to send StopStream to both RTMP and SRT: rtmp={}, srt={}",
+                rtmp_err,
+                srt_err
+            );
+        }
+
+        Ok(())
     }
 }

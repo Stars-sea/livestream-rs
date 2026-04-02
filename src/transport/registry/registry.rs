@@ -87,6 +87,26 @@ impl ConnectionRegistry {
         self.get(stream_key).map(|entry| entry.0.clone())
     }
 
+    pub async fn get_descriptor(&self, stream_key: &str) -> Option<SessionDescriptor> {
+        let session = self.get_session(stream_key)?;
+        Some(session.read().await.clone())
+    }
+
+    pub async fn list_descriptors(&self) -> Vec<SessionDescriptor> {
+        let sessions: Vec<Arc<RwLock<SessionDescriptor>>> = self
+            .connections
+            .iter()
+            .map(|entry| entry.value().0.clone())
+            .collect();
+
+        let mut descriptors = Vec::with_capacity(sessions.len());
+        for session in sessions {
+            descriptors.push(session.read().await.clone());
+        }
+
+        descriptors
+    }
+
     pub fn get_cancel_token(&self, stream_key: &str) -> Option<CancellationToken> {
         self.get(stream_key).map(|entry| entry.1.clone())
     }

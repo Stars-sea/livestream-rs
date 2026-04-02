@@ -1,11 +1,14 @@
 use anyhow::Result;
 use crossfire::mpsc;
 use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::task::JoinError;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use crate::pipeline::{PipeBus, UnifiedPipeFactory};
 use crate::transport::TransportServer;
+use crate::transport::grpc::GrpcServer;
 
 mod abstraction;
 mod config;
@@ -43,9 +46,26 @@ async fn main() -> Result<()> {
         cancel_token.child_token(),
     );
 
-    let transport_handle = transport_server.spawn_task().await?;
-    if let Err(e) = transport_handle.wait().await {
-        error!("Error running transport server: {}", e);
+    let (controller, mut controller_task) = transport_server.spawn_task().await?;
+    let controller = Arc::new(Mutex::new(controller));
+
+    let grpc_server = GrpcServer::new(config.grpc.clone(), config.rtmp.clone(), controller.clone());
+
+    let grpc_cancel = cancel_token.child_token();
+
+    let mut grpc_task = tokio::spawn(async move { grpc_server.serve(grpc_cancel).await });
+
+    tokio::select! {
+        transport_result = &mut controller_task => {
+            log_server_task_result("transport", transport_result);
+            cancel_token.cancel();
+            log_server_task_result("gRPC", grpc_task.await);
+        }
+        grpc_result = &mut grpc_task => {
+            log_server_task_result("gRPC", grpc_result);
+            cancel_token.cancel();
+            log_server_task_result("transport", controller_task.await);
+        }
     }
 
     if let Some(guard) = otel_guard {
@@ -53,4 +73,16 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn log_server_task_result(server_name: &str, result: std::result::Result<Result<()>, JoinError>) {
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            error!("Error running {} server: {}", server_name, e);
+        }
+        Err(e) => {
+            error!("{} server task failed to join: {}", server_name, e);
+        }
+    }
 }

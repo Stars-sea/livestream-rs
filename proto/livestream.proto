@@ -6,22 +6,29 @@ package livestream;
 
 // Livestream control plane for creating/stopping/querying stream sessions.
 service Livestream {
-  // Start an ingest stream session and return structured endpoint info.
-  rpc StartIngestStream (StartIngestStreamRequest) returns (StreamInfoResponse);
+  // Start an ingest stream session and return structured session descriptor.
+  rpc StartIngestStream (StartIngestStreamRequest) returns (StartIngestStreamResponse);
 
   // Stop an active ingest stream session by live_id.
   rpc StopIngestStream (StopIngestStreamRequest) returns (StopIngestStreamResponse);
 
-  // List all active live_ids currently managed by the service.
+  // List all active ingest stream descriptors currently managed by the service.
   rpc ListIngestStreams (ListIngestStreamsRequest) returns (ListIngestStreamsResponse);
 
-  // Query endpoint info for an existing live_id.
-  rpc GetIngestStreamInfo (GetIngestStreamInfoRequest) returns (StreamInfoResponse);
+  // Query stream descriptor for an existing live_id.
+  rpc GetIngestStreamInfo (GetIngestStreamInfoRequest) returns (GetIngestStreamInfoResponse);
 }
 
 enum InputProtocol {
   INPUT_PROTOCOL_SRT = 0;
   INPUT_PROTOCOL_RTMP = 1;
+}
+
+enum SessionStatus {
+  SESSION_STATUS_PENDING = 0;
+  SESSION_STATUS_CONNECTING = 1;
+  SESSION_STATUS_CONNECTED = 2;
+  SESSION_STATUS_DISCONNECTED = 3;
 }
 
 // Request to start stream ingest.
@@ -34,46 +41,32 @@ message StartIngestStreamRequest {
   InputProtocol input_protocol = 3;
 }
 
-// Structured endpoint info for gateway-side URL composition.
-//
-// Example (SRT):
-// {
-//   "live_id": "live_1001",
-//   "host": "ingest.example.com",
-//   "port": 4001,
-//   "pull_port": 1935,
-//   "rtmp_appname": "lives",
-//   "passphrase": "abc123def456",
-//   "input_protocol": "INPUT_PROTOCOL_SRT"
-// }
-//
-// Example (RTMP):
-// {
-//   "live_id": "live_1001",
-//   "host": "ingest.example.com",
-//   "port": 1936,
-//   "pull_port": 1935,
-//   "rtmp_appname": "lives",
-//   "input_protocol": "INPUT_PROTOCOL_RTMP"
-// }
-message StreamInfoResponse {
+// Endpoint information used by gateway-side URL composition.
+message StreamEndpoint {
+  // Port reported by ingest service for selected input protocol.
+  uint32 port = 2;
+  // Unified RTMP pull/publish port.
+  uint32 rtmp_port = 3;
+  // Unified RTMP application name.
+  string rtmp_appname = 4;
+  // SRT passphrase, present only when input_protocol is SRT.
+  optional string passphrase = 5;
+}
+
+// Structured ingest session descriptor.
+message StreamDescriptor {
   // Business stream identifier.
   string live_id = 1;
-  // Host reported by ingest service for selected input protocol.
-  string host = 2;
-  // Port reported by ingest service for selected input protocol.
-  uint32 port = 3;
-  
-  // RTMP pulling port (for publish)
-  uint32 pull_port = 4;
-  // RTMP app name (for ingest & publish)
-  string rtmp_appname = 5;
+  // Ingest protocol bound to this stream.
+  InputProtocol input_protocol = 2;
+  // Current lifecycle status of stream session.
+  SessionStatus status = 3;
+  // Endpoint information for ingest/pull URL composition.
+  StreamEndpoint endpoint = 4;
+}
 
-  // SRT passphrase, present only when input_protocol is SRT.
-  optional string passphrase = 6;
-
-  // Protocol used for this stream endpoint.
-  InputProtocol input_protocol = 7;
+message StartIngestStreamResponse {
+  StreamDescriptor stream = 1;
 }
 
 message StopIngestStreamRequest {
@@ -88,9 +81,13 @@ message ListIngestStreamsRequest {
 }
 
 message ListIngestStreamsResponse {
-  repeated string live_ids = 1;
+  repeated StreamDescriptor streams = 1;
 }
 
 message GetIngestStreamInfoRequest {
   string live_id = 1;
+}
+
+message GetIngestStreamInfoResponse {
+  StreamDescriptor stream = 1;
 }

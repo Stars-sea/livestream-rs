@@ -5,6 +5,18 @@ pub trait ConnectionStateTrait {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionProtocol {
+    Rtmp,
+    Srt,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionEndpoint {
+    pub port: Option<u16>,
+    pub passphrase: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RtmpState {
     Pending,
     Connecting,
@@ -25,8 +37,11 @@ pub enum SessionState {
     Rtmp(RtmpState),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionDescriptor {
     pub id: String,
+    pub protocol: SessionProtocol,
+    pub endpoint: SessionEndpoint,
     pub state: SessionState,
 }
 

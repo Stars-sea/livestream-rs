@@ -27,10 +27,6 @@ pub struct AppConfig {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct SrtConfig {
-    /// Host for SRT listeners (e.g., "srt.example.local")
-    #[serde(default = "default_srt_host")]
-    pub host: String,
-
     /// Port range for SRT listeners (format: "start-end", e.g., "4000-5000")
     #[serde(default = "default_srt_srtports")]
     pub srtports: String,
@@ -76,10 +72,6 @@ pub struct MinioConfig {
 
     /// Bucket name to use for storing stream segments
     pub bucket: String,
-}
-
-fn default_srt_host() -> String {
-    "0.0.0.0".to_string()
 }
 
 fn default_grpc_port() -> u16 {
@@ -137,7 +129,6 @@ impl SrtConfig {
 impl Default for SrtConfig {
     fn default() -> Self {
         Self {
-            host: default_srt_host(),
             srtports: default_srt_srtports(),
             duration: default_srt_duration(),
         }

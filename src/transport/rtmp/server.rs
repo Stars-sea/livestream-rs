@@ -13,7 +13,9 @@ use super::connection::RtmpConnection;
 use crate::infra::media::packet::FlvTag;
 use crate::pipeline::{PipeBus, UnifiedPacketContext};
 use crate::transport::contract::message::{ControlMessage, StreamEvent, StreamFlvTag};
-use crate::transport::contract::state::{RtmpState, SessionDescriptor, SessionState};
+use crate::transport::contract::state::{
+    RtmpState, SessionDescriptor, SessionEndpoint, SessionProtocol, SessionState,
+};
 use crate::transport::registry::global;
 use crate::transport::rtmp::handler::HandlerBuilder;
 use crate::transport::rtmp::tag::WrappedFlvTag;
@@ -107,9 +109,14 @@ impl RtmpServer {
 
     async fn handle_control_message(&mut self, msg: ControlMessage) -> Result<()> {
         match msg {
-            ControlMessage::PrecreateStream { live_id } => {
+            ControlMessage::PrecreateStream { live_id, .. } => {
                 let session = SessionDescriptor {
                     id: live_id,
+                    protocol: SessionProtocol::Rtmp,
+                    endpoint: SessionEndpoint {
+                        port: None,
+                        passphrase: None,
+                    },
                     state: SessionState::Rtmp(RtmpState::Pending),
                 };
                 global::register_session(session, self.cancel_token.child_token()).await?;
