@@ -136,7 +136,7 @@ impl SegmentMiddleware {
         Ok(Builder::new().prefix(&prefix).tempdir()?)
     }
 
-    async fn write_packet_for_stream(&self, stream_id: &str, packet: Packet) -> Result<()> {
+    async fn write_packet_for_stream(&self, stream_id: &str, mut packet: Packet) -> Result<()> {
         let slot = self.get_or_create_ctx_slot(stream_id);
         let mut guard = slot.lock().await;
 
@@ -147,6 +147,7 @@ impl SegmentMiddleware {
             }
 
             if let Some(hls_ctx) = state.hls_ctx.as_mut() {
+                packet.rescale_ts_for_stream(state.streams.as_ref(), hls_ctx)?;
                 packet.write(hls_ctx)?;
             }
         } else {

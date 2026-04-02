@@ -57,6 +57,24 @@ impl FlvOutputContext {
 
         Ok(Self { ctx })
     }
+
+    unsafe fn cleanup_ctx(ctx: *mut AVFormatContext) {
+        if ctx.is_null() {
+            return;
+        }
+
+        let pb = unsafe { (*ctx).pb };
+        if !pb.is_null() {
+            if unsafe { !(*pb).opaque.is_null() } {
+                let _ = unsafe { Arc::from_raw((*pb).opaque as *const FlvAvioOpaque) };
+                unsafe { (*pb).opaque = null_mut() };
+            }
+            unsafe { av_freep(&mut (*pb).buffer as *mut _ as *mut c_void) };
+        }
+
+        unsafe { avio_context_free(&mut (*ctx).pb) };
+        unsafe { avformat_free_context(ctx) };
+    }
 }
 
 unsafe impl Send for FlvOutputContext {}
@@ -129,46 +147,6 @@ impl OutputContext for FlvOutputContext {
             anyhow::bail!("Failed to allocate I/O context");
         } else {
             Ok(pb)
-        }
-    }
-}
-
-impl FlvOutputContext {
-    unsafe fn cleanup_ctx(ctx: *mut AVFormatContext) {
-        if ctx.is_null() {
-            return;
-        }
-
-        let pb = unsafe { (*ctx).pb };
-        if !pb.is_null() {
-            if unsafe { !(*pb).opaque.is_null() } {
-                let _ = unsafe { Arc::from_raw((*pb).opaque as *const FlvAvioOpaque) };
-                unsafe { (*pb).opaque = null_mut() };
-            }
-            unsafe { av_freep(&mut (*pb).buffer as *mut _ as *mut c_void) };
-        }
-
-        unsafe { avio_context_free(&mut (*ctx).pb) };
-        unsafe { avformat_free_context(ctx) };
-    }
-
-    pub fn get_flv_tag_sender(&self) -> Option<MTx<mpsc::List<FlvTag>>> {
-        if self.ctx.is_null() {
-            return None;
-        }
-
-        unsafe {
-            if (*self.ctx).pb.is_null() {
-                return None;
-            }
-
-            let opaque_ptr = (*(*self.ctx).pb).opaque as *const FlvAvioOpaque;
-            if opaque_ptr.is_null() {
-                return None;
-            }
-
-            let opaque = &*opaque_ptr;
-            Some(opaque.flv_tag_tx.clone())
         }
     }
 }

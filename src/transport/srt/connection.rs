@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use crossfire::{MTx, mpsc::List};
 use retry::OperationResult;
 use retry::delay::{Exponential, jitter};
 use tokio_util::sync::CancellationToken;
 
+use crate::infra::media::StaticStreamCollection;
 use crate::infra::media::context::InputContext;
 use crate::infra::media::options::SrtInputStreamOptions;
 use crate::infra::media::packet::{Packet, PacketReadResult};
@@ -50,6 +53,28 @@ impl SrtConnection {
         }
     }
 
+    fn emit_state_change(&self, state: SrtState) -> Result<()> {
+        self.event_tx.send(StreamEvent::StateChange {
+            live_id: self.live_id.clone(),
+            new_state: SessionState::Srt(state),
+        })?;
+        Ok(())
+    }
+
+    fn on_init(&self) -> Result<()> {
+        let init_streams = Arc::new(
+            StaticStreamCollection::from_streams(&self.av_ctx)
+                .map_err(|e| anyhow::anyhow!("Failed to snapshot SRT stream info: {}", e))?,
+        );
+        self.packet_tx.send(WrappedPacket::init(
+            &self.live_id,
+            init_streams,
+            &self.cancel_token,
+        ))?;
+
+        Ok(())
+    }
+
     pub fn run(self) -> Result<()> {
         let mut state = SrtState::Pending;
 
@@ -58,29 +83,24 @@ impl SrtConnection {
             match read_packet_with_retry(&self.av_ctx, &mut packet) {
                 Ok(ReadResult::Ok) => {
                     if state == SrtState::Pending {
+                        self.on_init()?;
                         state = SrtState::Connected;
-                        self.event_tx.send(StreamEvent::StateChange {
-                            live_id: self.live_id.clone(),
-                            new_state: SessionState::Srt(state),
-                        })?;
+                        self.emit_state_change(state)?;
                     }
+
+                    self.packet_tx.send(WrappedPacket::packet(
+                        &self.live_id,
+                        packet,
+                        &self.cancel_token,
+                    ))?;
                 }
                 Ok(ReadResult::Eof) => break,
                 Err(e) => anyhow::bail!("Error reading packet: {}", e),
             }
-
-            self.packet_tx.send(WrappedPacket::new(
-                &self.live_id,
-                packet.clone(),
-                &self.cancel_token,
-            ))?;
         }
 
         state = SrtState::Disconnected;
-        self.event_tx.send(StreamEvent::StateChange {
-            live_id: self.live_id.clone(),
-            new_state: SessionState::Srt(state),
-        })?;
+        self.emit_state_change(state)?;
         Ok(())
     }
 }

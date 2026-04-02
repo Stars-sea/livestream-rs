@@ -6,11 +6,12 @@ use tracing::{debug, error};
 
 use super::connection::SrtConnectionBuilder;
 use crate::infra::PortAllocator;
+use crate::infra::media::packet::UnifiedPacket;
 use crate::pipeline::{PipeBus, UnifiedPacketContext};
 use crate::transport::contract::message::{ControlMessage, StreamEvent};
 use crate::transport::contract::state::{SessionDescriptor, SessionState, SrtState};
 use crate::transport::registry::global;
-use crate::transport::srt::packet::WrappedPacket;
+use crate::transport::srt::packet::{WrappedPacket, WrappedPacketPayload};
 
 pub struct SrtServer {
     ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
@@ -108,12 +109,16 @@ impl SrtServer {
     async fn handle_packet_received(&mut self, packet: WrappedPacket) -> Result<()> {
         let WrappedPacket {
             stream_id,
-            packet,
+            payload,
             cancel_token,
         } = packet;
 
-        // TODO: Send UnifiedPacket::Init
-        let context = UnifiedPacketContext::new(stream_id.clone(), packet.into(), cancel_token);
+        let unified_packet = match payload {
+            WrappedPacketPayload::Init(streams) => UnifiedPacket::Init(streams),
+            WrappedPacketPayload::Packet(packet) => packet.into(),
+        };
+
+        let context = UnifiedPacketContext::new(stream_id.clone(), unified_packet, cancel_token);
         self.bus.send_packet(context).await?;
         Ok(())
     }

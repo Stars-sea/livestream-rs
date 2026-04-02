@@ -68,20 +68,22 @@ impl Packet {
         unsafe { av_packet_rescale_ts(self.packet, original_time_base, target_time_base) }
     }
 
-    pub fn rescale_ts_for_ctx(
+    pub fn rescale_ts_for_stream(
         &mut self,
-        in_ctx: &impl Context,
-        out_ctx: &impl Context,
+        original_streams: &dyn StreamCollection,
+        target_streams: &dyn StreamCollection,
     ) -> Result<()> {
         let stream_idx = self.stream_idx();
-        let in_stream = in_ctx
+        let original_time_base = original_streams
             .stream(stream_idx)
-            .ok_or_else(|| anyhow::anyhow!("Input stream {} not found", stream_idx))?;
-        let out_stream = out_ctx
+            .ok_or_else(|| anyhow::anyhow!("Original stream {} not found", stream_idx))
+            .map(|s| s.time_base())?;
+        let target_time_base = target_streams
             .stream(stream_idx)
-            .ok_or_else(|| anyhow::anyhow!("Output stream {} not found", stream_idx))?;
+            .ok_or_else(|| anyhow::anyhow!("Target stream {} not found", stream_idx))
+            .map(|s| s.time_base())?;
 
-        self.rescale_ts(in_stream.time_base(), out_stream.time_base());
+        self.rescale_ts(original_time_base, target_time_base);
         Ok(())
     }
 

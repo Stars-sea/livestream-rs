@@ -52,6 +52,9 @@ pub struct OwnedCodecParams {
     ptr: *const AVCodecParameters,
 }
 
+unsafe impl Send for OwnedCodecParams {}
+unsafe impl Sync for OwnedCodecParams {}
+
 impl OwnedCodecParams {
     pub fn new(ptr: *const AVCodecParameters) -> Self {
         Self { ptr }
@@ -61,6 +64,21 @@ impl OwnedCodecParams {
         Self {
             ptr: std::ptr::null(),
         }
+    }
+
+    pub fn copy_from(params: &dyn CodecParamsTrait) -> Result<Self> {
+        if !params.available() {
+            anyhow::bail!("Codec parameters are not available for copying");
+        }
+
+        let ptr = alloc_codec_params()?;
+
+        let ret = unsafe { avcodec_parameters_copy(ptr, params.ptr()) };
+        if ret < 0 {
+            anyhow::bail!("Failed to copy codec parameters: {}", ffmpeg_error(ret))
+        }
+
+        Ok(Self { ptr })
     }
 
     pub fn create_dummy_video(metadata: &StreamMetadata) -> Result<Self> {

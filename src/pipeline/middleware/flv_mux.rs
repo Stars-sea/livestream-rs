@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 struct ForwardState {
     flv_ctx: FlvOutputContext,
+    streams: Arc<dyn StreamCollection + Send + Sync>,
 }
 
 pub struct FlvMuxForwardMiddleware {
@@ -87,7 +88,7 @@ impl FlvMuxForwardMiddleware {
 
         let slot = self.get_or_create_ctx_slot(stream_id);
         let mut guard = slot.lock().await;
-        *guard = Some(ForwardState { flv_ctx });
+        *guard = Some(ForwardState { flv_ctx, streams });
 
         Ok(())
     }
@@ -109,7 +110,9 @@ impl MiddlewareTrait for FlvMuxForwardMiddleware {
                 let mut guard = slot.lock().await;
 
                 if let Some(state) = guard.as_mut() {
-                    packet.clone().write(&state.flv_ctx)?;
+                    let mut packet = packet.clone();
+                    packet.rescale_ts_for_stream(state.streams.as_ref(), &state.flv_ctx)?;
+                    packet.write(&state.flv_ctx)?;
                 } else {
                     warn!(stream_id = %stream_id, "RTMP forward context not initialized");
                 }
