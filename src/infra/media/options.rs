@@ -1,4 +1,5 @@
-use std::{ffi::CStr, ptr::null_mut};
+use std::ffi::CString;
+use std::ptr::null_mut;
 
 use ffmpeg_sys_next::*;
 
@@ -9,10 +10,10 @@ pub trait StreamOptions {
 }
 
 fn dict_set(dict: *mut *mut AVDictionary, key: &str, value: &str) {
-    let Ok(c_key) = CStr::from_bytes_until_nul(key.as_bytes()) else {
+    let Some(c_key) = to_cstring_lossy(key) else {
         return;
     };
-    let Ok(c_value) = CStr::from_bytes_until_nul(value.as_bytes()) else {
+    let Some(c_value) = to_cstring_lossy(value) else {
         return;
     };
     unsafe {
@@ -21,11 +22,21 @@ fn dict_set(dict: *mut *mut AVDictionary, key: &str, value: &str) {
 }
 
 fn dict_set_int(dict: *mut *mut AVDictionary, key: &str, value: i64) {
-    let Ok(c_key) = CStr::from_bytes_until_nul(key.as_bytes()) else {
+    let Some(c_key) = to_cstring_lossy(key) else {
         return;
     };
     unsafe {
         av_dict_set_int(dict, c_key.as_ptr(), value, 0);
+    }
+}
+
+fn to_cstring_lossy(input: &str) -> Option<CString> {
+    match CString::new(input) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            let sanitized = input.replace('\0', "");
+            CString::new(sanitized).ok()
+        }
     }
 }
 
