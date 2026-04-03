@@ -74,8 +74,9 @@ impl SegmentMiddleware {
         stream_id: String,
         streams: Arc<dyn StreamCollection + Send + Sync>,
         segment_duration: Duration,
+        segment_cachedir: String,
     ) -> Result<Self> {
-        let temp_dir = Self::create_stream_temp_dir(&stream_id)?;
+        let temp_dir = Self::create_stream_temp_dir(&stream_id, &segment_cachedir)?;
         let hls_ctx = HlsOutputContext::create_segment(temp_dir.path(), streams.as_ref(), 0)?;
 
         Ok(Self {
@@ -95,11 +96,17 @@ impl SegmentMiddleware {
             });
     }
 
-    fn create_stream_temp_dir(stream_id: &str) -> Result<TempDir> {
+    fn create_stream_temp_dir(stream_id: &str, cache_dir: &str) -> Result<TempDir> {
         let sanitized = normalize_component(stream_id);
         let prefix = format!("livestream-rs-segment-{}-", sanitized);
 
-        Ok(Builder::new().prefix(&prefix).tempdir()?)
+        if cache_dir.trim().is_empty() {
+            return Ok(Builder::new().prefix(&prefix).tempdir()?);
+        }
+
+        let root = PathBuf::from(cache_dir);
+        std::fs::create_dir_all(&root)?;
+        Ok(Builder::new().prefix(&prefix).tempdir_in(root)?)
     }
 
     async fn write_packet(&self, mut packet: Packet) -> Result<()> {

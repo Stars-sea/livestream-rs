@@ -21,6 +21,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub rtmp: RtmpConfig,
 
+    /// Persistence configuration
+    #[serde(default)]
+    pub persistence: PersistenceConfig,
+
     /// Queue capacity configuration
     #[serde(default)]
     pub queue: QueueConfig,
@@ -32,13 +36,8 @@ pub struct AppConfig {
 #[derive(Clone, Debug, Deserialize)]
 pub struct SrtConfig {
     /// Port range for SRT listeners (format: "start-end", e.g., "4000-5000")
-    #[serde(default = "default_srt_srtports")]
-    pub srtports: String,
-
-    /// Segment duration in seconds for HLS/TS output
-    /// TODO: Consider moving to persistence configuration
-    #[serde(default = "default_srt_duration")]
-    pub duration: i32,
+    #[serde(default = "default_srt_ports")]
+    pub ports: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -60,22 +59,34 @@ pub struct RtmpConfig {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub struct PersistenceConfig {
+    /// Segment duration in seconds for HLS/TS output
+    #[serde(default = "default_persistence_duration")]
+    pub duration: i32,
+
+    /// Optional parent cache directory for segment temp files.
+    /// Empty value means using system temp directory.
+    #[serde(default = "default_persistence_cachedir")]
+    pub cachedir: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct QueueConfig {
     /// Capacity for RTMP forwarded tag queue from pipeline to transport
     #[serde(default = "default_rtmp_forward_queue_capacity")]
-    pub rtmp_forward: usize,
+    pub rtmpforward: usize,
 
     /// Capacity for internal FLV relay queue in FLV mux middleware
     #[serde(default = "default_flv_relay_queue_capacity")]
-    pub flv_relay: usize,
+    pub flvrelay: usize,
 
     /// Capacity for RTMP publish tag queue
     #[serde(default = "default_rtmp_publish_queue_capacity")]
-    pub rtmp_publish: usize,
+    pub rtmppublish: usize,
 
     /// Capacity for SRT packet queue
     #[serde(default = "default_srt_packet_queue_capacity")]
-    pub srt_packet: usize,
+    pub srtpacket: usize,
 
     /// Capacity for transport control queues (RTMP/SRT)
     #[serde(default = "default_control_queue_capacity")]
@@ -105,12 +116,16 @@ fn default_grpc_port() -> u16 {
     50051
 }
 
-fn default_srt_srtports() -> String {
+fn default_srt_ports() -> String {
     "4000-4100".to_string()
 }
 
-fn default_srt_duration() -> i32 {
+fn default_persistence_duration() -> i32 {
     10
+}
+
+fn default_persistence_cachedir() -> String {
+    "".to_string()
 }
 
 fn default_rtmp_port() -> u16 {
@@ -154,12 +169,12 @@ impl SrtConfig {
     /// # Errors
     /// Returns an error if the port range format is invalid.
     pub fn srt_port_range(&self) -> Result<(u16, u16)> {
-        let segments: Vec<&str> = self.srtports.split('-').collect();
+        let segments: Vec<&str> = self.ports.split('-').collect();
 
         if segments.len() != 2 {
             anyhow::bail!(
                 "Invalid SRT port range format '{}': expected 'start-end'",
-                self.srtports
+                self.ports
             );
         }
 
@@ -180,8 +195,7 @@ impl SrtConfig {
 impl Default for SrtConfig {
     fn default() -> Self {
         Self {
-            srtports: default_srt_srtports(),
-            duration: default_srt_duration(),
+            ports: default_srt_ports(),
         }
     }
 }
@@ -203,13 +217,22 @@ impl Default for RtmpConfig {
     }
 }
 
+impl Default for PersistenceConfig {
+    fn default() -> Self {
+        Self {
+            duration: default_persistence_duration(),
+            cachedir: default_persistence_cachedir(),
+        }
+    }
+}
+
 impl Default for QueueConfig {
     fn default() -> Self {
         Self {
-            rtmp_forward: default_rtmp_forward_queue_capacity(),
-            flv_relay: default_flv_relay_queue_capacity(),
-            rtmp_publish: default_rtmp_publish_queue_capacity(),
-            srt_packet: default_srt_packet_queue_capacity(),
+            rtmpforward: default_rtmp_forward_queue_capacity(),
+            flvrelay: default_flv_relay_queue_capacity(),
+            rtmppublish: default_rtmp_publish_queue_capacity(),
+            srtpacket: default_srt_packet_queue_capacity(),
             control: default_control_queue_capacity(),
             event: default_event_queue_capacity(),
         }
@@ -245,14 +268,19 @@ impl AppConfig {
             );
         }
 
-        if self.srt.duration <= 0 {
+        if self.persistence.duration <= 0 {
             anyhow::bail!("Segment duration must be positive");
         }
 
-        if self.queue.rtmp_forward == 0
-            || self.queue.flv_relay == 0
-            || self.queue.rtmp_publish == 0
-            || self.queue.srt_packet == 0
+        let cache_dir = self.persistence.cachedir.trim();
+        if cache_dir == "." || cache_dir == ".." {
+            anyhow::bail!("Persistence cachedir cannot be '.' or '..'");
+        }
+
+        if self.queue.rtmpforward == 0
+            || self.queue.flvrelay == 0
+            || self.queue.rtmppublish == 0
+            || self.queue.srtpacket == 0
             || self.queue.control == 0
             || self.queue.event == 0
         {

@@ -21,7 +21,7 @@ pub struct SessionGuard {
     session: ServerSession,
     appname: String,
 
-    event_tx: MTx<Array<StreamEvent>>,
+    pub(super) event_tx: MTx<Array<StreamEvent>>,
 
     chunk_size: u32,
 }

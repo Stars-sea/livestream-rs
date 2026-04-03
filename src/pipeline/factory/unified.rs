@@ -16,18 +16,21 @@ use crate::transport::contract::message::StreamFlvTag;
 pub struct UnifiedPipeFactory {
     rtmp_tag_tx: MTx<Array<StreamFlvTag>>,
     segment_duration: Duration,
+    segment_cachedir: String,
     flv_relay_queue_capacity: usize,
 }
 
 impl UnifiedPipeFactory {
     pub fn new(
         segment_duration: Duration,
+        segment_cachedir: String,
         flv_relay_queue_capacity: usize,
         rtmp_tag_tx: MTx<Array<StreamFlvTag>>,
     ) -> Self {
         Self {
             rtmp_tag_tx,
             segment_duration,
+            segment_cachedir,
             flv_relay_queue_capacity,
         }
     }
@@ -50,6 +53,7 @@ impl PipeFactory for UnifiedPipeFactory {
             id,
             args,
             self.segment_duration,
+            self.segment_cachedir.clone(),
         )?));
         Ok(pipe)
     }

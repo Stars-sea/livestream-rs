@@ -36,7 +36,8 @@ async fn main() -> Result<()> {
     infra::media::init();
 
     let config = config::load_config();
-    let segment_duration = Duration::from_secs(config.srt.duration.max(1) as u64);
+    let segment_duration = Duration::from_secs(config.persistence.duration.max(1) as u64);
+    let segment_cachedir = config.persistence.cachedir.trim().to_string();
 
     let minio = config
         .minio
@@ -46,11 +47,12 @@ async fn main() -> Result<()> {
     SegmentPersistenceHandler::spawn(minio_client);
 
     let cancel_token = CancellationToken::new();
-    let (rtmp_tag_tx, rtmp_tag_rx) = mpsc::bounded_blocking_async(config.queue.rtmp_forward);
+    let (rtmp_tag_tx, rtmp_tag_rx) = mpsc::bounded_blocking_async(config.queue.rtmpforward);
 
     let factory = Arc::new(UnifiedPipeFactory::new(
         segment_duration,
-        config.queue.flv_relay,
+        segment_cachedir,
+        config.queue.flvrelay,
         rtmp_tag_tx,
     ));
     let packet_bus = PipeBus::new();

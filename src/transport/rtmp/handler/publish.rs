@@ -5,6 +5,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::infra::media::packet::FlvTag;
+use crate::transport::contract::message::StreamEvent;
+use crate::transport::contract::state::{RtmpState, SessionState};
 use crate::transport::rtmp::handler::HandlerTrait;
 use crate::transport::rtmp::session::SessionGuard;
 use crate::transport::rtmp::tag::WrappedFlvTag;
@@ -38,10 +40,14 @@ impl PublishHandler {
         }
     }
 
-    async fn publish_finished(&mut self) -> Result<()> {
+    fn publish_finished(&mut self) -> Result<()> {
         debug!("Publish finished for stream key: {}", self.stream_key);
 
-        // TODO: Clean up any resources associated with this stream key, such as removing it from the stream manager
+        self.session.event_tx.send(StreamEvent::StateChange {
+            live_id: self.stream_key.clone(),
+            new_state: SessionState::Rtmp(RtmpState::Disconnected),
+        })?;
+        self.cancel_token.cancel();
         Ok(())
     }
 }
@@ -59,7 +65,7 @@ impl HandlerTrait for PublishHandler {
     async fn on_custom_events(&mut self, event: ServerSessionEvent) -> Result<()> {
         match event {
             ServerSessionEvent::PublishStreamFinished { .. } => {
-                self.publish_finished().await?;
+                self.publish_finished()?;
             }
             ServerSessionEvent::AudioDataReceived {
                 data, timestamp, ..
