@@ -111,6 +111,7 @@ impl Packet {
         unsafe { (*self.packet).size }
     }
 
+    #[allow(unused)]
     pub fn pts(&self) -> Option<i64> {
         let pts = unsafe { (*self.packet).pts };
         if pts != AV_NOPTS_VALUE {

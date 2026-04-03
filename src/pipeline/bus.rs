@@ -95,29 +95,46 @@ impl PipeBus {
         Ok(())
     }
 
-    pub async fn send_packet(&self, context: UnifiedPacketContext) -> Result<UnifiedPacketContext> {
+    pub async fn send_packet(&self, context: UnifiedPacketContext) -> Result<()> {
+        let stream_id = context.id();
+
         if self.force_fallback.load(Ordering::Relaxed) {
             let fallback = self.fallback_pipe.read().await.clone();
             if let Some(pipe) = fallback {
-                return pipe.send(context).await;
+                self.spawn_pipe_send(pipe, context, stream_id);
+                return Ok(());
             }
 
             warn!("Force fallback is enabled but fallback pipe is not configured");
             anyhow::bail!("Fallback mode enabled without fallback pipe");
         }
 
-        let stream_id = context.id();
         let Some(packet_pipe) = self.packet_pipes.get(&stream_id).map(|entry| entry.clone()) else {
             let fallback = self.fallback_pipe.read().await.clone();
             if let Some(pipe) = fallback {
                 warn!(stream_id = %stream_id, "No stream pipeline found, routed to fallback pipe");
-                return pipe.send(context).await;
+                self.spawn_pipe_send(pipe, context, stream_id);
+                return Ok(());
             }
 
             warn!(stream_id = %stream_id, "No pipeline registered for stream, packet dropped");
             anyhow::bail!("No pipeline registered for stream_id: {}", stream_id);
         };
 
-        packet_pipe.send(context).await
+        self.spawn_pipe_send(packet_pipe, context, stream_id);
+        Ok(())
+    }
+
+    fn spawn_pipe_send(
+        &self,
+        pipe: Arc<Pipe<UnifiedPacketContext>>,
+        context: UnifiedPacketContext,
+        stream_id: String,
+    ) {
+        tokio::spawn(async move {
+            if let Err(e) = pipe.send(context).await {
+                error!(stream_id = %stream_id, error = %e, "Failed to send packet to pipe");
+            }
+        });
     }
 }
