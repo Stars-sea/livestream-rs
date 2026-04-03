@@ -101,7 +101,7 @@ impl PipeBus {
         if self.force_fallback.load(Ordering::Relaxed) {
             let fallback = self.fallback_pipe.read().await.clone();
             if let Some(pipe) = fallback {
-                self.spawn_pipe_send(pipe, context, stream_id);
+                pipe.send(context).await?;
                 return Ok(());
             }
 
@@ -113,7 +113,7 @@ impl PipeBus {
             let fallback = self.fallback_pipe.read().await.clone();
             if let Some(pipe) = fallback {
                 warn!(stream_id = %stream_id, "No stream pipeline found, routed to fallback pipe");
-                self.spawn_pipe_send(pipe, context, stream_id);
+                pipe.send(context).await?;
                 return Ok(());
             }
 
@@ -121,20 +121,7 @@ impl PipeBus {
             anyhow::bail!("No pipeline registered for stream_id: {}", stream_id);
         };
 
-        self.spawn_pipe_send(packet_pipe, context, stream_id);
+        packet_pipe.send(context).await?;
         Ok(())
-    }
-
-    fn spawn_pipe_send(
-        &self,
-        pipe: Arc<Pipe<UnifiedPacketContext>>,
-        context: UnifiedPacketContext,
-        stream_id: String,
-    ) {
-        tokio::spawn(async move {
-            if let Err(e) = pipe.send(context).await {
-                error!(stream_id = %stream_id, error = %e, "Failed to send packet to pipe");
-            }
-        });
     }
 }

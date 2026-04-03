@@ -72,7 +72,7 @@ impl SegmentPersistenceHandler {
         stream_id: &str,
         segment_path: PathBuf,
     ) -> Result<()> {
-        if !segment_path.exists() {
+        if fs::metadata(&segment_path).await.is_err() {
             return Ok(());
         }
 

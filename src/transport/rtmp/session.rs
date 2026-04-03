@@ -273,7 +273,7 @@ impl SessionGuard {
             );
         }
 
-        if state.unwrap() == SessionState::Rtmp(RtmpState::Pending) {
+        if matches!(state, Some(SessionState::Rtmp(RtmpState::Pending))) {
             self.event_tx.send(StreamEvent::StateChange {
                 live_id: stream_key.clone(),
                 new_state: SessionState::Rtmp(RtmpState::Connecting),
