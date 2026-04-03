@@ -15,11 +15,11 @@ use std::sync::Arc;
 
 struct ForwardState {
     flv_ctx: FlvOutputContext,
-    streams: Arc<dyn StreamCollection + Send + Sync>,
 }
 
 pub struct FlvMuxForwardMiddleware {
     stream_id: String,
+    streams: Arc<dyn StreamCollection + Send + Sync>,
     rtmp_tag_tx: MTx<Array<StreamFlvTag>>,
     state: Mutex<ForwardState>,
 }
@@ -37,8 +37,9 @@ impl FlvMuxForwardMiddleware {
 
         Ok(Self {
             stream_id,
+            streams,
             rtmp_tag_tx,
-            state: Mutex::new(ForwardState { flv_ctx, streams }),
+            state: Mutex::new(ForwardState { flv_ctx }),
         })
     }
 
@@ -75,7 +76,7 @@ impl MiddlewareTrait for FlvMuxForwardMiddleware {
             UnifiedPacket::AVPacket(packet) => {
                 let mut packet = packet.clone();
                 let state = self.state.lock().await;
-                packet.rescale_ts_for_stream(state.streams.as_ref(), &state.flv_ctx)?;
+                packet.rescale_ts_for_stream(self.streams.as_ref(), &state.flv_ctx)?;
                 packet.write(&state.flv_ctx)?;
             }
             UnifiedPacket::FlvTag(tag) => {

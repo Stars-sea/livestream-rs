@@ -42,13 +42,13 @@ impl FlvTag {
         FlvTag::ScriptData(metadata)
     }
 
-    pub fn to_packet(self, streams: &dyn StreamCollection) -> Result<Packet> {
+    pub fn to_packet_ref(&self, streams: &dyn StreamCollection) -> Result<Packet> {
         let mapping = FlvStreamMapping::from_streams(streams)?;
 
         match self {
             FlvTag::Audio { timestamp, payload } => make_packet(
-                payload,
-                timestamp,
+                payload.as_ref(),
+                *timestamp,
                 mapping.audio_time_base,
                 false,
                 mapping.audio_stream_idx,
@@ -58,10 +58,10 @@ impl FlvTag {
                 payload,
                 is_keyframe,
             } => make_packet(
-                payload,
-                timestamp,
+                payload.as_ref(),
+                *timestamp,
                 mapping.video_time_base,
-                is_keyframe,
+                *is_keyframe,
                 mapping.video_stream_idx,
             ),
             FlvTag::ScriptData(_) => {
@@ -191,7 +191,7 @@ fn parse_script_data_metadata(payload: Bytes) -> Result<StreamMetadata> {
 }
 
 fn make_packet(
-    payload: Bytes,
+    payload: &[u8],
     timestamp: u32,
     time_base: AVRational,
     is_keyframe: bool,

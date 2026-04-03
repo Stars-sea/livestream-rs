@@ -19,21 +19,15 @@ use crate::telemetry::metrics;
 struct SegmentState {
     hls_ctx: Option<HlsOutputContext>,
     temp_dir: TempDir,
-    streams: Arc<dyn StreamCollection + Send + Sync>,
     segment_id: u64,
     segment_started_at: Instant,
 }
 
 impl SegmentState {
-    fn new(
-        temp_dir: TempDir,
-        hls_ctx: HlsOutputContext,
-        streams: Arc<dyn StreamCollection + Send + Sync>,
-    ) -> Self {
+    fn new(temp_dir: TempDir, hls_ctx: HlsOutputContext) -> Self {
         Self {
             hls_ctx: Some(hls_ctx),
             temp_dir,
-            streams,
             segment_id: 0,
             segment_started_at: Instant::now(),
         }
@@ -43,7 +37,7 @@ impl SegmentState {
         packet.is_key_frame() && self.segment_started_at.elapsed() >= segment_duration
     }
 
-    fn rollover(&mut self) -> Result<PathBuf> {
+    fn rollover(&mut self, streams: &dyn StreamCollection) -> Result<PathBuf> {
         let completed_segment_path = self
             .hls_ctx
             .as_ref()
@@ -51,11 +45,7 @@ impl SegmentState {
             .ok_or_else(|| anyhow::anyhow!("Missing active HLS context during rollover"))?;
 
         self.segment_id = self.segment_id.saturating_add(1);
-        let next_ctx = HlsOutputContext::create_segment(
-            self.temp_dir.path(),
-            self.streams.as_ref(),
-            self.segment_id,
-        )?;
+        let next_ctx = HlsOutputContext::create_segment(self.temp_dir.path(), streams, self.segment_id)?;
         self.hls_ctx = Some(next_ctx);
         self.segment_started_at = Instant::now();
         Ok(completed_segment_path)
@@ -74,6 +64,7 @@ impl Drop for SegmentState {
 
 pub struct SegmentMiddleware {
     stream_id: String,
+    streams: Arc<dyn StreamCollection + Send + Sync>,
     state: Mutex<SegmentState>,
     segment_duration: Duration,
 }
@@ -89,7 +80,8 @@ impl SegmentMiddleware {
 
         Ok(Self {
             stream_id,
-            state: Mutex::new(SegmentState::new(temp_dir, hls_ctx, streams)),
+            streams,
+            state: Mutex::new(SegmentState::new(temp_dir, hls_ctx)),
             segment_duration,
         })
     }
@@ -116,12 +108,11 @@ impl SegmentMiddleware {
             let mut completed: Option<PathBuf> = None;
 
             if state.should_rollover(&packet, self.segment_duration) {
-                completed = Some(state.rollover()?);
+                completed = Some(state.rollover(self.streams.as_ref())?);
             }
 
-            let streams = state.streams.clone();
             if let Some(hls_ctx) = state.hls_ctx.as_mut() {
-                packet.rescale_ts_for_stream(streams.as_ref(), hls_ctx)?;
+                packet.rescale_ts_for_stream(self.streams.as_ref(), hls_ctx)?;
                 packet.write(hls_ctx)?;
             }
 
@@ -152,12 +143,7 @@ impl MiddlewareTrait for SegmentMiddleware {
                 self.write_packet(packet.clone()).await?;
             }
             UnifiedPacket::FlvTag(tag) => {
-                let streams = {
-                    let state = self.state.lock().await;
-                    state.streams.clone()
-                };
-
-                match tag.clone().to_packet(streams.as_ref()) {
+                match tag.to_packet_ref(self.streams.as_ref()) {
                     Ok(packet) => {
                         self.write_packet(packet).await?;
                     }
