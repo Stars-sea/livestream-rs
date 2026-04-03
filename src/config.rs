@@ -42,10 +42,6 @@ pub struct GrpcConfig {
     /// Port for gRPC server to listen on
     #[serde(default = "default_grpc_port")]
     pub port: u16,
-
-    /// Callback URL (gRPC) for stream events (e.g., stream start/stop)
-    #[serde(default)]
-    pub callback: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -139,7 +135,6 @@ impl Default for GrpcConfig {
     fn default() -> Self {
         Self {
             port: default_grpc_port(),
-            callback: "".to_string(),
         }
     }
 }

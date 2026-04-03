@@ -7,16 +7,19 @@ package livestream;
 // Livestream control plane for creating/stopping/querying stream sessions.
 service Livestream {
   // Start an ingest stream session and return structured session descriptor.
-  rpc StartIngestStream (StartIngestStreamRequest) returns (StartIngestStreamResponse);
+  rpc StartLivestream (StartLivestreamRequest) returns (StartLivestreamResponse);
 
   // Stop an active ingest stream session by live_id.
-  rpc StopIngestStream (StopIngestStreamRequest) returns (StopIngestStreamResponse);
+  rpc StopLivestream (StopLivestreamRequest) returns (StopLivestreamResponse);
 
   // List all active ingest stream descriptors currently managed by the service.
-  rpc ListIngestStreams (ListIngestStreamsRequest) returns (ListIngestStreamsResponse);
+  rpc ListLivestreams (ListLivestreamsRequest) returns (ListLivestreamsResponse);
 
   // Query stream descriptor for an existing live_id.
-  rpc GetIngestStreamInfo (GetIngestStreamInfoRequest) returns (GetIngestStreamInfoResponse);
+  rpc GetLivestreamInfo (GetLivestreamInfoRequest) returns (GetLivestreamInfoResponse);
+
+  // Watch stream session lifecycle events for a given live_id.
+  rpc WatchLivestream (WatchLivestreamRequest) returns (stream WatchLivestreamResponse);
 }
 
 enum InputProtocol {
@@ -32,7 +35,7 @@ enum SessionStatus {
 }
 
 // Request to start stream ingest.
-message StartIngestStreamRequest {
+message StartLivestreamRequest {
   // Business stream identifier.
   string live_id = 1;
   // Optional for RTMP, required for SRT according to server-side validation.
@@ -65,29 +68,37 @@ message StreamDescriptor {
   StreamEndpoint endpoint = 4;
 }
 
-message StartIngestStreamResponse {
+message StartLivestreamResponse {
   StreamDescriptor stream = 1;
 }
 
-message StopIngestStreamRequest {
+message StopLivestreamRequest {
   string live_id = 1;
 }
 
-message StopIngestStreamResponse {
+message StopLivestreamResponse {
   bool is_success = 1;
 }
 
-message ListIngestStreamsRequest {
+message ListLivestreamsRequest {
 }
 
-message ListIngestStreamsResponse {
+message ListLivestreamsResponse {
   repeated StreamDescriptor streams = 1;
 }
 
-message GetIngestStreamInfoRequest {
+message GetLivestreamInfoRequest {
   string live_id = 1;
 }
 
-message GetIngestStreamInfoResponse {
+message GetLivestreamInfoResponse {
   StreamDescriptor stream = 1;
+}
+
+message WatchLivestreamRequest {
+  string live_id = 1;
+}
+
+message WatchLivestreamResponse {
+  SessionStatus stream = 1;
 }

@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -7,6 +8,7 @@ use regex::Regex;
 use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep};
 use tokio_util::sync::CancellationToken;
+use tonic::codegen::tokio_stream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use tracing::warn;
@@ -14,9 +16,7 @@ use tracing::warn;
 use super::api;
 use crate::config::{GrpcConfig, RtmpConfig};
 use crate::transport::TransportController;
-use crate::transport::contract::state::{
-    RtmpState, SessionDescriptor, SessionProtocol, SessionState, SrtState,
-};
+use crate::transport::contract::state::*;
 use crate::transport::registry::global;
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -112,10 +112,19 @@ impl IngestGrpcService {
 
 #[tonic::async_trait]
 impl api::livestream_server::Livestream for IngestGrpcService {
-    async fn start_ingest_stream(
+    type WatchLivestreamStream = Pin<
+        Box<
+            dyn tokio_stream::Stream<
+                    Item = std::result::Result<api::WatchLivestreamResponse, Status>,
+                > + Send
+                + 'static,
+        >,
+    >;
+
+    async fn start_livestream(
         &self,
-        request: Request<api::StartIngestStreamRequest>,
-    ) -> Result<Response<api::StartIngestStreamResponse>, Status> {
+        request: Request<api::StartLivestreamRequest>,
+    ) -> Result<Response<api::StartLivestreamResponse>, Status> {
         let request = request.into_inner();
         let live_id = request.live_id;
 
@@ -183,15 +192,15 @@ impl api::livestream_server::Livestream for IngestGrpcService {
             }
         };
 
-        Ok(Response::new(api::StartIngestStreamResponse {
+        Ok(Response::new(api::StartLivestreamResponse {
             stream: Some(self.descriptor_to_proto(descriptor)),
         }))
     }
 
-    async fn stop_ingest_stream(
+    async fn stop_livestream(
         &self,
-        request: Request<api::StopIngestStreamRequest>,
-    ) -> Result<Response<api::StopIngestStreamResponse>, Status> {
+        request: Request<api::StopLivestreamRequest>,
+    ) -> Result<Response<api::StopLivestreamResponse>, Status> {
         let live_id = request.into_inner().live_id;
 
         if live_id.is_empty() {
@@ -216,26 +225,26 @@ impl api::livestream_server::Livestream for IngestGrpcService {
             warn!(live_id = %live_id, "timed out waiting for stream cleanup after stop request");
         }
 
-        Ok(Response::new(api::StopIngestStreamResponse { is_success }))
+        Ok(Response::new(api::StopLivestreamResponse { is_success }))
     }
 
-    async fn list_ingest_streams(
+    async fn list_livestreams(
         &self,
-        _request: Request<api::ListIngestStreamsRequest>,
-    ) -> Result<Response<api::ListIngestStreamsResponse>, Status> {
+        _request: Request<api::ListLivestreamsRequest>,
+    ) -> Result<Response<api::ListLivestreamsResponse>, Status> {
         let streams = global::list_session_descriptors()
             .await
             .into_iter()
             .map(|descriptor| self.descriptor_to_proto(descriptor))
             .collect();
 
-        Ok(Response::new(api::ListIngestStreamsResponse { streams }))
+        Ok(Response::new(api::ListLivestreamsResponse { streams }))
     }
 
-    async fn get_ingest_stream_info(
+    async fn get_livestream_info(
         &self,
-        request: Request<api::GetIngestStreamInfoRequest>,
-    ) -> Result<Response<api::GetIngestStreamInfoResponse>, Status> {
+        request: Request<api::GetLivestreamInfoRequest>,
+    ) -> Result<Response<api::GetLivestreamInfoResponse>, Status> {
         let live_id = request.into_inner().live_id;
 
         if live_id.is_empty() {
@@ -246,20 +255,38 @@ impl api::livestream_server::Livestream for IngestGrpcService {
             .await
             .ok_or_else(|| Status::not_found("stream not found"))?;
 
-        Ok(Response::new(api::GetIngestStreamInfoResponse {
+        Ok(Response::new(api::GetLivestreamInfoResponse {
             stream: Some(self.descriptor_to_proto(descriptor)),
         }))
+    }
+
+    async fn watch_livestream(
+        &self,
+        request: Request<api::WatchLivestreamRequest>,
+    ) -> Result<Response<Self::WatchLivestreamStream>, Status> {
+        let live_id = request.into_inner().live_id;
+
+        if live_id.is_empty() {
+            return Err(Status::invalid_argument("live_id cannot be empty"));
+        }
+
+        let stream = async_stream::try_stream! {
+            while let Some(state) = global::get_session_state(&live_id).await {
+                yield api::WatchLivestreamResponse {
+                    stream: Self::session_state_to_proto(state),
+                };
+
+                sleep(POLL_INTERVAL).await;
+            }
+        };
+
+        Ok(Response::new(Box::pin(stream)))
     }
 }
 
 impl IngestGrpcService {
-    fn descriptor_to_proto(&self, descriptor: SessionDescriptor) -> api::StreamDescriptor {
-        let input_protocol = match descriptor.protocol {
-            SessionProtocol::Srt => api::InputProtocol::Srt as i32,
-            SessionProtocol::Rtmp => api::InputProtocol::Rtmp as i32,
-        };
-
-        let status = match descriptor.state {
+    fn session_state_to_proto(state: SessionState) -> i32 {
+        match state {
             SessionState::Rtmp(RtmpState::Pending) => api::SessionStatus::Pending as i32,
             SessionState::Rtmp(RtmpState::Connecting) => api::SessionStatus::Connecting as i32,
             SessionState::Rtmp(RtmpState::Connected) => api::SessionStatus::Connected as i32,
@@ -267,7 +294,16 @@ impl IngestGrpcService {
             SessionState::Srt(SrtState::Pending) => api::SessionStatus::Pending as i32,
             SessionState::Srt(SrtState::Connected) => api::SessionStatus::Connected as i32,
             SessionState::Srt(SrtState::Disconnected) => api::SessionStatus::Disconnected as i32,
+        }
+    }
+
+    fn descriptor_to_proto(&self, descriptor: SessionDescriptor) -> api::StreamDescriptor {
+        let input_protocol = match descriptor.protocol {
+            SessionProtocol::Srt => api::InputProtocol::Srt as i32,
+            SessionProtocol::Rtmp => api::InputProtocol::Rtmp as i32,
         };
+
+        let status = Self::session_state_to_proto(descriptor.state);
 
         let rtmp_port = self.rtmp_config.port as u32;
         let port = descriptor.endpoint.port.map(u32::from).unwrap_or(rtmp_port);
