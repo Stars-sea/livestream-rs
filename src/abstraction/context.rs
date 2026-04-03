@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 pub trait PipeContextTrait: Send + Sync {
     type Payload: Send + Sync;
 
-    fn id(&self) -> String;
+    fn id(&self) -> &str;
 
     fn cancel_token(&self) -> CancellationToken;
 
@@ -18,7 +18,7 @@ where
 {
     type Payload = C::Payload;
 
-    fn id(&self) -> String {
+    fn id(&self) -> &str {
         self.as_ref().id()
     }
 
@@ -37,7 +37,7 @@ where
 {
     type Payload = C::Payload;
 
-    fn id(&self) -> String {
+    fn id(&self) -> &str {
         self.as_ref().id()
     }
 

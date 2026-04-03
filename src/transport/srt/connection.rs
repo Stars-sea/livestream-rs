@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use crossfire::{MTx, mpsc::List};
+use crossfire::{MTx, mpsc::Array};
 use retry::OperationResult;
 use retry::delay::{Exponential, jitter};
 use tokio_util::sync::CancellationToken;
@@ -19,8 +19,8 @@ pub struct SrtConnection {
 
     av_ctx: InputContext,
 
-    event_tx: MTx<List<StreamEvent>>,
-    packet_tx: MTx<List<WrappedPacket>>,
+    event_tx: MTx<Array<StreamEvent>>,
+    packet_tx: MTx<Array<WrappedPacket>>,
 
     cancel_token: CancellationToken,
 }
@@ -31,16 +31,16 @@ pub struct SrtConnectionBuilder {
     stream_id: String,
     passphrase: Option<String>,
 
-    packet_tx: MTx<List<WrappedPacket>>,
-    event_tx: MTx<List<StreamEvent>>,
+    packet_tx: MTx<Array<WrappedPacket>>,
+    event_tx: MTx<Array<StreamEvent>>,
 }
 
 impl SrtConnection {
     fn new(
         stream_id: String,
         av_ctx: InputContext,
-        event_tx: MTx<List<StreamEvent>>,
-        packet_tx: MTx<List<WrappedPacket>>,
+        event_tx: MTx<Array<StreamEvent>>,
+        packet_tx: MTx<Array<WrappedPacket>>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
@@ -139,8 +139,8 @@ impl SrtConnectionBuilder {
         port: u16,
         stream_id: String,
         passphrase: Option<String>,
-        packet_tx: MTx<List<WrappedPacket>>,
-        event_tx: MTx<List<StreamEvent>>,
+        packet_tx: MTx<Array<WrappedPacket>>,
+        event_tx: MTx<Array<StreamEvent>>,
     ) -> Self {
         Self {
             port,

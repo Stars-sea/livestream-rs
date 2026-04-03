@@ -24,12 +24,12 @@ pub struct RtmpServer {
     listener: TcpListener,
     appname: String,
 
-    ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
-    event_tx: MTx<mpsc::List<StreamEvent>>,
-    publish_tag_rx: AsyncRx<mpsc::List<WrappedFlvTag>>,
-    publish_tag_tx: MTx<mpsc::List<WrappedFlvTag>>,
+    ctrl_rx: AsyncRx<spsc::Array<ControlMessage>>,
+    event_tx: MTx<mpsc::Array<StreamEvent>>,
+    publish_tag_rx: AsyncRx<mpsc::Array<WrappedFlvTag>>,
+    publish_tag_tx: MTx<mpsc::Array<WrappedFlvTag>>,
     play_tag_senders: Arc<DashMap<String, broadcast::Sender<FlvTag>>>,
-    rtmp_tag_rx: AsyncRx<mpsc::List<StreamFlvTag>>,
+    rtmp_tag_rx: AsyncRx<mpsc::Array<StreamFlvTag>>,
 
     bus: PipeBus,
 
@@ -40,15 +40,16 @@ impl RtmpServer {
     pub async fn create(
         addr: SocketAddr,
         appname: String,
-        ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
-        event_tx: MTx<mpsc::List<StreamEvent>>,
-        rtmp_tag_rx: AsyncRx<mpsc::List<StreamFlvTag>>,
+        ctrl_rx: AsyncRx<spsc::Array<ControlMessage>>,
+        event_tx: MTx<mpsc::Array<StreamEvent>>,
+        rtmp_tag_rx: AsyncRx<mpsc::Array<StreamFlvTag>>,
+        publish_queue_capacity: usize,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
 
-        let (tag_tx, tag_rx) = mpsc::unbounded_async();
+        let (tag_tx, tag_rx) = mpsc::bounded_blocking_async(publish_queue_capacity);
 
         Ok(Self {
             listener,
@@ -191,8 +192,8 @@ impl RtmpServer {
 async fn spawn_connection_handler(
     appname: String,
     socket: TcpStream,
-    event_tx: MTx<mpsc::List<StreamEvent>>,
-    tag_tx: MAsyncTx<mpsc::List<WrappedFlvTag>>,
+    event_tx: MTx<mpsc::Array<StreamEvent>>,
+    tag_tx: MAsyncTx<mpsc::Array<WrappedFlvTag>>,
     tag_rx: impl Fn(String) -> broadcast::Receiver<FlvTag>,
 ) {
     let cancel_token = CancellationToken::new();

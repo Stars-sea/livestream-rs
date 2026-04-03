@@ -109,7 +109,7 @@ impl PipeBus {
             anyhow::bail!("Fallback mode enabled without fallback pipe");
         }
 
-        let Some(packet_pipe) = self.packet_pipes.get(&stream_id).map(|entry| entry.clone()) else {
+        let Some(packet_pipe) = self.packet_pipes.get(stream_id).map(|entry| entry.clone()) else {
             let fallback = self.fallback_pipe.read().await.clone();
             if let Some(pipe) = fallback {
                 warn!(stream_id = %stream_id, "No stream pipeline found, routed to fallback pipe");

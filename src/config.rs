@@ -21,6 +21,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub rtmp: RtmpConfig,
 
+    /// Queue capacity configuration
+    #[serde(default)]
+    pub queue: QueueConfig,
+
     /// Minio Configuration
     pub minio: Option<MinioConfig>,
 }
@@ -56,6 +60,33 @@ pub struct RtmpConfig {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub struct QueueConfig {
+    /// Capacity for RTMP forwarded tag queue from pipeline to transport
+    #[serde(default = "default_rtmp_forward_queue_capacity")]
+    pub rtmp_forward: usize,
+
+    /// Capacity for internal FLV relay queue in FLV mux middleware
+    #[serde(default = "default_flv_relay_queue_capacity")]
+    pub flv_relay: usize,
+
+    /// Capacity for RTMP publish tag queue
+    #[serde(default = "default_rtmp_publish_queue_capacity")]
+    pub rtmp_publish: usize,
+
+    /// Capacity for SRT packet queue
+    #[serde(default = "default_srt_packet_queue_capacity")]
+    pub srt_packet: usize,
+
+    /// Capacity for transport control queues (RTMP/SRT)
+    #[serde(default = "default_control_queue_capacity")]
+    pub control: usize,
+
+    /// Capacity for transport event queue
+    #[serde(default = "default_event_queue_capacity")]
+    pub event: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct MinioConfig {
     /// Base URI for MinIO/S3 (e.g., "http://localhost:9000")
     pub uri: String,
@@ -88,6 +119,30 @@ fn default_rtmp_port() -> u16 {
 
 fn default_rtmp_appname() -> String {
     "lives".to_string()
+}
+
+fn default_rtmp_forward_queue_capacity() -> usize {
+    8192
+}
+
+fn default_flv_relay_queue_capacity() -> usize {
+    2048
+}
+
+fn default_rtmp_publish_queue_capacity() -> usize {
+    4096
+}
+
+fn default_srt_packet_queue_capacity() -> usize {
+    4096
+}
+
+fn default_control_queue_capacity() -> usize {
+    1024
+}
+
+fn default_event_queue_capacity() -> usize {
+    4096
 }
 
 impl SrtConfig {
@@ -148,6 +203,19 @@ impl Default for RtmpConfig {
     }
 }
 
+impl Default for QueueConfig {
+    fn default() -> Self {
+        Self {
+            rtmp_forward: default_rtmp_forward_queue_capacity(),
+            flv_relay: default_flv_relay_queue_capacity(),
+            rtmp_publish: default_rtmp_publish_queue_capacity(),
+            srt_packet: default_srt_packet_queue_capacity(),
+            control: default_control_queue_capacity(),
+            event: default_event_queue_capacity(),
+        }
+    }
+}
+
 impl AppConfig {
     /// Loads settings from configuration files and environment variables.
     pub fn new() -> Result<Self> {
@@ -179,6 +247,16 @@ impl AppConfig {
 
         if self.srt.duration <= 0 {
             anyhow::bail!("Segment duration must be positive");
+        }
+
+        if self.queue.rtmp_forward == 0
+            || self.queue.flv_relay == 0
+            || self.queue.rtmp_publish == 0
+            || self.queue.srt_packet == 0
+            || self.queue.control == 0
+            || self.queue.event == 0
+        {
+            anyhow::bail!("All queue capacities must be greater than 0");
         }
 
         if !cfg!(test) && self.minio.is_none() {

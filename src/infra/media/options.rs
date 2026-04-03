@@ -2,6 +2,7 @@ use std::ffi::CString;
 use std::ptr::null_mut;
 
 use ffmpeg_sys_next::*;
+use tracing::warn;
 
 pub trait StreamOptions {
     fn filename(&self) -> String;
@@ -35,6 +36,7 @@ fn to_cstring_lossy(input: &str) -> Option<CString> {
         Ok(value) => Some(value),
         Err(_) => {
             let sanitized = input.replace('\0', "");
+            warn!("Sanitized NUL byte from FFmpeg option value");
             CString::new(sanitized).ok()
         }
     }

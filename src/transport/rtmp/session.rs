@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bytes::BytesMut;
 use crossfire::MTx;
-use crossfire::mpsc::List;
+use crossfire::mpsc::Array;
 use rml_rtmp::chunk_io::Packet;
 use rml_rtmp::sessions::{ServerSession, ServerSessionEvent, ServerSessionResult};
 use rml_rtmp::time::RtmpTimestamp;
@@ -21,7 +21,7 @@ pub struct SessionGuard {
     session: ServerSession,
     appname: String,
 
-    event_tx: MTx<List<StreamEvent>>,
+    event_tx: MTx<Array<StreamEvent>>,
 
     chunk_size: u32,
 }
@@ -30,7 +30,7 @@ pub(super) struct SessionGuardBuilder {
     connection: RtmpConnection,
     session: Option<ServerSession>,
     appname: Option<String>,
-    event_tx: Option<MTx<List<StreamEvent>>>,
+    event_tx: Option<MTx<Array<StreamEvent>>>,
 }
 
 impl SessionGuard {
@@ -38,7 +38,7 @@ impl SessionGuard {
         connection: RtmpConnection,
         session: ServerSession,
         appname: String,
-        event_tx: MTx<List<StreamEvent>>,
+        event_tx: MTx<Array<StreamEvent>>,
     ) -> Self {
         Self {
             connection,
@@ -336,7 +336,7 @@ impl SessionGuardBuilder {
         self
     }
 
-    pub fn with_event_tx(mut self, event_tx: MTx<List<StreamEvent>>) -> Self {
+    pub fn with_event_tx(mut self, event_tx: MTx<Array<StreamEvent>>) -> Self {
         self.event_tx = Some(event_tx);
         self
     }

@@ -24,8 +24,8 @@ impl UnifiedPacketContext {
 impl PipeContextTrait for UnifiedPacketContext {
     type Payload = UnifiedPacket;
 
-    fn id(&self) -> String {
-        self.id.clone()
+    fn id(&self) -> &str {
+        self.id.as_str()
     }
 
     fn cancel_token(&self) -> CancellationToken {

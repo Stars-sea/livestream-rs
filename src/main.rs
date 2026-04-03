@@ -46,15 +46,20 @@ async fn main() -> Result<()> {
     SegmentPersistenceHandler::spawn(minio_client);
 
     let cancel_token = CancellationToken::new();
-    let (rtmp_tag_tx, rtmp_tag_rx) = mpsc::unbounded_async();
+    let (rtmp_tag_tx, rtmp_tag_rx) = mpsc::bounded_blocking_async(config.queue.rtmp_forward);
 
-    let factory = Arc::new(UnifiedPipeFactory::new(segment_duration, rtmp_tag_tx));
+    let factory = Arc::new(UnifiedPipeFactory::new(
+        segment_duration,
+        config.queue.flv_relay,
+        rtmp_tag_tx,
+    ));
     let packet_bus = PipeBus::new();
     packet_bus.spawn_session_listener(factory);
 
     let transport_server = TransportServer::new(
         config.rtmp.clone(),
         config.srt.clone(),
+        config.queue.clone(),
         rtmp_tag_rx,
         packet_bus,
         cancel_token.child_token(),

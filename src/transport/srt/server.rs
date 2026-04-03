@@ -15,10 +15,10 @@ use crate::transport::registry::global;
 use crate::transport::srt::packet::WrappedPacket;
 
 pub struct SrtServer {
-    ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
-    event_tx: MTx<mpsc::List<StreamEvent>>,
-    packet_rx: AsyncRx<mpsc::List<WrappedPacket>>,
-    packet_tx: MTx<mpsc::List<WrappedPacket>>,
+    ctrl_rx: AsyncRx<spsc::Array<ControlMessage>>,
+    event_tx: MTx<mpsc::Array<StreamEvent>>,
+    packet_rx: AsyncRx<mpsc::Array<WrappedPacket>>,
+    packet_tx: MTx<mpsc::Array<WrappedPacket>>,
 
     bus: PipeBus,
 
@@ -30,13 +30,14 @@ pub struct SrtServer {
 
 impl SrtServer {
     pub fn new(
-        ctrl_rx: AsyncRx<spsc::List<ControlMessage>>,
-        event_tx: MTx<mpsc::List<StreamEvent>>,
+        ctrl_rx: AsyncRx<spsc::Array<ControlMessage>>,
+        event_tx: MTx<mpsc::Array<StreamEvent>>,
+        packet_queue_capacity: usize,
         bus: PipeBus,
         port_allocator: PortAllocator,
         cancel_token: CancellationToken,
     ) -> Self {
-        let (packet_tx, packet_rx) = mpsc::unbounded_async();
+        let (packet_tx, packet_rx) = mpsc::bounded_blocking_async(packet_queue_capacity);
         Self {
             ctrl_rx,
             event_tx,

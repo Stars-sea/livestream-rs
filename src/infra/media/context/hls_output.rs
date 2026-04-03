@@ -6,6 +6,7 @@ use super::{Context, OutputContext};
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
+use tracing::warn;
 
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
@@ -80,7 +81,9 @@ impl Drop for HlsOutputContext {
             return;
         }
 
-        self.write_trailer().ok();
+        if let Err(e) = self.write_trailer() {
+            warn!(error = %e, path = %self.path.display(), "Failed to write HLS trailer during context drop");
+        }
         unsafe {
             avio_closep(&mut (*self.ctx).pb);
             avformat_free_context(self.ctx);

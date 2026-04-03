@@ -14,7 +14,7 @@ use super::contract::state::{ConnectionStateTrait, SessionState};
 use super::registry::global;
 use super::rtmp::RtmpServer;
 use super::srt::SrtServer;
-use crate::config::{RtmpConfig, SrtConfig};
+use crate::config::{QueueConfig, RtmpConfig, SrtConfig};
 use crate::dispatcher::{self, Protocal, SessionEvent};
 use crate::infra::PortAllocator;
 use crate::pipeline::PipeBus;
@@ -22,7 +22,8 @@ use crate::pipeline::PipeBus;
 pub struct TransportServer {
     rtmp_config: RtmpConfig,
     srt_config: SrtConfig,
-    rtmp_tag_rx: Option<AsyncRx<spsc::List<StreamFlvTag>>>,
+    queue_config: QueueConfig,
+    rtmp_tag_rx: Option<AsyncRx<mpsc::Array<StreamFlvTag>>>,
 
     bus: PipeBus,
 
@@ -33,13 +34,15 @@ impl TransportServer {
     pub fn new(
         rtmp_config: RtmpConfig,
         srt_config: SrtConfig,
-        rtmp_tag_rx: AsyncRx<spsc::List<StreamFlvTag>>,
+        queue_config: QueueConfig,
+        rtmp_tag_rx: AsyncRx<mpsc::Array<StreamFlvTag>>,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             rtmp_config,
             srt_config,
+            queue_config,
             rtmp_tag_rx: Some(rtmp_tag_rx),
             bus,
             cancel_token,
@@ -48,8 +51,8 @@ impl TransportServer {
 
     async fn rtmp_server(
         &mut self,
-        rx: AsyncRx<spsc::List<ControlMessage>>,
-        event_tx: MTx<mpsc::List<StreamEvent>>,
+        rx: AsyncRx<spsc::Array<ControlMessage>>,
+        event_tx: MTx<mpsc::Array<StreamEvent>>,
     ) -> Result<RtmpServer> {
         let appname = self.rtmp_config.appname.clone();
         let cancel_token = self.cancel_token.child_token();
@@ -65,6 +68,7 @@ impl TransportServer {
             rx,
             event_tx,
             rtmp_tag_rx,
+            self.queue_config.rtmp_publish,
             self.bus.clone(),
             cancel_token,
         )
@@ -74,8 +78,8 @@ impl TransportServer {
 
     async fn srt_server(
         &self,
-        rx: AsyncRx<spsc::List<ControlMessage>>,
-        event_tx: MTx<mpsc::List<StreamEvent>>,
+        rx: AsyncRx<spsc::Array<ControlMessage>>,
+        event_tx: MTx<mpsc::Array<StreamEvent>>,
     ) -> Result<SrtServer> {
         let cancel_token = self.cancel_token.child_token();
 
@@ -87,14 +91,23 @@ impl TransportServer {
             }
         };
 
-        let server = SrtServer::new(rx, event_tx, self.bus.clone(), port_allocator, cancel_token);
+        let server = SrtServer::new(
+            rx,
+            event_tx,
+            self.queue_config.srt_packet,
+            self.bus.clone(),
+            port_allocator,
+            cancel_token,
+        );
         Ok(server)
     }
 
     pub async fn spawn_task(mut self) -> Result<(TransportController, JoinHandle<Result<()>>)> {
-        let (rtmp_msg_tx, rtmp_msg_rx) = spsc::unbounded_async();
-        let (srt_msg_tx, srt_msg_rx) = spsc::unbounded_async();
-        let (event_tx, event_rx) = mpsc::unbounded_async();
+        let (rtmp_msg_tx, rtmp_msg_rx) =
+            spsc::bounded_blocking_async(self.queue_config.control);
+        let (srt_msg_tx, srt_msg_rx) =
+            spsc::bounded_blocking_async(self.queue_config.control);
+        let (event_tx, event_rx) = mpsc::bounded_blocking_async(self.queue_config.event);
 
         let rtmp_server = self.rtmp_server(rtmp_msg_rx, event_tx.clone()).await?;
         let srt_server = self.srt_server(srt_msg_rx, event_tx.clone()).await?;
@@ -157,7 +170,7 @@ async fn handle_stream_event(event: StreamEvent) -> Result<()> {
     }
 }
 
-async fn event_listener(event_rx: AsyncRx<mpsc::List<StreamEvent>>) -> Result<()> {
+async fn event_listener(event_rx: AsyncRx<mpsc::Array<StreamEvent>>) -> Result<()> {
     loop {
         match event_rx.recv().await {
             Ok(event) => {

@@ -9,6 +9,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use crossfire::{MTx, mpsc};
 use ffmpeg_sys_next::*;
+use tracing::warn;
 
 use std::ffi::{c_int, c_void};
 use std::ptr::null_mut;
@@ -22,7 +23,7 @@ pub struct FlvOutputContext {
 
 impl FlvOutputContext {
     pub fn create(
-        flv_tag_tx: MTx<mpsc::List<FlvTag>>,
+        flv_tag_tx: MTx<mpsc::Array<FlvTag>>,
         streams: &dyn StreamCollection,
     ) -> Result<Self> {
         let ctx = Self::alloc_output_ctx("flv", None)?;
@@ -85,7 +86,9 @@ impl Drop for FlvOutputContext {
             return;
         }
 
-        self.write_trailer().ok();
+        if let Err(e) = self.write_trailer() {
+            warn!(error = %e, "Failed to write FLV trailer during context drop");
+        }
         unsafe { Self::cleanup_ctx(self.ctx) };
         self.ctx = null_mut();
     }
@@ -154,7 +157,7 @@ impl OutputContext for FlvOutputContext {
 }
 
 struct FlvAvioOpaque {
-    flv_tag_tx: MTx<mpsc::List<FlvTag>>,
+    flv_tag_tx: MTx<mpsc::Array<FlvTag>>,
 }
 
 extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int) -> c_int {

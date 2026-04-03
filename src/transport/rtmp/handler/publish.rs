@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossfire::{MAsyncTx, mpsc::List};
+use crossfire::{MAsyncTx, mpsc::Array};
 use rml_rtmp::sessions::ServerSessionEvent;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -16,7 +16,7 @@ pub struct PublishHandler {
     appname: String,
     stream_key: String,
 
-    tag_tx: MAsyncTx<List<WrappedFlvTag>>,
+    tag_tx: MAsyncTx<Array<WrappedFlvTag>>,
 
     cancel_token: CancellationToken,
 }
@@ -26,7 +26,7 @@ impl PublishHandler {
         session: SessionGuard,
         appname: String,
         stream_key: String,
-        tag_tx: MAsyncTx<List<WrappedFlvTag>>,
+        tag_tx: MAsyncTx<Array<WrappedFlvTag>>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {

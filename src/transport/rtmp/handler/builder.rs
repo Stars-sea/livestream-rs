@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossfire::{MAsyncTx, mpsc::List};
+use crossfire::{MAsyncTx, mpsc::Array};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -21,7 +21,7 @@ pub enum HandlerBuilder {
         session: Option<SessionGuard>,
         appname: Option<String>,
         stream_key: String,
-        tag_tx: Option<MAsyncTx<List<WrappedFlvTag>>>,
+        tag_tx: Option<MAsyncTx<Array<WrappedFlvTag>>>,
         cancel_token: Option<CancellationToken>,
     },
 }
@@ -78,7 +78,7 @@ impl HandlerBuilder {
         self
     }
 
-    pub fn with_tag_tx(mut self, tag_tx: MAsyncTx<List<WrappedFlvTag>>) -> Self {
+    pub fn with_tag_tx(mut self, tag_tx: MAsyncTx<Array<WrappedFlvTag>>) -> Self {
         if let HandlerBuilder::Publish { tag_tx: tx, .. } = &mut self {
             *tx = Some(tag_tx);
         }

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossfire::mpsc::List;
+use crossfire::mpsc::Array;
 use crossfire::{AsyncRx, MTx, mpsc};
 use tokio::sync::Mutex;
 use tracing::warn;
@@ -20,7 +20,7 @@ struct ForwardState {
 
 pub struct FlvMuxForwardMiddleware {
     stream_id: String,
-    rtmp_tag_tx: MTx<List<StreamFlvTag>>,
+    rtmp_tag_tx: MTx<Array<StreamFlvTag>>,
     state: Mutex<ForwardState>,
 }
 
@@ -28,9 +28,10 @@ impl FlvMuxForwardMiddleware {
     pub fn new(
         stream_id: String,
         streams: Arc<dyn StreamCollection + Send + Sync>,
-        rtmp_tag_tx: MTx<List<StreamFlvTag>>,
+        flv_relay_queue_capacity: usize,
+        rtmp_tag_tx: MTx<Array<StreamFlvTag>>,
     ) -> Result<Self> {
-        let (flv_tx, flv_rx) = mpsc::unbounded_async();
+        let (flv_tx, flv_rx) = mpsc::bounded_blocking_async(flv_relay_queue_capacity);
         let flv_ctx = FlvOutputContext::create(flv_tx, streams.as_ref())?;
         Self::spawn_flv_relay(flv_rx, rtmp_tag_tx.clone(), stream_id.clone());
 
@@ -42,8 +43,8 @@ impl FlvMuxForwardMiddleware {
     }
 
     fn spawn_flv_relay(
-        rx: AsyncRx<List<FlvTag>>,
-        rtmp_tag_tx: MTx<List<StreamFlvTag>>,
+        rx: AsyncRx<Array<FlvTag>>,
+        rtmp_tag_tx: MTx<Array<StreamFlvTag>>,
         stream_id: String,
     ) {
         tokio::spawn(async move {
@@ -80,7 +81,7 @@ impl MiddlewareTrait for FlvMuxForwardMiddleware {
             UnifiedPacket::FlvTag(tag) => {
                 if let Err(e) = self
                     .rtmp_tag_tx
-                    .send(StreamFlvTag::new(stream_id.clone(), tag.clone()))
+                    .send(StreamFlvTag::new(self.stream_id.clone(), tag.clone()))
                 {
                     anyhow::bail!("Failed to forward FLV tag for stream {}: {}", stream_id, e);
                 }

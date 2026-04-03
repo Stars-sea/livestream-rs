@@ -1,15 +1,15 @@
 use anyhow::Result;
-use crossfire::{Tx, spsc::List};
+use crossfire::{Tx, spsc::Array};
 
 use super::contract::message::ControlMessage;
 
 pub struct TransportController {
-    rtmp_tx: Tx<List<ControlMessage>>,
-    srt_tx: Tx<List<ControlMessage>>,
+    rtmp_tx: Tx<Array<ControlMessage>>,
+    srt_tx: Tx<Array<ControlMessage>>,
 }
 
 impl TransportController {
-    pub fn new(rtmp_tx: Tx<List<ControlMessage>>, srt_tx: Tx<List<ControlMessage>>) -> Self {
+    pub fn new(rtmp_tx: Tx<Array<ControlMessage>>, srt_tx: Tx<Array<ControlMessage>>) -> Self {
         Self { rtmp_tx, srt_tx }
     }
 

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossfire::MTx;
-use crossfire::mpsc::List;
+use crossfire::mpsc::Array;
 
 use crate::infra::media::stream::StreamCollection;
 use crate::pipeline::Pipe;
@@ -14,15 +14,21 @@ use crate::transport::contract::message::StreamFlvTag;
 
 #[derive(Clone)]
 pub struct UnifiedPipeFactory {
-    rtmp_tag_tx: MTx<List<StreamFlvTag>>,
+    rtmp_tag_tx: MTx<Array<StreamFlvTag>>,
     segment_duration: Duration,
+    flv_relay_queue_capacity: usize,
 }
 
 impl UnifiedPipeFactory {
-    pub fn new(segment_duration: Duration, rtmp_tag_tx: MTx<List<StreamFlvTag>>) -> Self {
+    pub fn new(
+        segment_duration: Duration,
+        flv_relay_queue_capacity: usize,
+        rtmp_tag_tx: MTx<Array<StreamFlvTag>>,
+    ) -> Self {
         Self {
             rtmp_tag_tx,
             segment_duration,
+            flv_relay_queue_capacity,
         }
     }
 }
@@ -37,6 +43,7 @@ impl PipeFactory for UnifiedPipeFactory {
         pipe.add_middleware(Arc::new(FlvMuxForwardMiddleware::new(
             id.clone(),
             args.clone(),
+            self.flv_relay_queue_capacity,
             self.rtmp_tag_tx.clone(),
         )?));
         pipe.add_middleware(Arc::new(SegmentMiddleware::new(
