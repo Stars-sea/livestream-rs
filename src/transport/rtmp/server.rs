@@ -201,6 +201,7 @@ async fn spawn_connection_handler(
 
     let connection = RtmpConnection::new(socket);
 
+    // TODO: If the handshake fails, we should still send a StreamEvent::StateChange to update the session state to Failed
     let builder = match connection.perform_handshake(&cancel_token).await {
         Ok(builder) => builder,
         Err(e) => {

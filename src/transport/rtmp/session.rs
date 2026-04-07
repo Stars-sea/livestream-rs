@@ -2,11 +2,13 @@ use anyhow::Result;
 use bytes::BytesMut;
 use crossfire::MTx;
 use crossfire::mpsc::Array;
+use regex::Regex;
 use rml_rtmp::chunk_io::Packet;
 use rml_rtmp::sessions::{ServerSession, ServerSessionEvent, ServerSessionResult};
 use rml_rtmp::time::RtmpTimestamp;
+use std::sync::OnceLock;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use crate::infra::media::packet::FlvTag;
 use crate::transport::contract::message::StreamEvent;
@@ -59,7 +61,11 @@ impl SessionGuard {
     ) -> Result<Vec<ServerSessionResult>> {
         let mut buffer = BytesMut::with_capacity(self.chunk_size as usize);
 
-        self.connection.read(&mut buffer, ct).await?;
+        let length = self.connection.read(&mut buffer, ct).await?;
+        if length == 0 {
+            anyhow::bail!("Connection closed");
+        }
+
         Ok(self.session.handle_input(&buffer)?)
     }
 
@@ -83,8 +89,8 @@ impl SessionGuard {
                     events.push(event);
                 }
                 ServerSessionResult::UnhandleableMessageReceived(payload) => {
-                    debug!(payload = ?payload, "Received non-response RTMP session result");
-                    anyhow::bail!("Received unhandleable message: {:?}", payload);
+                    // TODO: Handle unhandleable messages properly
+                    debug!(payload = ?payload, "Received non-response RTMP session result, ignoring.");
                 }
             }
         }
@@ -177,11 +183,27 @@ impl SessionGuard {
         event: ServerSessionEvent,
         ct: &CancellationToken,
     ) -> Result<Option<HandlerBuilder>> {
+        static APP_AND_STREAM_RE: OnceLock<Regex> = OnceLock::new();
+        let app_and_stream_re = APP_AND_STREAM_RE.get_or_init(|| {
+            Regex::new(r"^/?(?P<app>[^/?]+)(?:/(?P<stream_key>[^?]+))?(?:\?.*)?$")
+                .expect("valid app/stream regex")
+        });
+
         match event {
             ServerSessionEvent::ConnectionRequested {
                 request_id,
                 app_name,
             } => {
+                if let Some(captures) = app_and_stream_re.captures(&app_name) {
+                    let incoming_app = captures.name("app").map(|m| m.as_str()).unwrap_or_default();
+
+                    if incoming_app == self.appname.as_str() {
+                        self.on_connect_requested(request_id, self.appname.clone(), ct)
+                            .await?;
+                        return Ok(None);
+                    }
+                }
+
                 self.on_connect_requested(request_id, app_name, ct).await?;
                 Ok(None)
             }
@@ -197,8 +219,34 @@ impl SessionGuard {
             ServerSessionEvent::PublishStreamRequested {
                 request_id,
                 stream_key,
+                app_name,
                 ..
-            } => self.on_publish_requested(request_id, stream_key, ct).await,
+            } => {
+                info!("Received publish request for stream key: {}", stream_key);
+                let stream_key = app_and_stream_re.captures(&stream_key).and_then(|caps| {
+                    caps.name("stream_key")
+                        .or_else(|| caps.name("app"))
+                        .map(|m| m.as_str().to_string())
+                });
+                let stream_key = stream_key.or_else(|| {
+                    app_and_stream_re.captures(&app_name).and_then(|caps| {
+                        caps.name("stream_key")
+                            .map(|m| m.as_str().to_string())
+                            .filter(|s| !s.is_empty())
+                    })
+                });
+                let stream_key = stream_key.unwrap_or_default();
+
+                self.on_publish_requested(request_id, stream_key, ct).await
+            }
+            ServerSessionEvent::UnhandleableAmf0Command {
+                command_name,
+                transaction_id,
+                ..
+            } => {
+                warn!(command_name = %command_name, transaction_id = %transaction_id, "Unhandled AMF0 command");
+                Ok(None)
+            }
 
             _ => {
                 debug!(event = ?event, "Unhandled session event");

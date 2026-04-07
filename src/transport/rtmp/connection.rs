@@ -76,11 +76,12 @@ impl RtmpConnection {
         buf: &mut BytesMut,
         ct: &CancellationToken,
     ) -> Result<usize> {
+        buf.clear();
         tokio::select! {
             _ = ct.cancelled() => {
                 anyhow::bail!("Connection read cancelled");
             }
-            res = self.socket.read(buf) => {
+            res = self.socket.read_buf(buf) => {
                 res.map_err(|e| e.into())
             }
         }
