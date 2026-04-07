@@ -6,7 +6,7 @@ use crossfire::MTx;
 use crossfire::{AsyncRx, mpsc, spsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error};
+use tracing::{debug, error, instrument};
 
 use super::TransportController;
 use super::contract::message::{ControlMessage, StreamEvent, StreamFlvTag};
@@ -103,10 +103,8 @@ impl TransportServer {
     }
 
     pub async fn spawn_task(mut self) -> Result<(TransportController, JoinHandle<Result<()>>)> {
-        let (rtmp_msg_tx, rtmp_msg_rx) =
-            spsc::bounded_blocking_async(self.queue_config.control);
-        let (srt_msg_tx, srt_msg_rx) =
-            spsc::bounded_blocking_async(self.queue_config.control);
+        let (rtmp_msg_tx, rtmp_msg_rx) = spsc::bounded_blocking_async(self.queue_config.control);
+        let (srt_msg_tx, srt_msg_rx) = spsc::bounded_blocking_async(self.queue_config.control);
         let (event_tx, event_rx) = mpsc::bounded_blocking_async(self.queue_config.event);
 
         let rtmp_server = self.rtmp_server(rtmp_msg_rx, event_tx.clone()).await?;
@@ -126,6 +124,14 @@ impl TransportServer {
     }
 }
 
+#[instrument(
+    name = "transport.stream_event",
+    skip(event),
+    fields(
+        event.kind = %event.kind(),
+        live_id = %event.live_id(),
+    )
+)]
 async fn handle_stream_event(event: StreamEvent) -> Result<()> {
     let dispatcher = dispatcher::singleton().await;
 

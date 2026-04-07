@@ -11,9 +11,15 @@ use tokio_util::sync::CancellationToken;
 use tonic::codegen::tokio_stream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-use tracing::warn;
+use tracing::{Span, info, instrument, warn};
+
+#[cfg(feature = "opentelemetry")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use super::api;
+use super::api::livestream_server::LivestreamServer;
+#[cfg(feature = "opentelemetry")]
+use super::extractor;
 use crate::config::{GrpcConfig, RtmpConfig};
 use crate::transport::TransportController;
 use crate::transport::contract::state::*;
@@ -41,16 +47,34 @@ impl GrpcServer {
         }
     }
 
+    #[instrument(
+        name = "server.grpc.serve",
+        skip(self, shutdown),
+        fields(server.port = self.grpc_config.port)
+    )]
     pub async fn serve(self, shutdown: CancellationToken) -> Result<()> {
         let addr = format!("0.0.0.0:{}", self.grpc_config.port).parse()?;
+        info!(address = %self.grpc_config.port, "gRPC Server will listen");
+
+        let service = LivestreamServer::with_interceptor(self.service, server_trace_interceptor);
 
         Server::builder()
-            .add_service(api::livestream_server::LivestreamServer::new(self.service))
+            .add_service(service)
             .serve_with_shutdown(addr, shutdown.cancelled())
             .await?;
 
         Ok(())
     }
+}
+
+fn server_trace_interceptor(request: Request<()>) -> Result<Request<()>, Status> {
+    #[cfg(feature = "opentelemetry")]
+    {
+        let parent_cx = extractor::extract_context(request.metadata());
+        let _ = Span::current().set_parent(parent_cx);
+    }
+
+    Ok(request)
 }
 
 #[derive(Clone)]
@@ -114,13 +138,18 @@ impl IngestGrpcService {
 impl api::livestream_server::Livestream for IngestGrpcService {
     type WatchLivestreamStream = Pin<
         Box<
-            dyn tokio_stream::Stream<
-                    Item = std::result::Result<api::WatchLivestreamResponse, Status>,
-                > + Send
+            dyn tokio_stream::Stream<Item = Result<api::WatchLivestreamResponse, Status>>
+                + Send
                 + 'static,
         >,
     >;
 
+    #[instrument(
+        name = "transport.grpc.start_livestream",
+        err,
+        skip(self, request),
+        fields(live_id = %request.get_ref().live_id)
+    )]
     async fn start_livestream(
         &self,
         request: Request<api::StartLivestreamRequest>,
@@ -197,6 +226,12 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         }))
     }
 
+    #[instrument(
+        name = "transport.grpc.stop_livestream",
+        err,
+        skip(self, request),
+        fields(live_id = %request.get_ref().live_id)
+    )]
     async fn stop_livestream(
         &self,
         request: Request<api::StopLivestreamRequest>,
@@ -228,6 +263,12 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         Ok(Response::new(api::StopLivestreamResponse { is_success }))
     }
 
+    #[instrument(
+        name = "transport.grpc.list_livestreams",
+        err,
+        skip(self, _request),
+        fields(live_id = "")
+    )]
     async fn list_livestreams(
         &self,
         _request: Request<api::ListLivestreamsRequest>,
@@ -241,6 +282,12 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         Ok(Response::new(api::ListLivestreamsResponse { streams }))
     }
 
+    #[instrument(
+        name = "transport.grpc.get_livestream_info",
+        err,
+        skip(self, request),
+        fields(live_id = %request.get_ref().live_id)
+    )]
     async fn get_livestream_info(
         &self,
         request: Request<api::GetLivestreamInfoRequest>,
@@ -260,6 +307,12 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         }))
     }
 
+    #[instrument(
+        name = "transport.grpc.watch_livestream",
+        err,
+        skip(self, request),
+        fields(live_id = %request.get_ref().live_id)
+    )]
     async fn watch_livestream(
         &self,
         request: Request<api::WatchLivestreamRequest>,

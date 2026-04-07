@@ -27,6 +27,22 @@ pub enum StreamEvent {
     },
 }
 
+impl StreamEvent {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::StateChange { .. } => "state_change",
+            Self::Init { .. } => "init",
+        }
+    }
+
+    pub fn live_id(&self) -> &str {
+        match self {
+            Self::StateChange { live_id, .. } => live_id,
+            Self::Init { live_id, .. } => live_id,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct StreamFlvTag {
     pub stream_id: String,
