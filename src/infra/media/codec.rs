@@ -91,8 +91,8 @@ impl OwnedCodecParams {
     pub fn create_dummy_video(metadata: &StreamMetadata) -> Result<Self> {
         let codec_id = metadata
             .video_codec_id
-            .map(|id| unsafe { std::mem::transmute(id) })
-            .ok_or(anyhow::anyhow!("Video codec ID is missing"))?;
+            .ok_or(anyhow::anyhow!("Video codec ID is missing"))
+            .and_then(map_rtmp_video_codec_id)?;
         // let bitrate_kbps = metadata
         //     .video_bitrate_kbps
         //     .ok_or(anyhow::anyhow!("Video bitrate is missing"))?;
@@ -144,26 +144,25 @@ impl OwnedCodecParams {
     pub fn create_dummy_audio(metadata: &StreamMetadata) -> Result<Self> {
         let codec_id = metadata
             .audio_codec_id
-            .map(|id| unsafe { std::mem::transmute(id) })
-            .ok_or(anyhow::anyhow!("Audio codec ID is missing"))?;
+            .ok_or(anyhow::anyhow!("Audio codec ID is missing"))
+            .and_then(map_rtmp_audio_codec_id)?;
         // let bitrate_kbps = metadata
         //     .audio_bitrate_kbps
         //     .ok_or(anyhow::anyhow!("Audio bitrate is missing"))?;
         let sample_rate = metadata
             .audio_sample_rate
             .ok_or(anyhow::anyhow!("Audio sample rate is missing"))?;
-        // let channels = metadata
-        //     .audio_channels
-        //     .ok_or(anyhow::anyhow!("Audio channels is missing"))?;
-        // let is_stereo = metadata
-        //     .audio_is_stereo
-        //     .ok_or(anyhow::anyhow!("Audio stereo flag is missing"))?;
+        let channels = metadata
+            .audio_channels
+            .or_else(|| metadata.audio_is_stereo.map(|s| if s { 2 } else { 1 }))
+            .unwrap_or(2);
 
         let codec = find_decoder(codec_id)?;
         let mut codec_ctx = alloc_codec_context(codec)?;
 
         unsafe {
             (*codec_ctx).sample_rate = sample_rate as i32;
+            av_channel_layout_default(&mut (*codec_ctx).ch_layout, channels as i32);
         }
 
         let mut codec_params = match alloc_codec_params() {
@@ -187,6 +186,49 @@ impl OwnedCodecParams {
 
         Ok(Self { ptr: codec_params })
     }
+}
+
+fn map_rtmp_video_codec_id(codec_id: u32) -> Result<AVCodecID> {
+    // RTMP metadata uses FLV codec ids; convert them to FFmpeg codec ids.
+    let mapped = match codec_id {
+        // FLV AVC
+        7 => AVCodecID::AV_CODEC_ID_H264,
+        // FLV HEVC (non-standard but seen in some implementations)
+        12 => AVCodecID::AV_CODEC_ID_HEVC,
+
+        // Already mapped as an AVCodecID by upstream producer.
+        x if x == AVCodecID::AV_CODEC_ID_H264 as u32 => AVCodecID::AV_CODEC_ID_H264,
+        x if x == AVCodecID::AV_CODEC_ID_HEVC as u32 => AVCodecID::AV_CODEC_ID_HEVC,
+        x => {
+            anyhow::bail!("Unsupported RTMP video codec id: {}", x);
+        }
+    };
+
+    Ok(mapped)
+}
+
+fn map_rtmp_audio_codec_id(codec_id: u32) -> Result<AVCodecID> {
+    // RTMP metadata uses FLV sound format ids; convert them to FFmpeg codec ids.
+    let mapped = match codec_id {
+        // FLV MP3
+        2 | 14 => AVCodecID::AV_CODEC_ID_MP3,
+        // FLV G711 A-law / mu-law
+        7 => AVCodecID::AV_CODEC_ID_PCM_ALAW,
+        8 => AVCodecID::AV_CODEC_ID_PCM_MULAW,
+        // FLV AAC
+        10 => AVCodecID::AV_CODEC_ID_AAC,
+
+        // Already mapped as an AVCodecID by upstream producer.
+        x if x == AVCodecID::AV_CODEC_ID_AAC as u32 => AVCodecID::AV_CODEC_ID_AAC,
+        x if x == AVCodecID::AV_CODEC_ID_MP3 as u32 => AVCodecID::AV_CODEC_ID_MP3,
+        x if x == AVCodecID::AV_CODEC_ID_PCM_ALAW as u32 => AVCodecID::AV_CODEC_ID_PCM_ALAW,
+        x if x == AVCodecID::AV_CODEC_ID_PCM_MULAW as u32 => AVCodecID::AV_CODEC_ID_PCM_MULAW,
+        x => {
+            anyhow::bail!("Unsupported RTMP audio codec id: {}", x);
+        }
+    };
+
+    Ok(mapped)
 }
 
 impl CodecParamsPtrTrait for OwnedCodecParams {
