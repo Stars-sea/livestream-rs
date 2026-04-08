@@ -4,7 +4,7 @@ mod flv_tag;
 use std::{fmt, fmt::Debug};
 
 pub use avpacket::{Packet, PacketReadResult};
-pub use flv_tag::FlvTag;
+pub use flv_tag::{FlvTag, FlvTagPacketizer};
 
 #[derive(Clone)]
 pub enum UnifiedPacket {

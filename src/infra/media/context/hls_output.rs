@@ -16,6 +16,7 @@ use std::ptr::null_mut;
 pub struct HlsOutputContext {
     ctx: *mut AVFormatContext,
     path: PathBuf,
+    header_written: bool,
 }
 
 impl HlsOutputContext {
@@ -41,21 +42,19 @@ impl HlsOutputContext {
             }
         }
 
-        // Write header
-        if let Err(e) = Self::write_header(output_ctx) {
-            unsafe {
-                if !(*output_ctx).pb.is_null() {
-                    avio_closep(&mut (*output_ctx).pb);
-                }
-                avformat_free_context(output_ctx)
-            };
-            return Err(e);
-        }
-
         Ok(Self {
             ctx: output_ctx,
             path: path.clone(),
+            header_written: false,
         })
+    }
+
+    pub fn write_header(&mut self) -> Result<()> {
+        let res = <Self as OutputContext>::write_header(self.ctx);
+        if res.is_ok() {
+            self.header_written = true;
+        }
+        res
     }
 
     pub fn create_segment<T: AsRef<Path>>(
@@ -81,8 +80,10 @@ impl Drop for HlsOutputContext {
             return;
         }
 
-        if let Err(e) = self.write_trailer() {
-            warn!(error = %e, path = %self.path.display(), "Failed to write HLS trailer during context drop");
+        if self.header_written {
+            if let Err(e) = self.write_trailer() {
+                warn!(error = %e, path = %self.path.display(), "Failed to write HLS trailer during context drop");
+            }
         }
         unsafe {
             avio_closep(&mut (*self.ctx).pb);

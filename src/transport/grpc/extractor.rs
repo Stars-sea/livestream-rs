@@ -29,5 +29,7 @@ impl Extractor for MetadataMapExtractor<'_> {
 
 #[cfg(feature = "opentelemetry")]
 pub(crate) fn extract_context(metadata: &MetadataMap) -> Context {
-    global::get_text_map_propagator(|propagator| propagator.extract(&MetadataMapExtractor(metadata)))
+    global::get_text_map_propagator(|propagator| {
+        propagator.extract(&MetadataMapExtractor(metadata))
+    })
 }

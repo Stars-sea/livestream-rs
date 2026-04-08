@@ -49,6 +49,48 @@ pub trait StreamCollection {
 
     // We return boxed trait objects to keep callers decoupled from concrete stream storage.
     fn stream(&self, index: usize) -> Option<Box<dyn StreamDescriptorTrait + '_>>;
+
+    /// Fast path to retrieve the time base for a specific stream index without allocating.
+    fn time_base(&self, index: usize) -> Option<AVRational> {
+        self.stream(index).map(|s| s.time_base())
+    }
+}
+
+pub struct StreamCollectionIter<'a, S: StreamCollection + ?Sized> {
+    streams: &'a S,
+    index: usize,
+}
+
+impl<'a, S: StreamCollection + ?Sized> Iterator for StreamCollectionIter<'a, S> {
+    type Item = Box<dyn StreamDescriptorTrait + 'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.index < self.streams.stream_count() {
+            let idx = self.index;
+            self.index += 1;
+
+            if let Some(stream) = self.streams.stream(idx) {
+                return Some(stream);
+            }
+        }
+
+        None
+    }
+}
+
+pub fn iter_streams(
+    streams: &dyn StreamCollection,
+) -> StreamCollectionIter<'_, dyn StreamCollection + '_> {
+    StreamCollectionIter { streams, index: 0 }
+}
+
+impl<'a> IntoIterator for &'a dyn StreamCollection {
+    type Item = Box<dyn StreamDescriptorTrait + 'a>;
+    type IntoIter = StreamCollectionIter<'a, dyn StreamCollection + 'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        iter_streams(self)
+    }
 }
 
 impl StreamPtrTrait for *mut AVStream {
@@ -84,6 +126,15 @@ impl<C: Context> StreamCollection for C {
             None
         }
     }
+
+    fn time_base(&self, index: usize) -> Option<AVRational> {
+        if index < self.stream_count() {
+            let ptr = unsafe { *(*self.ptr()).streams.offset(index as isize) };
+            Some(unsafe { (*ptr).time_base })
+        } else {
+            None
+        }
+    }
 }
 
 impl StreamCollection for StreamMetadata {
@@ -102,6 +153,14 @@ impl StreamCollection for StreamMetadata {
                 Some(Box::new(DummyStream::Audio(params)))
             }
             _ => None,
+        }
+    }
+
+    fn time_base(&self, index: usize) -> Option<AVRational> {
+        if index < 2 {
+            Some(AVRational { num: 1, den: 1000 })
+        } else {
+            None
         }
     }
 }
@@ -194,5 +253,9 @@ impl StreamCollection for StaticStreamCollection {
         self.streams
             .get(index)
             .map(|s| Box::new(StaticStreamRef(s)) as Box<dyn StreamDescriptorTrait + '_>)
+    }
+
+    fn time_base(&self, index: usize) -> Option<AVRational> {
+        self.streams.get(index).map(|s| s.time_base)
     }
 }

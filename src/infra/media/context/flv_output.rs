@@ -102,10 +102,7 @@ impl Context for FlvOutputContext {
 
 impl OutputContext for FlvOutputContext {
     fn copy_streams(ctx_ptr: *mut AVFormatContext, streams: &dyn StreamCollection) -> Result<()> {
-        for i in 0..streams.stream_count() {
-            let in_stream = streams
-                .stream(i)
-                .ok_or_else(|| anyhow::anyhow!("Input stream {} not found", i))?;
+        for in_stream in streams {
             let out_stream = unsafe { avformat_new_stream(ctx_ptr, null_mut()) };
             if out_stream.is_null() {
                 anyhow::bail!("Failed to allocate output stream");

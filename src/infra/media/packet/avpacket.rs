@@ -22,10 +22,14 @@ pub enum PacketReadResult {
 /// The packet is allocated in `alloc()` and freed in `Drop`.
 #[derive(Debug)]
 pub struct Packet {
-    pub(super) packet: *mut AVPacket,
+    packet: *mut AVPacket,
 }
 
 impl Packet {
+    pub unsafe fn ptr(&mut self) -> *mut AVPacket {
+        self.packet
+    }
+
     /// Allocates a new packet.
     ///
     /// # Errors
@@ -75,13 +79,11 @@ impl Packet {
     ) -> Result<()> {
         let stream_idx = self.stream_idx();
         let original_time_base = original_streams
-            .stream(stream_idx)
-            .ok_or_else(|| anyhow::anyhow!("Original stream {} not found", stream_idx))
-            .map(|s| s.time_base())?;
+            .time_base(stream_idx)
+            .ok_or_else(|| anyhow::anyhow!("Original stream {} not found", stream_idx))?;
         let target_time_base = target_streams
-            .stream(stream_idx)
-            .ok_or_else(|| anyhow::anyhow!("Target stream {} not found", stream_idx))
-            .map(|s| s.time_base())?;
+            .time_base(stream_idx)
+            .ok_or_else(|| anyhow::anyhow!("Target stream {} not found", stream_idx))?;
 
         self.rescale_ts(original_time_base, target_time_base);
         Ok(())

@@ -1,6 +1,6 @@
 pub mod contract;
-pub mod grpc;
 mod controller;
+pub mod grpc;
 mod registry;
 mod server;
 

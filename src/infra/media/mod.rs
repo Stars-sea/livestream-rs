@@ -13,12 +13,14 @@ use std::ffi::{CStr, c_int};
 
 use ffmpeg_sys_next::*;
 
+mod bsf;
 mod codec;
 pub mod context;
 pub mod log;
 pub mod options;
 pub mod packet;
 pub mod stream;
+mod utils;
 
 /// Initializes FFmpeg network components.
 /// Must be called before using network protocols like SRT.

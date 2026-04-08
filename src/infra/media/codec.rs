@@ -15,6 +15,10 @@ pub trait CodecParamsPtrTrait {
     }
 }
 
+pub trait CodecParamsMutPtrTrait: CodecParamsPtrTrait {
+    unsafe fn mut_ptr(&mut self) -> *mut AVCodecParameters;
+}
+
 #[allow(unused)]
 pub trait CodecParamsDescriptorTrait {
     fn codec_type(&self) -> AVMediaType;
@@ -59,9 +63,27 @@ impl CodecParamsPtrTrait for *mut AVCodecParameters {
     }
 }
 
+impl CodecParamsMutPtrTrait for *mut AVCodecParameters {
+    unsafe fn mut_ptr(&mut self) -> *mut AVCodecParameters {
+        *self
+    }
+}
+
 impl CodecParamsPtrTrait for *const AVCodecParameters {
     unsafe fn ptr(&self) -> *const AVCodecParameters {
         *self
+    }
+}
+
+impl CodecParamsPtrTrait for AVCodecParameters {
+    unsafe fn ptr(&self) -> *const AVCodecParameters {
+        self
+    }
+}
+
+impl CodecParamsMutPtrTrait for AVCodecParameters {
+    unsafe fn mut_ptr(&mut self) -> *mut AVCodecParameters {
+        self
     }
 }
 
