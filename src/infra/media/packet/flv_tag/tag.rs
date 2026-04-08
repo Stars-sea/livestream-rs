@@ -19,6 +19,11 @@ pub enum FlvTag {
     ScriptData(StreamMetadata),
 }
 
+const FLV_AUDIO_CODEC_AAC: u8 = 10;
+const FLV_VIDEO_CODEC_AVC: u8 = 7;
+const FLV_VIDEO_CODEC_HEVC: u8 = 12;
+const FLV_PACKET_TYPE_SEQ_HEADER: u8 = 0;
+
 impl FlvTag {
     pub fn audio(timestamp: u32, payload: Bytes) -> Self {
         Self::Audio { timestamp, payload }
@@ -41,6 +46,24 @@ impl FlvTag {
             Self::Audio { payload, .. } => payload.len(),
             Self::Video { payload, .. } => payload.len(),
             Self::ScriptData(_) => 0,
+        }
+    }
+
+    pub fn is_sequence_header(&self) -> bool {
+        match self {
+            Self::Audio { payload, .. } => {
+                let sound_format = payload[0] >> 4;
+                payload.len() >= 2
+                    && sound_format == FLV_AUDIO_CODEC_AAC
+                    && payload[1] == FLV_PACKET_TYPE_SEQ_HEADER
+            }
+            Self::Video { payload, .. } => {
+                let codec_id = payload[0] & 0x0f;
+                payload.len() >= 2
+                    && (codec_id == FLV_VIDEO_CODEC_AVC || codec_id == FLV_VIDEO_CODEC_HEVC)
+                    && payload[1] == FLV_PACKET_TYPE_SEQ_HEADER
+            }
+            Self::ScriptData(_) => true,
         }
     }
 }

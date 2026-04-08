@@ -17,6 +17,7 @@ pub struct PlayHandler {
     stream_id: u32,
 
     tag_rx: broadcast::Receiver<FlvTag>,
+    cached_tags: Vec<FlvTag>,
 
     cancel_token: CancellationToken,
 }
@@ -28,6 +29,7 @@ impl PlayHandler {
         stream_key: String,
         stream_id: u32,
         tag_rx: broadcast::Receiver<FlvTag>,
+        cached_tags: Vec<FlvTag>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
@@ -36,6 +38,7 @@ impl PlayHandler {
             stream_key,
             stream_id,
             tag_rx,
+            cached_tags,
             cancel_token,
         }
     }
@@ -72,6 +75,11 @@ impl HandlerTrait for PlayHandler {
 
     async fn handle(&mut self) -> Result<()> {
         let ct = self.cancel_token();
+
+        let cached = std::mem::take(&mut self.cached_tags);
+        for tag in cached {
+            self.send_flv_tag(tag).await?;
+        }
 
         loop {
             tokio::select! {

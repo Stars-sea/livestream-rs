@@ -9,6 +9,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
+use super::channel::LiveChannel;
 use super::connection::RtmpConnection;
 use crate::infra::media::packet::FlvTag;
 use crate::pipeline::{PipeBus, UnifiedPacketContext};
@@ -28,7 +29,7 @@ pub struct RtmpServer {
     event_tx: MTx<mpsc::Array<StreamEvent>>,
     publish_tag_rx: AsyncRx<mpsc::Array<WrappedFlvTag>>,
     publish_tag_tx: MTx<mpsc::Array<WrappedFlvTag>>,
-    play_tag_senders: Arc<DashMap<String, broadcast::Sender<FlvTag>>>,
+    active_streams: Arc<DashMap<String, Arc<LiveChannel>>>,
     rtmp_tag_rx: AsyncRx<mpsc::Array<StreamFlvTag>>,
 
     bus: PipeBus,
@@ -58,7 +59,7 @@ impl RtmpServer {
             event_tx,
             publish_tag_rx: tag_rx,
             publish_tag_tx: tag_tx,
-            play_tag_senders: Arc::new(DashMap::new()),
+            active_streams: Arc::new(DashMap::new()),
             rtmp_tag_rx,
             bus,
             cancel_token,
@@ -137,7 +138,7 @@ impl RtmpServer {
 
     fn accept_client(&self, socket: TcpStream, addr: SocketAddr) -> Result<()> {
         debug!(client_addr = %addr, "Accepted new RTMP connection");
-        let play_tag_senders = self.play_tag_senders.clone();
+        let active_streams = self.active_streams.clone();
 
         // Handle the connection in a separate task
         tokio::spawn(spawn_connection_handler(
@@ -146,11 +147,8 @@ impl RtmpServer {
             self.event_tx.clone(),
             self.publish_tag_tx.clone().into_async(),
             move |stream_key| {
-                let tx = play_tag_senders.entry(stream_key).or_insert_with(|| {
-                    let (sender, _) = broadcast::channel(1024);
-                    sender
-                });
-                tx.subscribe()
+                let channel = active_streams.entry(stream_key).or_insert_with(|| Arc::new(LiveChannel::new()));
+                channel.subscribe()
             },
         ));
 
@@ -160,8 +158,8 @@ impl RtmpServer {
     fn handle_forwarded_tag(&self, packet: StreamFlvTag) {
         let StreamFlvTag { stream_id, tag } = packet;
 
-        if let Some(tx) = self.play_tag_senders.get(&stream_id) {
-            if tx.send(tag).is_err() {
+        if let Some(channel) = self.active_streams.get(&stream_id) {
+            if channel.broadcast_tag(tag).is_err() {
                 debug!(stream_id = %stream_id, "No active RTMP play subscribers");
             }
         }
@@ -194,7 +192,7 @@ async fn spawn_connection_handler(
     socket: TcpStream,
     event_tx: MTx<mpsc::Array<StreamEvent>>,
     tag_tx: MAsyncTx<mpsc::Array<WrappedFlvTag>>,
-    tag_rx: impl Fn(String) -> broadcast::Receiver<FlvTag>,
+    tag_rx: impl Fn(String) -> (broadcast::Receiver<FlvTag>, Vec<FlvTag>),
 ) {
     let cancel_token = CancellationToken::new();
     let _cancel_guard = cancel_token.drop_guard_ref();
@@ -243,10 +241,12 @@ async fn spawn_connection_handler(
     };
 
     let stream_key = builder.stream_key().to_string();
+    let (tag_receiver, cached_tags) = tag_rx(stream_key);
     let builder = builder
         .with_cancel_token(cancel_token)
         .with_tag_tx(tag_tx)
-        .with_tag_rx(tag_rx(stream_key));
+        .with_tag_rx(tag_receiver)
+        .with_cached_tags(cached_tags);
 
     match builder.build() {
         Ok(mut handler) => {

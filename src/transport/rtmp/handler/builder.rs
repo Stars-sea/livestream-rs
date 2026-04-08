@@ -15,6 +15,7 @@ pub enum HandlerBuilder {
         appname: Option<String>,
         stream_key: String,
         tag_rx: Option<broadcast::Receiver<FlvTag>>,
+        cached_tags: Vec<FlvTag>,
         cancel_token: Option<CancellationToken>,
     },
     Publish {
@@ -34,6 +35,7 @@ impl HandlerBuilder {
             stream_key,
             stream_id,
             tag_rx: None,
+            cached_tags: Vec::new(),
             cancel_token: None,
         }
     }
@@ -78,6 +80,13 @@ impl HandlerBuilder {
         self
     }
 
+    pub fn with_cached_tags(mut self, tags: Vec<FlvTag>) -> Self {
+        if let HandlerBuilder::Play { cached_tags, .. } = &mut self {
+            *cached_tags = tags;
+        }
+        self
+    }
+
     pub fn with_tag_tx(mut self, tag_tx: MAsyncTx<Array<WrappedFlvTag>>) -> Self {
         if let HandlerBuilder::Publish { tag_tx: tx, .. } = &mut self {
             *tx = Some(tag_tx);
@@ -105,6 +114,7 @@ impl HandlerBuilder {
                 stream_key,
                 stream_id,
                 tag_rx,
+                cached_tags,
                 cancel_token,
             } => {
                 let appname = appname
@@ -123,6 +133,7 @@ impl HandlerBuilder {
                     stream_key,
                     stream_id,
                     tag_rx,
+                    cached_tags,
                     cancel_token,
                 )))
             }
