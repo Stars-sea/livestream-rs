@@ -101,5 +101,5 @@ extern "C" fn interrupt_callback(opaque: *mut std::ffi::c_void) -> i32 {
         return 0;
     }
     let cancel_token = unsafe { &*(opaque as *mut CancellationToken) };
-    if cancel_token.is_cancelled() { 0 } else { 1 }
+    if cancel_token.is_cancelled() { 1 } else { 0 }
 }
