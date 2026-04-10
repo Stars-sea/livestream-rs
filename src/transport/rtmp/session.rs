@@ -213,6 +213,17 @@ impl SessionGuard {
                 stream_id,
                 ..
             } => {
+                let stream_key = app_and_stream_re
+                    .captures(&stream_key)
+                    .and_then(|caps| {
+                        caps.name("stream_key")
+                            .or_else(|| caps.name("app"))
+                            .map(|m| m.as_str().to_string())
+                    })
+                    .unwrap_or(stream_key)
+                    .trim_start_matches('/')
+                    .to_string();
+
                 self.on_play_requested(request_id, stream_key, stream_id, ct)
                     .await
             }
@@ -244,7 +255,14 @@ impl SessionGuard {
                 transaction_id,
                 ..
             } => {
-                warn!(command_name = %command_name, transaction_id = %transaction_id, "Unhandled AMF0 command");
+                match command_name.as_str() {
+                    "_checkbw" | "getStreamLength" => {
+                        debug!(command_name = %command_name, transaction_id = %transaction_id, "Ignoring optional AMF0 command");
+                    }
+                    _ => {
+                        warn!(command_name = %command_name, transaction_id = %transaction_id, "Unhandled AMF0 command");
+                    }
+                }
                 Ok(None)
             }
 

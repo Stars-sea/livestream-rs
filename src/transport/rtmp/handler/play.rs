@@ -1,8 +1,9 @@
 use anyhow::Result;
-use rml_rtmp::sessions::ServerSessionEvent;
+use rml_rtmp::sessions::{ServerSessionError, ServerSessionEvent, ServerSessionResult};
 use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::infra::media::packet::FlvTag;
 use crate::transport::rtmp::handler::HandlerTrait;
@@ -18,6 +19,7 @@ pub struct PlayHandler {
 
     tag_rx: broadcast::Receiver<FlvTag>,
     cached_tags: Vec<FlvTag>,
+    waiting_keyframe: bool,
 
     cancel_token: CancellationToken,
 }
@@ -39,26 +41,105 @@ impl PlayHandler {
             stream_id,
             tag_rx,
             cached_tags,
+            waiting_keyframe: false,
             cancel_token,
         }
     }
 
     async fn send_flv_tag(&mut self, tag: FlvTag) -> Result<()> {
-        debug!(
-            "Sending FLV tag for stream key {}: {:?}",
-            self.stream_key, tag
-        );
+        debug!(stream_key = %self.stream_key, payload_size = tag.payload_size(), "Sending FLV tag");
 
         self.session
             .send_flv_tag(self.stream_id, tag, &self.cancel_token)
             .await
     }
 
+    async fn send_cached_tags(&mut self) -> Result<()> {
+        for tag in std::mem::take(&mut self.cached_tags) {
+            self.send_flv_tag(tag).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_session_results(
+        &mut self,
+        results: Vec<ServerSessionResult>,
+        ct: &CancellationToken,
+    ) -> Result<()> {
+        let events = self.session.handle_results(results, ct).await?;
+
+        for event in events {
+            if let Some(event) = self.on_common_events(event).await? {
+                self.on_custom_events(event).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn should_skip_while_waiting_keyframe(&mut self, tag: &FlvTag) -> bool {
+        if !self.waiting_keyframe {
+            return false;
+        }
+
+        match tag {
+            FlvTag::Video {
+                is_keyframe: true, ..
+            } => {
+                self.waiting_keyframe = false;
+                warn!(stream_key = %self.stream_key, "Recovered RTMP play stream at next keyframe after lag");
+                false
+            }
+            FlvTag::Video { .. } => true,
+            _ => false,
+        }
+    }
+
+    async fn handle_tag_recv(&mut self, recv_result: Result<FlvTag, RecvError>) -> Result<()> {
+        let tag = match recv_result {
+            Ok(tag) => tag,
+            Err(RecvError::Lagged(skipped)) => {
+                // Skip stale tags and keep connection alive; decoder will recover on subsequent keyframe.
+                self.waiting_keyframe = true;
+                warn!(stream_key = %self.stream_key, skipped = skipped, "RTMP play receiver lagged, dropping stale tags");
+                return Ok(());
+            }
+            Err(RecvError::Closed) => {
+                anyhow::bail!(
+                    "RTMP play tag channel closed for stream {}",
+                    self.stream_key
+                );
+            }
+        };
+
+        if self.should_skip_while_waiting_keyframe(&tag) {
+            return Ok(());
+        }
+
+        self.send_flv_tag(tag).await
+    }
+
     async fn finish_playing(&mut self) -> Result<()> {
+        fn is_ignorable_finish_error(stream_id: u32, e: &anyhow::Error) -> bool {
+            matches!(
+                e.downcast_ref::<ServerSessionError>(),
+                Some(ServerSessionError::ActionAttemptedOnInactiveStream { action, stream_id: id })
+                    if action == "complete" && *id == stream_id
+            )
+        }
+
         debug!("Finishing play for stream key: {}", self.stream_key);
-        self.session
+        if let Err(e) = self
+            .session
             .finish_playing(self.stream_id, &self.cancel_token)
-            .await?;
+            .await
+        {
+            if is_ignorable_finish_error(self.stream_id, &e) {
+                debug!(stream_key = %self.stream_key, stream_id = self.stream_id, "Ignoring finish_playing on missing stream id");
+                return Ok(());
+            }
+            return Err(e);
+        }
         Ok(())
     }
 }
@@ -75,28 +156,16 @@ impl HandlerTrait for PlayHandler {
 
     async fn handle(&mut self) -> Result<()> {
         let ct = self.cancel_token();
-
-        let cached = std::mem::take(&mut self.cached_tags);
-        for tag in cached {
-            self.send_flv_tag(tag).await?;
-        }
+        self.send_cached_tags().await?;
 
         loop {
             tokio::select! {
+                _ = ct.cancelled() => return Ok(()),
                 results = self.session.read_result(&ct) => {
-                    let results = results?;
-                    let events = self.session.handle_results(results, &ct).await?;
-
-                    for event in events {
-                        if let Some(event) = self.on_common_events(event).await? {
-                            self.on_custom_events(event).await?;
-                        }
-                    }
+                    self.handle_session_results(results?, &ct).await?;
                 }
+                tag = self.tag_rx.recv() => self.handle_tag_recv(tag).await?,
 
-                tag = self.tag_rx.recv() => {
-                    self.send_flv_tag(tag?).await?;
-                }
             }
         }
     }

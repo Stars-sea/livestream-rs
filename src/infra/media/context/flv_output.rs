@@ -6,13 +6,20 @@ use crate::infra::media::packet::FlvTag;
 use crate::infra::media::stream::StreamCollection;
 
 use anyhow::Result;
-use bytes::Bytes;
+use bytes::{Buf, BytesMut};
 use crossfire::{MTx, mpsc};
 use ffmpeg_sys_next::*;
+use parking_lot::Mutex;
 use tracing::warn;
 
 use std::ffi::{c_int, c_void};
 use std::ptr::null_mut;
+
+const FLV_HEADER_AND_PREV_TAG_SIZE_LEN: usize = 13;
+const FLV_TAG_HEADER_LEN: usize = 11;
+const FLV_PREV_TAG_SIZE_LEN: usize = 4;
+const FLV_MIN_TAG_BLOCK_LEN: usize = FLV_TAG_HEADER_LEN + FLV_PREV_TAG_SIZE_LEN;
+const FLV_MAX_BUFFERED_BYTES: usize = 4 * 1024 * 1024;
 
 /// Wrapper for FFmpeg output context configured for FLV streaming to RTMP servers.
 #[derive(Debug)]
@@ -33,7 +40,10 @@ impl FlvOutputContext {
         }
 
         if unsafe { (*ctx).pb.is_null() } {
-            let opaque = Box::new(FlvAvioOpaque { flv_tag_tx });
+            let opaque = Box::new(FlvAvioOpaque {
+                flv_tag_tx,
+                write_state: Mutex::new(FlvWriteState::default()),
+            });
             let opaque_ptr = Box::into_raw(opaque) as *mut c_void;
             match Self::open_io(opaque_ptr, None, AVIO_FLAG_WRITE) {
                 Ok(pb) => unsafe {
@@ -154,6 +164,52 @@ impl OutputContext for FlvOutputContext {
 
 struct FlvAvioOpaque {
     flv_tag_tx: MTx<mpsc::Array<FlvTag>>,
+    write_state: Mutex<FlvWriteState>,
+}
+
+#[derive(Default)]
+struct FlvWriteState {
+    buffered: BytesMut,
+    header_consumed: bool,
+}
+
+fn parse_ready_flv_tags(state: &mut FlvWriteState) -> Result<Vec<FlvTag>, c_int> {
+    let mut parsed_tags = Vec::new();
+
+    while state.buffered.len() >= FLV_MIN_TAG_BLOCK_LEN {
+        let tag_type = state.buffered[0];
+        if tag_type != 8 && tag_type != 9 && tag_type != 18 {
+            warn!(
+                tag_type = tag_type,
+                "Unexpected FLV tag type in mux output buffer"
+            );
+            state.buffered.clear();
+            return Err(AVERROR(EINVAL));
+        }
+
+        let data_size = ((state.buffered[1] as usize) << 16)
+            | ((state.buffered[2] as usize) << 8)
+            | (state.buffered[3] as usize);
+        let expected_len = FLV_TAG_HEADER_LEN + data_size + FLV_PREV_TAG_SIZE_LEN;
+
+        if state.buffered.len() < expected_len {
+            break;
+        }
+
+        let tag_bytes = state.buffered.split_to(expected_len).freeze();
+        let tag = match FlvTag::try_from(tag_bytes) {
+            Ok(tag) => tag,
+            Err(e) => {
+                warn!(error = %e, "Failed to parse FLV tag from mux output buffer");
+                state.buffered.clear();
+                return Err(AVERROR(EINVAL));
+            }
+        };
+
+        parsed_tags.push(tag);
+    }
+
+    Ok(parsed_tags)
 }
 
 extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int) -> c_int {
@@ -164,17 +220,48 @@ extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int)
     // Opaque memory is owned by AVIO context and released in cleanup_ctx.
     let opaque_ref = unsafe { &*(opaque as *const FlvAvioOpaque) };
 
-    // Convert the raw buffer to a Rust Bytes and parse into a single FLV tag.
+    // Buffer raw bytes because FFmpeg callback boundaries may split or merge FLV tags.
     let data_slice = unsafe { std::slice::from_raw_parts(buf, buf_size as usize) };
-    let data = Bytes::copy_from_slice(data_slice);
 
-    let tag = match FlvTag::try_from(data) {
-        Ok(tag) => tag,
-        Err(_) => return AVERROR(EINVAL),
+    let parse_result = {
+        let mut state = opaque_ref.write_state.lock();
+
+        state.buffered.extend_from_slice(data_slice);
+
+        if state.buffered.len() > FLV_MAX_BUFFERED_BYTES {
+            warn!(
+                size = state.buffered.len(),
+                "FLV mux output buffer exceeded safety limit"
+            );
+            state.buffered.clear();
+            return AVERROR(EINVAL);
+        }
+
+        if !state.header_consumed {
+            if state.buffered.len() < FLV_HEADER_AND_PREV_TAG_SIZE_LEN {
+                Ok(Vec::new())
+            } else {
+                if state.buffered.starts_with(b"FLV") {
+                    state.buffered.advance(FLV_HEADER_AND_PREV_TAG_SIZE_LEN);
+                }
+                state.header_consumed = true;
+                parse_ready_flv_tags(&mut state)
+            }
+        } else {
+            parse_ready_flv_tags(&mut state)
+        }
     };
 
-    match opaque_ref.flv_tag_tx.send(tag) {
-        Ok(_) => buf_size,
-        Err(_) => AVERROR_EOF,
+    let tags_to_send = match parse_result {
+        Ok(tags) => tags,
+        Err(code) => return code,
+    };
+
+    for tag in tags_to_send {
+        if opaque_ref.flv_tag_tx.send(tag).is_err() {
+            return AVERROR_EOF;
+        }
     }
+
+    buf_size
 }
