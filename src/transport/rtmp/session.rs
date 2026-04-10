@@ -3,7 +3,9 @@ use bytes::BytesMut;
 use crossfire::MTx;
 use crossfire::mpsc::Array;
 use regex::Regex;
-use rml_rtmp::chunk_io::Packet;
+use rml_rtmp::chunk_io::{ChunkSerializer, Packet};
+use rml_rtmp::messages::RtmpMessage;
+use rml_rtmp::rml_amf0::Amf0Value;
 use rml_rtmp::sessions::{ServerSession, ServerSessionEvent, ServerSessionResult};
 use rml_rtmp::time::RtmpTimestamp;
 use std::sync::OnceLock;
@@ -72,6 +74,62 @@ impl SessionGuard {
     async fn handle_packet(&mut self, packet: Packet, ct: &CancellationToken) -> Result<()> {
         self.connection.write(&packet.bytes, ct).await?;
         Ok(())
+    }
+
+    async fn send_optional_command_result(
+        &mut self,
+        transaction_id: f64,
+        additional_arguments: Vec<Amf0Value>,
+        ct: &CancellationToken,
+    ) -> Result<()> {
+        let message = RtmpMessage::Amf0Command {
+            command_name: "_result".to_string(),
+            transaction_id,
+            command_object: Amf0Value::Null,
+            additional_arguments,
+        };
+
+        // Use a fresh serializer with full headers to avoid state coupling with ServerSession internals.
+        let payload = message.into_message_payload(RtmpTimestamp::new(0), 0)?;
+        let mut serializer = ChunkSerializer::new();
+        let packet = serializer.serialize(&payload, true, false)?;
+        self.handle_packet(packet, ct).await
+    }
+
+    async fn handle_optional_amf0_command(
+        &mut self,
+        command_name: &str,
+        transaction_id: f64,
+        ct: &CancellationToken,
+    ) -> Result<bool> {
+        match command_name {
+            "_checkbw" => {
+                self.send_optional_command_result(transaction_id, Vec::new(), ct)
+                    .await?;
+                debug!(transaction_id = %transaction_id, "Handled optional AMF0 command _checkbw");
+                Ok(true)
+            }
+            "getStreamLength" => {
+                // For live streams, duration is unknown; return 0 as a safe default.
+                self.send_optional_command_result(transaction_id, vec![Amf0Value::Number(0.0)], ct)
+                    .await?;
+                debug!(transaction_id = %transaction_id, "Handled optional AMF0 command getStreamLength");
+                Ok(true)
+            }
+            "releaseStream" => {
+                self.send_optional_command_result(transaction_id, Vec::new(), ct)
+                    .await?;
+                debug!(transaction_id = %transaction_id, "Handled optional AMF0 command releaseStream");
+                Ok(true)
+            }
+            "FCPublish" => {
+                self.send_optional_command_result(transaction_id, Vec::new(), ct)
+                    .await?;
+                debug!(transaction_id = %transaction_id, "Handled optional AMF0 command FCPublish");
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     pub(super) async fn handle_results(
@@ -255,14 +313,14 @@ impl SessionGuard {
                 transaction_id,
                 ..
             } => {
-                match command_name.as_str() {
-                    "_checkbw" | "getStreamLength" => {
-                        debug!(command_name = %command_name, transaction_id = %transaction_id, "Ignoring optional AMF0 command");
-                    }
-                    _ => {
-                        warn!(command_name = %command_name, transaction_id = %transaction_id, "Unhandled AMF0 command");
-                    }
+                if self
+                    .handle_optional_amf0_command(&command_name, transaction_id, ct)
+                    .await?
+                {
+                    return Ok(None);
                 }
+
+                warn!(command_name = %command_name, transaction_id = %transaction_id, "Unhandled AMF0 command");
                 Ok(None)
             }
 
