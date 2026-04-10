@@ -159,12 +159,13 @@ impl SrtServer {
             self.event_tx.clone(),
         );
 
-        spawn_connection_handler(builder, cancel_token)
+        spawn_connection_handler(builder, self.event_tx.clone(), cancel_token)
     }
 }
 
 fn spawn_connection_handler(
     builder: SrtConnectionBuilder,
+    event_tx: MTx<mpsc::Array<StreamEvent>>,
     cancel_token: CancellationToken,
 ) -> Result<()> {
     std::thread::spawn(move || {
@@ -175,6 +176,13 @@ fn spawn_connection_handler(
             Ok(c) => c,
             Err(e) => {
                 error!(stream_id = %stream_id, "Failed to build SRT connection: {:?}", e);
+
+                if let Err(event_err) = event_tx.send(StreamEvent::StateChange {
+                    live_id: stream_id.clone(),
+                    new_state: SessionState::Srt(SrtState::Disconnected),
+                }) {
+                    error!(stream_id = %stream_id, error = %event_err, "Failed to emit SRT disconnected event after build failure");
+                }
                 return;
             }
         };

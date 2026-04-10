@@ -5,6 +5,7 @@ use crossfire::{MTx, mpsc::Array};
 use retry::OperationResult;
 use retry::delay::{Exponential, jitter};
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 use crate::infra::media::context::InputContext;
 use crate::infra::media::options::SrtInputStreamOptions;
@@ -73,33 +74,48 @@ impl SrtConnection {
         Ok(())
     }
 
-    pub fn run(self) -> Result<()> {
-        let mut state = SrtState::Pending;
+    fn handle_data_packet(&self, state: &mut SrtState, packet: Packet) -> Result<()> {
+        if *state == SrtState::Pending {
+            self.on_init()?;
+            *state = SrtState::Connected;
+            self.emit_state_change(*state)?;
+        }
 
+        self.packet_tx.send(WrappedPacket::new(
+            self.stream_id.clone(),
+            packet,
+            self.cancel_token.clone(),
+        ))?;
+
+        Ok(())
+    }
+
+    fn run_loop(&self, state: &mut SrtState) -> Result<()> {
         while !self.cancel_token.is_cancelled() {
             let mut packet = Packet::alloc()?;
             match read_packet_with_retry(&self.av_ctx, &mut packet) {
-                Ok(ReadResult::Ok) => {
-                    if state == SrtState::Pending {
-                        self.on_init()?;
-                        state = SrtState::Connected;
-                        self.emit_state_change(state)?;
-                    }
-
-                    self.packet_tx.send(WrappedPacket::new(
-                        self.stream_id.clone(),
-                        packet,
-                        self.cancel_token.clone(),
-                    ))?;
-                }
+                Ok(ReadResult::Ok) => self.handle_data_packet(state, packet)?,
                 Ok(ReadResult::Eof) => break,
                 Err(e) => anyhow::bail!("Error reading packet: {}", e),
             }
         }
 
-        state = SrtState::Disconnected;
-        self.emit_state_change(state)?;
         Ok(())
+    }
+
+    pub fn run(self) -> Result<()> {
+        let mut state = SrtState::Pending;
+        let run_result = self.run_loop(&mut state);
+
+        if let Err(e) = self.emit_state_change(SrtState::Disconnected) {
+            if run_result.is_ok() {
+                return Err(e);
+            }
+
+            warn!(stream_id = %self.stream_id, error = %e, "Failed to emit SRT disconnected state after run error");
+        }
+
+        run_result
     }
 }
 

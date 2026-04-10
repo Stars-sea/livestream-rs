@@ -190,6 +190,15 @@ impl RtmpServer {
     }
 }
 
+fn emit_rtmp_disconnect_event(event_tx: &MTx<mpsc::Array<StreamEvent>>, stream_key: &str) {
+    if let Err(e) = event_tx.send(StreamEvent::StateChange {
+        live_id: stream_key.to_string(),
+        new_state: SessionState::Rtmp(RtmpState::Disconnected),
+    }) {
+        warn!(stream_key = %stream_key, error = %e, "Failed to emit RTMP disconnected event");
+    }
+}
+
 async fn spawn_connection_handler(
     appname: String,
     socket: TcpStream,
@@ -211,6 +220,7 @@ async fn spawn_connection_handler(
         }
     };
 
+    let state_event_tx = event_tx.clone();
     let builder = builder.with_appname(appname).with_event_tx(event_tx);
     let session = match builder.build() {
         Ok(session) => session,
@@ -230,26 +240,33 @@ async fn spawn_connection_handler(
 
     drop(_cancel_guard);
 
-    let stream_key = builder.stream_key();
-    let cancel_token = match global::get_cancel_token(stream_key).await {
+    let stream_key = builder.stream_key().to_string();
+    let is_publish = matches!(&builder, HandlerBuilder::Publish { .. });
+
+    let cancel_token = match global::get_cancel_token(&stream_key).await {
         Some(token) => token,
         None => {
             error!(stream_key = %stream_key, "No cancellation token found for stream key");
+
+            if is_publish {
+                emit_rtmp_disconnect_event(&state_event_tx, &stream_key);
+            }
             return;
         }
     };
+
     let _cancel_guard = match &builder {
         HandlerBuilder::Play { .. } => None,
         HandlerBuilder::Publish { .. } => Some(cancel_token.clone().drop_guard()),
     };
 
-    let stream_key = builder.stream_key().to_string();
     let channel = active_channels
-        .entry(stream_key)
+        .entry(stream_key.clone())
         .or_insert_with(|| Arc::new(LiveChannel::new()))
         .clone();
     let (tag_receiver, cached_tags) = channel.subscribe().await;
 
+    let handler_cancel_token = cancel_token.clone();
     let builder = builder
         .with_cancel_token(cancel_token)
         .with_tag_tx(tag_tx)
@@ -260,10 +277,18 @@ async fn spawn_connection_handler(
         Ok(mut handler) => {
             if let Err(e) = handler.handle().await {
                 warn!(error = %e, "Error handling RTMP session");
+
+                if is_publish && !handler_cancel_token.is_cancelled() {
+                    emit_rtmp_disconnect_event(&state_event_tx, &stream_key);
+                }
             }
         }
         Err(e) => {
             warn!(error = %e, "Failed to build RTMP session handler");
+
+            if is_publish {
+                emit_rtmp_disconnect_event(&state_event_tx, &stream_key);
+            }
         }
     }
 }
