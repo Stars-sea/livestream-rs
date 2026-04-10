@@ -14,12 +14,14 @@ use tonic::{Request, Response, Status};
 use tracing::{Span, info, instrument, warn};
 
 #[cfg(feature = "opentelemetry")]
+use opentelemetry::propagation::Extractor;
+#[cfg(feature = "opentelemetry")]
+use tonic::metadata::{KeyRef, MetadataMap};
+#[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use super::api;
 use super::api::livestream_server::LivestreamServer;
-#[cfg(feature = "opentelemetry")]
-use super::extractor;
 use crate::config::{GrpcConfig, RtmpConfig};
 use crate::transport::TransportController;
 use crate::transport::contract::state::*;
@@ -34,6 +36,9 @@ pub struct GrpcServer {
     grpc_config: GrpcConfig,
     service: IngestGrpcService,
 }
+
+#[cfg(feature = "opentelemetry")]
+struct MetadataMapExtractor<'a>(&'a MetadataMap);
 
 impl GrpcServer {
     pub fn new(
@@ -67,11 +72,31 @@ impl GrpcServer {
     }
 }
 
+#[cfg(feature = "opentelemetry")]
+impl Extractor for MetadataMapExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|value| value.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0
+            .keys()
+            .map(|key| match key {
+                KeyRef::Ascii(key) => key.as_str(),
+                KeyRef::Binary(key) => key.as_str(),
+            })
+            .collect()
+    }
+}
+
 fn server_trace_interceptor(request: Request<()>) -> Result<Request<()>, Status> {
     #[cfg(feature = "opentelemetry")]
     {
-        let parent_cx = extractor::extract_context(request.metadata());
-        let _ = Span::current().set_parent(parent_cx);
+        let ctx = opentelemetry::global::get_text_map_propagator(|prop| {
+            let extractor = MetadataMapExtractor(request.metadata());
+            prop.extract(&extractor)
+        });
+        let _ = Span::current().set_parent(ctx);
     }
 
     Ok(request)
