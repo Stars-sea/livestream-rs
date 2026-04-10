@@ -5,7 +5,6 @@ use anyhow::Result;
 use crossfire::{AsyncRx, MAsyncTx, MTx, mpsc, spsc};
 use dashmap::DashMap;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
@@ -29,10 +28,10 @@ pub struct RtmpServer {
     event_tx: MTx<mpsc::Array<StreamEvent>>,
     publish_tag_rx: AsyncRx<mpsc::Array<WrappedFlvTag>>,
     publish_tag_tx: MTx<mpsc::Array<WrappedFlvTag>>,
-    active_streams: Arc<DashMap<String, Arc<LiveChannel>>>,
     rtmp_tag_rx: AsyncRx<mpsc::Array<StreamFlvTag>>,
 
     bus: PipeBus,
+    active_channels: Arc<DashMap<String, Arc<LiveChannel>>>,
 
     cancel_token: CancellationToken,
 }
@@ -59,9 +58,9 @@ impl RtmpServer {
             event_tx,
             publish_tag_rx: tag_rx,
             publish_tag_tx: tag_tx,
-            active_streams: Arc::new(DashMap::new()),
             rtmp_tag_rx,
             bus,
+            active_channels: Arc::new(DashMap::new()),
             cancel_token,
         })
     }
@@ -99,7 +98,7 @@ impl RtmpServer {
 
                 tag = self.rtmp_tag_rx.recv() => {
                     match tag {
-                        Ok(tag) => self.handle_forwarded_tag(tag),
+                        Ok(tag) => self.handle_forwarded_tag(tag).await,
                         Err(e) => debug!("Error receiving forwarded RTMP tag: {:?}", e),
                     }
                 }
@@ -112,8 +111,12 @@ impl RtmpServer {
     async fn handle_control_message(&mut self, msg: ControlMessage) -> Result<()> {
         match msg {
             ControlMessage::PrecreateStream { live_id, .. } => {
+                // Pre-allocate synchronization resources to circumvent lock contention
+                // when the crucial stream headers arrive.
+                self.bus.prepare_stream(&live_id);
+                
                 let session = SessionDescriptor {
-                    id: live_id,
+                    id: live_id.clone(),
                     protocol: SessionProtocol::Rtmp,
                     endpoint: SessionEndpoint {
                         port: None,
@@ -138,7 +141,6 @@ impl RtmpServer {
 
     fn accept_client(&self, socket: TcpStream, addr: SocketAddr) -> Result<()> {
         debug!(client_addr = %addr, "Accepted new RTMP connection");
-        let active_streams = self.active_streams.clone();
 
         // Handle the connection in a separate task
         tokio::spawn(spawn_connection_handler(
@@ -146,22 +148,23 @@ impl RtmpServer {
             socket,
             self.event_tx.clone(),
             self.publish_tag_tx.clone().into_async(),
-            move |stream_key| {
-                let channel = active_streams.entry(stream_key).or_insert_with(|| Arc::new(LiveChannel::new()));
-                channel.subscribe()
-            },
+            self.active_channels.clone(),
         ));
 
         Ok(())
     }
 
-    fn handle_forwarded_tag(&self, packet: StreamFlvTag) {
+    async fn handle_forwarded_tag(&mut self, packet: StreamFlvTag) {
         let StreamFlvTag { stream_id, tag } = packet;
 
-        if let Some(channel) = self.active_streams.get(&stream_id) {
-            if channel.broadcast_tag(tag).is_err() {
-                debug!(stream_id = %stream_id, "No active RTMP play subscribers");
-            }
+        let channel = self
+            .active_channels
+            .entry(stream_id.clone())
+            .or_insert_with(|| Arc::new(LiveChannel::new()))
+            .clone();
+
+        if channel.broadcast_tag(tag).await.is_err() {
+            debug!(stream_id = %stream_id, "No active RTMP play subscribers");
         }
     }
 
@@ -192,7 +195,7 @@ async fn spawn_connection_handler(
     socket: TcpStream,
     event_tx: MTx<mpsc::Array<StreamEvent>>,
     tag_tx: MAsyncTx<mpsc::Array<WrappedFlvTag>>,
-    tag_rx: impl Fn(String) -> (broadcast::Receiver<FlvTag>, Vec<FlvTag>),
+    active_channels: Arc<DashMap<String, Arc<LiveChannel>>>,
 ) {
     let cancel_token = CancellationToken::new();
     let _cancel_guard = cancel_token.drop_guard_ref();
@@ -241,7 +244,12 @@ async fn spawn_connection_handler(
     };
 
     let stream_key = builder.stream_key().to_string();
-    let (tag_receiver, cached_tags) = tag_rx(stream_key);
+    let channel = active_channels
+        .entry(stream_key)
+        .or_insert_with(|| Arc::new(LiveChannel::new()))
+        .clone();
+    let (tag_receiver, cached_tags) = channel.subscribe().await;
+
     let builder = builder
         .with_cancel_token(cancel_token)
         .with_tag_tx(tag_tx)

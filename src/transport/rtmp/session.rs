@@ -123,7 +123,7 @@ impl SessionGuard {
                 to_timestamp(timestamp),
                 is_keyframe,
             )?,
-            _ => return Ok(()),
+            FlvTag::ScriptData(metadata) => self.session.send_metadata(stream_id, &metadata)?,
         };
 
         self.handle_packet(packet, ct).await?;

@@ -13,7 +13,6 @@ use tracing::warn;
 
 use std::ffi::{c_int, c_void};
 use std::ptr::null_mut;
-use std::sync::Arc;
 
 /// Wrapper for FFmpeg output context configured for FLV streaming to RTMP servers.
 #[derive(Debug)]
@@ -34,8 +33,8 @@ impl FlvOutputContext {
         }
 
         if unsafe { (*ctx).pb.is_null() } {
-            let opaque = Arc::new(FlvAvioOpaque { flv_tag_tx });
-            let opaque_ptr = Arc::into_raw(opaque) as *mut c_void;
+            let opaque = Box::new(FlvAvioOpaque { flv_tag_tx });
+            let opaque_ptr = Box::into_raw(opaque) as *mut c_void;
             match Self::open_io(opaque_ptr, None, AVIO_FLAG_WRITE) {
                 Ok(pb) => unsafe {
                     (*ctx).pb = pb;
@@ -43,7 +42,7 @@ impl FlvOutputContext {
                 },
                 Err(e) => {
                     unsafe {
-                        let _ = Arc::from_raw(opaque_ptr as *const FlvAvioOpaque);
+                        let _ = Box::from_raw(opaque_ptr as *mut FlvAvioOpaque);
                     }
                     unsafe { avformat_free_context(ctx) };
                     return Err(e);
@@ -67,7 +66,7 @@ impl FlvOutputContext {
         let pb = unsafe { (*ctx).pb };
         if !pb.is_null() {
             if unsafe { !(*pb).opaque.is_null() } {
-                let _ = unsafe { Arc::from_raw((*pb).opaque as *const FlvAvioOpaque) };
+                let _ = unsafe { Box::from_raw((*pb).opaque as *mut FlvAvioOpaque) };
                 unsafe { (*pb).opaque = null_mut() };
             }
             unsafe { av_freep(&mut (*pb).buffer as *mut _ as *mut c_void) };
@@ -162,7 +161,7 @@ extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int)
         return 0; // Invalid parameters, nothing to write
     }
 
-    // Do not use the Arc here since we only need to read from it and it will be dropped when the context is dropped
+    // Opaque memory is owned by AVIO context and released in cleanup_ctx.
     let opaque_ref = unsafe { &*(opaque as *const FlvAvioOpaque) };
 
     // Convert the raw buffer to a Rust Bytes and parse into a single FLV tag.

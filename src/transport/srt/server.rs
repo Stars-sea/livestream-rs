@@ -86,7 +86,12 @@ impl SrtServer {
             ControlMessage::PrecreateStream {
                 live_id,
                 passphrase,
-            } => self.spawn_connection_handler(live_id, passphrase).await,
+            } => {
+                // Pre-allocate synchronization resources to circumvent lock contention
+                // when the crucial stream headers arrive.
+                self.bus.prepare_stream(&live_id);
+                self.spawn_connection_handler(live_id, passphrase).await
+            }
             ControlMessage::StopStream { live_id } => {
                 if let Some(cancel_token) = global::get_cancel_token(&live_id).await {
                     cancel_token.cancel();
@@ -162,13 +167,18 @@ fn spawn_connection_handler(
     builder: SrtConnectionBuilder,
     cancel_token: CancellationToken,
 ) -> Result<()> {
-    let _cancel_guard = cancel_token.clone().drop_guard();
-
-    let stream_id = builder.stream_id().to_string();
-    let connection = builder.build(cancel_token)?;
-
     std::thread::spawn(move || {
-        let _cancel_guard = _cancel_guard;
+        let _cancel_guard = cancel_token.clone().drop_guard();
+        let stream_id = builder.stream_id().to_string();
+
+        let connection = match builder.build(cancel_token) {
+            Ok(c) => c,
+            Err(e) => {
+                error!(stream_id = %stream_id, "Failed to build SRT connection: {:?}", e);
+                return;
+            }
+        };
+
         if let Err(e) = connection.run() {
             error!(stream_id = %stream_id, "Error in SRT connection handler: {:?}", e);
         }

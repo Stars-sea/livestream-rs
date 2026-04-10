@@ -2,8 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
-use dashmap::DashMap;
-use tokio::sync::RwLock;
+use dashmap::{DashMap, mapref::entry::Entry};
+use tokio::sync::{Notify, RwLock};
+use tokio::time::{Duration, timeout};
 use tracing::{error, warn};
 
 use super::{Pipe, UnifiedPacketContext, UnifiedPipeFactory};
@@ -12,9 +13,14 @@ use crate::dispatcher::{self, SessionEvent};
 use crate::pipeline::PipeFactory;
 use crate::telemetry::metrics;
 
+enum StreamPipeState {
+    Pending(Arc<Notify>),
+    Ready(Arc<Pipe<UnifiedPacketContext>>),
+}
+
 #[derive(Clone)]
 pub struct PipeBus {
-    packet_pipes: Arc<DashMap<String, Arc<Pipe<UnifiedPacketContext>>>>,
+    stream_states: Arc<DashMap<String, StreamPipeState>>,
     fallback_pipe: Arc<RwLock<Option<Arc<Pipe<UnifiedPacketContext>>>>>,
     force_fallback: Arc<AtomicBool>,
 }
@@ -22,7 +28,7 @@ pub struct PipeBus {
 impl PipeBus {
     pub fn new() -> Self {
         Self {
-            packet_pipes: Arc::new(DashMap::new()),
+            stream_states: Arc::new(DashMap::new()),
             fallback_pipe: Arc::new(RwLock::new(None)),
             force_fallback: Arc::new(AtomicBool::new(false)),
         }
@@ -50,12 +56,105 @@ impl PipeBus {
         self.force_fallback.store(false, Ordering::Relaxed);
     }
 
+    pub fn prepare_stream(&self, stream_id: &str) {
+        // Pre-allocate readiness signal for this stream.
+        // This avoids DashMap shard write-lock contention during the critical
+        // high-concurrency window when the first frames of a stream arrive.
+        self.stream_states
+            .entry(stream_id.to_string())
+            .or_insert_with(|| StreamPipeState::Pending(Arc::new(Notify::new())));
+    }
+
     pub fn register_pipe(&self, stream_id: String, pipe: Arc<Pipe<UnifiedPacketContext>>) {
-        self.packet_pipes.insert(stream_id, pipe);
+        let mut pending_notify = None;
+
+        match self.stream_states.entry(stream_id) {
+            Entry::Occupied(mut entry) => {
+                if let StreamPipeState::Pending(notify) = entry.get() {
+                    pending_notify = Some(notify.clone());
+                }
+                entry.insert(StreamPipeState::Ready(pipe));
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(StreamPipeState::Ready(pipe));
+            }
+        }
+
+        // Notify pending packets after state becomes Ready.
+        if let Some(notify) = pending_notify {
+            notify.notify_waiters();
+        }
     }
 
     pub fn remove_pipe(&self, stream_id: &str) -> Option<Arc<Pipe<UnifiedPacketContext>>> {
-        self.packet_pipes.remove(stream_id).map(|(_, pipe)| pipe)
+        self.stream_states
+            .remove(stream_id)
+            .and_then(|(_, state)| match state {
+                StreamPipeState::Ready(pipe) => Some(pipe),
+                StreamPipeState::Pending(_) => None,
+            })
+    }
+
+    fn ready_pipe(&self, stream_id: &str) -> Option<Arc<Pipe<UnifiedPacketContext>>> {
+        self.stream_states
+            .get(stream_id)
+            .and_then(|entry| match entry.value() {
+                StreamPipeState::Ready(pipe) => Some(pipe.clone()),
+                StreamPipeState::Pending(_) => None,
+            })
+    }
+
+    fn pending_notify(&self, stream_id: &str) -> Option<Arc<Notify>> {
+        self.stream_states
+            .get(stream_id)
+            .and_then(|entry| match entry.value() {
+                StreamPipeState::Pending(notify) => Some(notify.clone()),
+                StreamPipeState::Ready(_) => None,
+            })
+    }
+
+    fn remove_stale_pending(&self, stream_id: &str, expected_notify: &Arc<Notify>) {
+        let should_remove = self
+            .stream_states
+            .get(stream_id)
+            .map(|entry| match entry.value() {
+                StreamPipeState::Pending(current_notify) => {
+                    Arc::ptr_eq(current_notify, expected_notify)
+                }
+                StreamPipeState::Ready(_) => false,
+            })
+            .unwrap_or(false);
+
+        if should_remove {
+            self.stream_states.remove(stream_id);
+        }
+    }
+
+    async fn resolve_pipe(&self, stream_id: &str) -> Option<Arc<Pipe<UnifiedPacketContext>>> {
+        if let Some(pipe) = self.ready_pipe(stream_id) {
+            return Some(pipe);
+        }
+
+        let Some(notify) = self.pending_notify(stream_id) else {
+            // Re-check once to reduce the race window before fallback/drop.
+            return self.ready_pipe(stream_id);
+        };
+
+        // Re-check once to avoid waiting if register happened just before waiting.
+        if let Some(pipe) = self.ready_pipe(stream_id) {
+            return Some(pipe);
+        }
+
+        // Wait up to 1 second for SessionInit to trigger pipeline creation.
+        if timeout(Duration::from_millis(1000), notify.notified())
+            .await
+            .is_err()
+        {
+            // Garbage-collect stale pending state only if it is still the same notify.
+            self.remove_stale_pending(stream_id, &notify);
+        }
+
+        self.ready_pipe(stream_id)
     }
 
     pub fn spawn_session_listener(&self, factory: Arc<UnifiedPipeFactory>) {
@@ -109,7 +208,9 @@ impl PipeBus {
             anyhow::bail!("Fallback mode enabled without fallback pipe");
         }
 
-        let Some(packet_pipe) = self.packet_pipes.get(stream_id).map(|entry| entry.clone()) else {
+        let packet_pipe = self.resolve_pipe(stream_id).await;
+
+        let Some(packet_pipe) = packet_pipe else {
             let fallback = self.fallback_pipe.read().await.clone();
             if let Some(pipe) = fallback {
                 warn!(stream_id = %stream_id, "No stream pipeline found, routed to fallback pipe");

@@ -52,16 +52,32 @@ impl FlvTag {
     pub fn is_sequence_header(&self) -> bool {
         match self {
             Self::Audio { payload, .. } => {
+                if payload.is_empty() {
+                    return false;
+                }
                 let sound_format = payload[0] >> 4;
                 payload.len() >= 2
                     && sound_format == FLV_AUDIO_CODEC_AAC
                     && payload[1] == FLV_PACKET_TYPE_SEQ_HEADER
             }
             Self::Video { payload, .. } => {
-                let codec_id = payload[0] & 0x0f;
-                payload.len() >= 2
-                    && (codec_id == FLV_VIDEO_CODEC_AVC || codec_id == FLV_VIDEO_CODEC_HEVC)
-                    && payload[1] == FLV_PACKET_TYPE_SEQ_HEADER
+                if payload.is_empty() {
+                    return false;
+                }
+                let first_byte = payload[0];
+                let is_ex_header = (first_byte & 0x80) != 0;
+
+                if is_ex_header {
+                    // Enhanced RTMP (v1 or v2)
+                    let packet_type = first_byte & 0x0f;
+                    packet_type == FLV_PACKET_TYPE_SEQ_HEADER
+                } else {
+                    // Standard FLV
+                    let codec_id = first_byte & 0x0f;
+                    payload.len() >= 2
+                        && (codec_id == FLV_VIDEO_CODEC_AVC || codec_id == FLV_VIDEO_CODEC_HEVC)
+                        && payload[1] == FLV_PACKET_TYPE_SEQ_HEADER
+                }
             }
             Self::ScriptData(_) => true,
         }
@@ -92,7 +108,9 @@ pub(super) fn parse_script_data_metadata(payload: Bytes) -> Result<StreamMetadat
 
 fn is_video_keyframe(payload: &Bytes) -> bool {
     if let Some(&first_byte) = payload.first() {
-        let frame_type = (first_byte & 0xF0) >> 4;
+        // According to both standard FLV and Enhanced FLV:
+        // FrameType is bits 4-6 (mask 0x70)
+        let frame_type = (first_byte & 0x70) >> 4;
         return frame_type == 1;
     }
     false
