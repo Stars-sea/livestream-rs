@@ -12,6 +12,9 @@ mod imp {
         pub pipeline_bytes_total: Counter<u64>,
         pub pipeline_errors_total: Counter<u64>,
         pub pipeline_middleware_latency_us: Histogram<u64>,
+        pub transport_queue_drops_total: Counter<u64>,
+        pub transport_listener_lag_total: Counter<u64>,
+        pub transport_auto_recycle_total: Counter<u64>,
     }
 
     pub fn get_metrics() -> &'static OTelMetrics {
@@ -43,6 +46,23 @@ mod imp {
                     .with_description("Middleware processing latency in microseconds")
                     .with_unit("us")
                     .build(),
+                transport_queue_drops_total: meter
+                    .u64_counter("transport_queue_drops_total")
+                    .with_description("Dropped transport queue messages due to bounded-drop policy")
+                    .with_unit("{item}")
+                    .build(),
+                transport_listener_lag_total: meter
+                    .u64_counter("transport_listener_lag_total")
+                    .with_description("Lagged messages observed by broadcast listeners")
+                    .with_unit("{item}")
+                    .build(),
+                transport_auto_recycle_total: meter
+                    .u64_counter("transport_auto_recycle_total")
+                    .with_description(
+                        "Automatic cleanup executions triggered by disconnected sessions",
+                    )
+                    .with_unit("{session}")
+                    .build(),
             }
         })
     }
@@ -71,6 +91,31 @@ mod imp {
             self.pipeline_middleware_latency_us
                 .record(duration_us, &[KeyValue::new("middleware", middleware)]);
         }
+
+        pub fn record_queue_drop(&self, queue: &'static str, reason: &'static str) {
+            self.transport_queue_drops_total.add(
+                1,
+                &[
+                    KeyValue::new("queue", queue),
+                    KeyValue::new("reason", reason),
+                ],
+            );
+        }
+
+        pub fn record_listener_lag(&self, listener: &'static str, skipped: u64) {
+            self.transport_listener_lag_total
+                .add(skipped.max(1), &[KeyValue::new("listener", listener)]);
+        }
+
+        pub fn record_auto_recycle(&self, protocol: &'static str, cause: &'static str) {
+            self.transport_auto_recycle_total.add(
+                1,
+                &[
+                    KeyValue::new("protocol", protocol),
+                    KeyValue::new("cause", cause),
+                ],
+            );
+        }
     }
 }
 
@@ -93,6 +138,12 @@ mod imp {
         pub fn record_pipeline_error(&self, _stage: &'static str) {}
 
         pub fn record_middleware_latency(&self, _middleware: &'static str, _duration_us: u64) {}
+
+        pub fn record_queue_drop(&self, _queue: &'static str, _reason: &'static str) {}
+
+        pub fn record_listener_lag(&self, _listener: &'static str, _skipped: u64) {}
+
+        pub fn record_auto_recycle(&self, _protocol: &'static str, _cause: &'static str) {}
     }
 }
 

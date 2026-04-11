@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use crossfire::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -11,6 +10,7 @@ use tracing::{error, info, warn};
 use crate::infra::MinioClient;
 use crate::pipeline::handler::SegmentPersistenceHandler;
 use crate::pipeline::{PipeBus, UnifiedPipeFactory};
+use crate::queue::Channel;
 use crate::transport::TransportServer;
 use crate::transport::grpc::GrpcServer;
 
@@ -19,6 +19,7 @@ mod config;
 mod dispatcher;
 mod infra;
 mod pipeline;
+mod queue;
 mod telemetry;
 mod transport;
 
@@ -47,13 +48,17 @@ async fn main() -> Result<()> {
     SegmentPersistenceHandler::spawn(minio_client);
 
     let cancel_token = CancellationToken::new();
-    let (rtmp_tag_tx, rtmp_tag_rx) = mpsc::bounded_blocking_async(config.queue.rtmpforward);
+    let rtmp_forward_channel = Channel::mpsc_bounded(
+        "rtmp_forward",
+        "main.rtmp_forward",
+        config.queue.rtmpforward,
+    );
 
     let factory = Arc::new(UnifiedPipeFactory::new(
         segment_duration,
         segment_cachedir,
         config.queue.flvrelay,
-        rtmp_tag_tx,
+        rtmp_forward_channel.clone(),
     ));
     let packet_bus = PipeBus::new();
     packet_bus.spawn_session_listener(factory);
@@ -62,7 +67,7 @@ async fn main() -> Result<()> {
         config.rtmp.clone(),
         config.srt.clone(),
         config.queue.clone(),
-        rtmp_tag_rx,
+        rtmp_forward_channel,
         packet_bus,
         cancel_token.child_token(),
     );

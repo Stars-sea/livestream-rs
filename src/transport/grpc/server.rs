@@ -11,12 +11,10 @@ use tokio_util::sync::CancellationToken;
 use tonic::codegen::tokio_stream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-use tracing::{Span, info, instrument, warn};
+use tracing::{Span, info, info_span, instrument, warn};
 
 #[cfg(feature = "opentelemetry")]
 use opentelemetry::propagation::Extractor;
-#[cfg(feature = "opentelemetry")]
-use tonic::metadata::{KeyRef, MetadataMap};
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -38,7 +36,7 @@ pub struct GrpcServer {
 }
 
 #[cfg(feature = "opentelemetry")]
-struct MetadataMapExtractor<'a>(&'a MetadataMap);
+struct HeaderMapExtractor<'a>(&'a tonic::codegen::http::HeaderMap);
 
 impl GrpcServer {
     pub fn new(
@@ -61,9 +59,10 @@ impl GrpcServer {
         let addr = format!("0.0.0.0:{}", self.grpc_config.port).parse()?;
         info!(address = %self.grpc_config.port, "gRPC Server will listen");
 
-        let service = LivestreamServer::with_interceptor(self.service, server_trace_interceptor);
+        let service = LivestreamServer::new(self.service);
 
         Server::builder()
+            .trace_fn(server_trace_span)
             .add_service(service)
             .serve_with_shutdown(addr, shutdown.cancelled())
             .await?;
@@ -73,33 +72,34 @@ impl GrpcServer {
 }
 
 #[cfg(feature = "opentelemetry")]
-impl Extractor for MetadataMapExtractor<'_> {
+impl Extractor for HeaderMapExtractor<'_> {
     fn get(&self, key: &str) -> Option<&str> {
         self.0.get(key).and_then(|value| value.to_str().ok())
     }
 
     fn keys(&self) -> Vec<&str> {
-        self.0
-            .keys()
-            .map(|key| match key {
-                KeyRef::Ascii(key) => key.as_str(),
-                KeyRef::Binary(key) => key.as_str(),
-            })
-            .collect()
+        self.0.keys().map(|key| key.as_str()).collect()
     }
 }
 
-fn server_trace_interceptor(request: Request<()>) -> Result<Request<()>, Status> {
+fn server_trace_span(request: &tonic::codegen::http::Request<()>) -> Span {
+    let span = info_span!(
+        "transport.grpc.request",
+        rpc.system = "grpc",
+        http.method = %request.method(),
+        http.route = %request.uri().path(),
+    );
+
     #[cfg(feature = "opentelemetry")]
     {
         let ctx = opentelemetry::global::get_text_map_propagator(|prop| {
-            let extractor = MetadataMapExtractor(request.metadata());
+            let extractor = HeaderMapExtractor(request.headers());
             prop.extract(&extractor)
         });
-        let _ = Span::current().set_parent(ctx);
+        let _ = span.set_parent(ctx);
     }
 
-    Ok(request)
+    span
 }
 
 #[derive(Clone)]

@@ -1,11 +1,11 @@
 use anyhow::Result;
 use rml_rtmp::sessions::{ServerSessionError, ServerSessionEvent, ServerSessionResult};
 use tokio::sync::broadcast;
-use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::infra::media::packet::FlvTag;
+use crate::queue::{BroadcastRecv, ChannelStream};
 use crate::transport::rtmp::handler::HandlerTrait;
 use crate::transport::rtmp::session::SessionGuard;
 
@@ -17,7 +17,7 @@ pub struct PlayHandler {
     stream_key: String,
     stream_id: u32,
 
-    tag_rx: broadcast::Receiver<FlvTag>,
+    tag_stream: ChannelStream<broadcast::Receiver<FlvTag>>,
     cached_tags: Vec<FlvTag>,
     waiting_keyframe: bool,
 
@@ -30,7 +30,7 @@ impl PlayHandler {
         appname: String,
         stream_key: String,
         stream_id: u32,
-        tag_rx: broadcast::Receiver<FlvTag>,
+        tag_stream: ChannelStream<broadcast::Receiver<FlvTag>>,
         cached_tags: Vec<FlvTag>,
         cancel_token: CancellationToken,
     ) -> Self {
@@ -39,7 +39,7 @@ impl PlayHandler {
             appname,
             stream_key,
             stream_id,
-            tag_rx,
+            tag_stream,
             cached_tags,
             waiting_keyframe: false,
             cancel_token,
@@ -95,16 +95,16 @@ impl PlayHandler {
         }
     }
 
-    async fn handle_tag_recv(&mut self, recv_result: Result<FlvTag, RecvError>) -> Result<()> {
-        let tag = match recv_result {
-            Ok(tag) => tag,
-            Err(RecvError::Lagged(skipped)) => {
+    async fn handle_tag_recv(&mut self, recv_event: BroadcastRecv<FlvTag>) -> Result<()> {
+        let tag = match recv_event {
+            BroadcastRecv::Item(tag) => tag,
+            BroadcastRecv::Lagged(skipped) => {
                 // Skip stale tags and keep connection alive; decoder will recover on subsequent keyframe.
                 self.waiting_keyframe = true;
                 warn!(stream_key = %self.stream_key, skipped = skipped, "RTMP play receiver lagged, dropping stale tags");
                 return Ok(());
             }
-            Err(RecvError::Closed) => {
+            BroadcastRecv::Closed => {
                 anyhow::bail!(
                     "RTMP play tag channel closed for stream {}",
                     self.stream_key
@@ -164,7 +164,7 @@ impl HandlerTrait for PlayHandler {
                 results = self.session.read_result(&ct) => {
                     self.handle_session_results(results?, &ct).await?;
                 }
-                tag = self.tag_rx.recv() => self.handle_tag_recv(tag).await?,
+                tag = self.tag_stream.recv() => self.handle_tag_recv(tag).await?,
 
             }
         }

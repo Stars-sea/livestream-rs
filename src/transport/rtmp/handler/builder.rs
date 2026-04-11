@@ -1,10 +1,10 @@
 use anyhow::Result;
-use crossfire::{MAsyncTx, mpsc::Array};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use super::{Handler, PlayHandler, PublishHandler};
 use crate::infra::media::packet::FlvTag;
+use crate::queue::{ChannelStream, MpscChannel};
 use crate::transport::rtmp::session::SessionGuard;
 use crate::transport::rtmp::tag::WrappedFlvTag;
 
@@ -14,7 +14,7 @@ pub enum HandlerBuilder {
         session: Option<SessionGuard>,
         appname: Option<String>,
         stream_key: String,
-        tag_rx: Option<broadcast::Receiver<FlvTag>>,
+        tag_stream: Option<ChannelStream<broadcast::Receiver<FlvTag>>>,
         cached_tags: Vec<FlvTag>,
         cancel_token: Option<CancellationToken>,
     },
@@ -22,7 +22,7 @@ pub enum HandlerBuilder {
         session: Option<SessionGuard>,
         appname: Option<String>,
         stream_key: String,
-        tag_tx: Option<MAsyncTx<Array<WrappedFlvTag>>>,
+        tag_channel: Option<MpscChannel<WrappedFlvTag>>,
         cancel_token: Option<CancellationToken>,
     },
 }
@@ -34,7 +34,7 @@ impl HandlerBuilder {
             appname: None,
             stream_key,
             stream_id,
-            tag_rx: None,
+            tag_stream: None,
             cached_tags: Vec::new(),
             cancel_token: None,
         }
@@ -45,7 +45,7 @@ impl HandlerBuilder {
             session: None,
             appname: None,
             stream_key,
-            tag_tx: None,
+            tag_channel: None,
             cancel_token: None,
         }
     }
@@ -73,9 +73,15 @@ impl HandlerBuilder {
         self
     }
 
-    pub fn with_tag_rx(mut self, tag_rx: broadcast::Receiver<FlvTag>) -> Self {
-        if let HandlerBuilder::Play { tag_rx: rx, .. } = &mut self {
-            *rx = Some(tag_rx);
+    pub fn with_tag_stream(
+        mut self,
+        tag_stream: ChannelStream<broadcast::Receiver<FlvTag>>,
+    ) -> Self {
+        if let HandlerBuilder::Play {
+            tag_stream: stream, ..
+        } = &mut self
+        {
+            *stream = Some(tag_stream);
         }
         self
     }
@@ -87,9 +93,12 @@ impl HandlerBuilder {
         self
     }
 
-    pub fn with_tag_tx(mut self, tag_tx: MAsyncTx<Array<WrappedFlvTag>>) -> Self {
-        if let HandlerBuilder::Publish { tag_tx: tx, .. } = &mut self {
-            *tx = Some(tag_tx);
+    pub fn with_tag_channel(mut self, tag_channel: MpscChannel<WrappedFlvTag>) -> Self {
+        if let HandlerBuilder::Publish {
+            tag_channel: tx, ..
+        } = &mut self
+        {
+            *tx = Some(tag_channel);
         }
         self
     }
@@ -113,7 +122,7 @@ impl HandlerBuilder {
                 appname,
                 stream_key,
                 stream_id,
-                tag_rx,
+                tag_stream,
                 cached_tags,
                 cancel_token,
             } => {
@@ -121,7 +130,7 @@ impl HandlerBuilder {
                     .ok_or_else(|| anyhow::anyhow!("App name is required to build PlayHandler"))?;
                 let session = session
                     .ok_or_else(|| anyhow::anyhow!("Session is required to build PlayHandler"))?;
-                let tag_rx = tag_rx.ok_or_else(|| {
+                let tag_stream = tag_stream.ok_or_else(|| {
                     anyhow::anyhow!("FLV tag receiver is required to build PlayHandler")
                 })?;
                 let cancel_token = cancel_token.ok_or_else(|| {
@@ -132,7 +141,7 @@ impl HandlerBuilder {
                     appname,
                     stream_key,
                     stream_id,
-                    tag_rx,
+                    tag_stream,
                     cached_tags,
                     cancel_token,
                 )))
@@ -141,7 +150,7 @@ impl HandlerBuilder {
                 session,
                 appname,
                 stream_key,
-                tag_tx,
+                tag_channel,
                 cancel_token,
             } => {
                 let appname = appname.ok_or_else(|| {
@@ -150,7 +159,7 @@ impl HandlerBuilder {
                 let session = session.ok_or_else(|| {
                     anyhow::anyhow!("Session is required to build PublishHandler")
                 })?;
-                let tag_tx = tag_tx.ok_or_else(|| {
+                let tag_channel = tag_channel.ok_or_else(|| {
                     anyhow::anyhow!("FLV tag sender is required to build PublishHandler")
                 })?;
                 let cancel_token = cancel_token.ok_or_else(|| {
@@ -160,7 +169,7 @@ impl HandlerBuilder {
                     session,
                     appname,
                     stream_key,
-                    tag_tx,
+                    tag_channel,
                     cancel_token,
                 )))
             }

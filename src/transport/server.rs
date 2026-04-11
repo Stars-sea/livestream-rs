@@ -2,8 +2,6 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 
 use anyhow::Result;
-use crossfire::MTx;
-use crossfire::{AsyncRx, mpsc, spsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, instrument};
@@ -18,12 +16,14 @@ use crate::config::{QueueConfig, RtmpConfig, SrtConfig};
 use crate::dispatcher::{self, Protocal, SessionEvent};
 use crate::infra::PortAllocator;
 use crate::pipeline::PipeBus;
+use crate::queue::{Channel, MpscChannel};
+use crate::telemetry::metrics;
 
 pub struct TransportServer {
     rtmp_config: RtmpConfig,
     srt_config: SrtConfig,
     queue_config: QueueConfig,
-    rtmp_tag_rx: Option<AsyncRx<mpsc::Array<StreamFlvTag>>>,
+    rtmp_tag_channel: Option<MpscChannel<StreamFlvTag>>,
 
     bus: PipeBus,
 
@@ -35,7 +35,7 @@ impl TransportServer {
         rtmp_config: RtmpConfig,
         srt_config: SrtConfig,
         queue_config: QueueConfig,
-        rtmp_tag_rx: AsyncRx<mpsc::Array<StreamFlvTag>>,
+        rtmp_tag_channel: MpscChannel<StreamFlvTag>,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Self {
@@ -43,7 +43,7 @@ impl TransportServer {
             rtmp_config,
             srt_config,
             queue_config,
-            rtmp_tag_rx: Some(rtmp_tag_rx),
+            rtmp_tag_channel: Some(rtmp_tag_channel),
             bus,
             cancel_token,
         }
@@ -51,13 +51,13 @@ impl TransportServer {
 
     async fn rtmp_server(
         &mut self,
-        rx: AsyncRx<spsc::Array<ControlMessage>>,
-        event_tx: MTx<mpsc::Array<StreamEvent>>,
+        control_channel: MpscChannel<ControlMessage>,
+        event_channel: MpscChannel<StreamEvent>,
     ) -> Result<RtmpServer> {
         let appname = self.rtmp_config.appname.clone();
         let cancel_token = self.cancel_token.child_token();
-        let rtmp_tag_rx = self
-            .rtmp_tag_rx
+        let rtmp_tag_channel = self
+            .rtmp_tag_channel
             .take()
             .ok_or_else(|| anyhow::anyhow!("RTMP forwarded tag receiver already taken"))?;
 
@@ -65,9 +65,9 @@ impl TransportServer {
         let server = RtmpServer::create(
             addr,
             appname,
-            rx,
-            event_tx,
-            rtmp_tag_rx,
+            control_channel,
+            event_channel,
+            rtmp_tag_channel,
             self.queue_config.rtmppublish,
             self.bus.clone(),
             cancel_token,
@@ -78,8 +78,8 @@ impl TransportServer {
 
     async fn srt_server(
         &self,
-        rx: AsyncRx<spsc::Array<ControlMessage>>,
-        event_tx: MTx<mpsc::Array<StreamEvent>>,
+        control_channel: MpscChannel<ControlMessage>,
+        event_channel: MpscChannel<StreamEvent>,
     ) -> Result<SrtServer> {
         let cancel_token = self.cancel_token.child_token();
 
@@ -92,8 +92,8 @@ impl TransportServer {
         };
 
         let server = SrtServer::new(
-            rx,
-            event_tx,
+            control_channel,
+            event_channel,
             self.queue_config.srtpacket,
             self.bus.clone(),
             port_allocator,
@@ -103,23 +103,42 @@ impl TransportServer {
     }
 
     pub async fn spawn_task(mut self) -> Result<(TransportController, JoinHandle<Result<()>>)> {
-        let (rtmp_msg_tx, rtmp_msg_rx) = spsc::bounded_blocking_async(self.queue_config.control);
-        let (srt_msg_tx, srt_msg_rx) = spsc::bounded_blocking_async(self.queue_config.control);
-        let (event_tx, event_rx) = mpsc::bounded_blocking_async(self.queue_config.event);
+        let rtmp_control_channel = Channel::mpsc_bounded(
+            "control_rtmp",
+            "transport.server.rtmp_control",
+            self.queue_config.control,
+        );
+        let srt_control_channel = Channel::mpsc_bounded(
+            "control_srt",
+            "transport.server.srt_control",
+            self.queue_config.control,
+        );
+        let event_channel = Channel::mpsc_bounded(
+            "transport_event",
+            "transport.server.event",
+            self.queue_config.event,
+        );
 
-        let rtmp_server = self.rtmp_server(rtmp_msg_rx, event_tx.clone()).await?;
-        let srt_server = self.srt_server(srt_msg_rx, event_tx.clone()).await?;
+        let rtmp_server = self
+            .rtmp_server(rtmp_control_channel.clone(), event_channel.clone())
+            .await?;
+        let srt_server = self
+            .srt_server(srt_control_channel.clone(), event_channel.clone())
+            .await?;
 
         let handle = tokio::spawn(async move {
             tokio::try_join!(
                 rtmp_server.run(),
                 srt_server.run(),
-                event_listener(event_rx)
+                event_listener(event_channel)
             )?;
             Ok(())
         });
 
-        let controller = TransportController::new(rtmp_msg_tx, srt_msg_tx);
+        let controller = TransportController::new(
+            rtmp_control_channel.with_source("transport.controller.rtmp_tx"),
+            srt_control_channel.with_source("transport.controller.srt_tx"),
+        );
         Ok((controller, handle))
     }
 }
@@ -159,6 +178,24 @@ async fn handle_stream_event(event: StreamEvent) -> Result<()> {
             }
 
             if new_state.is_stopped() {
+                if let Some(ct) = global::get_cancel_token(&live_id).await {
+                    if !ct.is_cancelled() {
+                        ct.cancel();
+
+                        let protocol = match new_state {
+                            SessionState::Rtmp(_) => "rtmp",
+                            SessionState::Srt(_) => "srt",
+                        };
+                        metrics::get_metrics().record_auto_recycle(protocol, "disconnected_state");
+
+                        debug!(
+                            live_id = %live_id,
+                            protocol = protocol,
+                            "Auto-cancelled session after disconnected state"
+                        );
+                    }
+                }
+
                 dispatcher.send(SessionEvent::SessionEnded {
                     live_id: live_id.clone(),
                     protocal: match new_state {
@@ -176,18 +213,14 @@ async fn handle_stream_event(event: StreamEvent) -> Result<()> {
     }
 }
 
-async fn event_listener(event_rx: AsyncRx<mpsc::Array<StreamEvent>>) -> Result<()> {
-    loop {
-        match event_rx.recv().await {
-            Ok(event) => {
-                if let Err(e) = handle_stream_event(event).await {
-                    error!(error = %e, "Failed to handle stream event");
-                }
-            }
-            Err(e) => {
-                error!(error = %e, "Failed to receive stream event");
-                break;
-            }
+async fn event_listener(event_channel: MpscChannel<StreamEvent>) -> Result<()> {
+    let mut events = event_channel
+        .subscribe("transport.server.event_listener")
+        .map_err(|e| anyhow::anyhow!("Failed to subscribe transport event listener: {}", e))?;
+
+    while let Some(event) = events.next().await {
+        if let Err(e) = handle_stream_event(event).await {
+            error!(error = %e, "Failed to handle stream event");
         }
     }
     Ok(())

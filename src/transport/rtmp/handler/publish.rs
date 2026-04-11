@@ -1,11 +1,11 @@
 use anyhow::Result;
-use crossfire::{MAsyncTx, mpsc::Array};
 use rml_rtmp::sessions::ServerSessionEvent;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::infra::media::packet::FlvTag;
-use crate::transport::contract::message::StreamEvent;
+use crate::queue::{ChannelSendStatus, MpscChannel};
+use crate::transport::contract::message::send_stream_state_change;
 use crate::transport::contract::state::{RtmpState, SessionState};
 use crate::transport::rtmp::handler::HandlerTrait;
 use crate::transport::rtmp::session::SessionGuard;
@@ -18,7 +18,7 @@ pub struct PublishHandler {
     appname: String,
     stream_key: String,
 
-    tag_tx: MAsyncTx<Array<WrappedFlvTag>>,
+    tag_channel: MpscChannel<WrappedFlvTag>,
 
     cancel_token: CancellationToken,
 }
@@ -28,14 +28,14 @@ impl PublishHandler {
         session: SessionGuard,
         appname: String,
         stream_key: String,
-        tag_tx: MAsyncTx<Array<WrappedFlvTag>>,
+        tag_channel: MpscChannel<WrappedFlvTag>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             session,
             appname,
             stream_key,
-            tag_tx,
+            tag_channel,
             cancel_token,
         }
     }
@@ -43,12 +43,33 @@ impl PublishHandler {
     fn publish_finished(&mut self) -> Result<()> {
         debug!("Publish finished for stream key: {}", self.stream_key);
 
-        self.session.event_tx.send(StreamEvent::StateChange {
-            live_id: self.stream_key.clone(),
-            new_state: SessionState::Rtmp(RtmpState::Disconnected),
-        })?;
+        send_stream_state_change(
+            &self.session.event_channel,
+            self.stream_key.clone(),
+            SessionState::Rtmp(RtmpState::Disconnected),
+            "rtmp.publish.publish_finished",
+        )?;
         self.cancel_token.cancel();
         Ok(())
+    }
+
+    fn send_publish_tag(&self, tag: FlvTag, source: &'static str) -> Result<()> {
+        let channel = self
+            .tag_channel
+            .clone()
+            .with_source(source)
+            .with_live_id(self.stream_key.clone());
+
+        match channel.send(WrappedFlvTag::new(
+            &self.stream_key,
+            tag,
+            &self.cancel_token,
+        )) {
+            ChannelSendStatus::Sent | ChannelSendStatus::Full => Ok(()),
+            ChannelSendStatus::Disconnected => {
+                anyhow::bail!("RTMP publish queue disconnected")
+            }
+        }
     }
 }
 
@@ -71,35 +92,17 @@ impl HandlerTrait for PublishHandler {
                 data, timestamp, ..
             } => {
                 let flv_tag = FlvTag::audio(timestamp.value, data);
-                self.tag_tx
-                    .send(WrappedFlvTag::new(
-                        &self.stream_key,
-                        flv_tag,
-                        &self.cancel_token,
-                    ))
-                    .await?;
+                self.send_publish_tag(flv_tag, "rtmp.publish.audio")?;
             }
             ServerSessionEvent::VideoDataReceived {
                 data, timestamp, ..
             } => {
                 let flv_tag = FlvTag::video(timestamp.value, data);
-                self.tag_tx
-                    .send(WrappedFlvTag::new(
-                        &self.stream_key,
-                        flv_tag,
-                        &self.cancel_token,
-                    ))
-                    .await?;
+                self.send_publish_tag(flv_tag, "rtmp.publish.video")?;
             }
             ServerSessionEvent::StreamMetadataChanged { metadata, .. } => {
                 let flv_tag = FlvTag::script_data(metadata);
-                self.tag_tx
-                    .send(WrappedFlvTag::new(
-                        &self.stream_key,
-                        flv_tag,
-                        &self.cancel_token,
-                    ))
-                    .await?;
+                self.send_publish_tag(flv_tag, "rtmp.publish.metadata")?;
             }
 
             _ => {

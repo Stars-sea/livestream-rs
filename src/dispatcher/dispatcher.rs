@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use tokio::sync::{OnceCell, broadcast};
+use tokio::sync::OnceCell;
 
-use super::SessionEvent;
+use super::{SessionEvent, SessionEventStream};
+use crate::queue::{BroadcastChannel, Channel};
 
 static DISPATCHER: OnceCell<Arc<EventDispatcher>> = OnceCell::const_new();
 
@@ -14,17 +15,18 @@ pub async fn singleton() -> Arc<EventDispatcher> {
 }
 
 pub struct EventDispatcher {
-    sender: broadcast::Sender<SessionEvent>,
+    channel: BroadcastChannel<SessionEvent>,
 }
 
 impl EventDispatcher {
     fn new() -> Self {
-        let (sender, _) = broadcast::channel(16);
-        Self { sender }
+        Self {
+            channel: Channel::broadcast("session_event", "dispatcher.event", 16),
+        }
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
-        self.sender.subscribe()
+    pub fn subscribe_stream(&self, listener_name: &'static str) -> SessionEventStream {
+        self.channel.subscribe(listener_name)
     }
 
     #[allow(unused)]
@@ -33,15 +35,15 @@ impl EventDispatcher {
         F: Fn(SessionEvent) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        let mut rx = self.subscribe();
+        let mut events = self.subscribe_stream("dispatcher.on_session_event");
         tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
+            while let Some(event) = events.next().await {
                 callback(event).await;
             }
         });
     }
 
     pub fn send(&self, event: SessionEvent) {
-        let _ = self.sender.send(event);
+        let _ = self.channel.send(event);
     }
 }

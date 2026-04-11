@@ -3,4 +3,4 @@ mod event;
 
 #[allow(unused_imports)]
 pub use dispatcher::{EventDispatcher, singleton};
-pub use event::{Protocal, SessionEvent};
+pub use event::{Protocal, SessionEvent, SessionEventStream};

@@ -162,9 +162,9 @@ impl PipeBus {
 
         tokio::spawn(async move {
             let dispatcher = dispatcher::singleton().await;
-            let mut rx = dispatcher.subscribe();
+            let mut events = dispatcher.subscribe_stream("pipeline.bus.session_listener");
 
-            while let Ok(event) = rx.recv().await {
+            while let Some(event) = events.next().await {
                 if let Err(e) = bus.handle_session_event(event, factory.as_ref()) {
                     error!(error = %e, "Failed to handle session event in PipeBus listener");
                 }

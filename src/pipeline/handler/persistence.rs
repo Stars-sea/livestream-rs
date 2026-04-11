@@ -26,9 +26,9 @@ impl SegmentPersistenceHandler {
     fn spawn_upload_listener(minio_client: MinioClient) {
         tokio::spawn(async move {
             let dispatcher = dispatcher::singleton().await;
-            let mut rx = dispatcher.subscribe();
+            let mut events = dispatcher.subscribe_stream("pipeline.persistence.listener");
 
-            while let Ok(event) = rx.recv().await {
+            while let Some(event) = events.next().await {
                 if let SessionEvent::SegmentComplete { live_id, path } = event {
                     if let Err(e) = Self::upload_and_remove(&minio_client, &live_id, path).await {
                         warn!(live_id = %live_id, error = %e, "Failed to persist completed segment");

@@ -1,6 +1,7 @@
 use tokio::sync::{RwLock, broadcast};
 
 use crate::infra::media::packet::FlvTag;
+use crate::queue::{BroadcastChannel, Channel, ChannelSendStatus, ChannelStream};
 
 /// Holds the caching state (Sequence Headers & ScriptData) of a live stream.
 #[derive(Default)]
@@ -13,15 +14,14 @@ struct StreamCache {
 /// A thread-safe broadcaster for a single RTMP live stream channel.
 /// Manages late-joiner protocol requirements (e.g. Decoder Configuration/Sequence Headers).
 pub struct LiveChannel {
-    sender: broadcast::Sender<FlvTag>,
+    sender: BroadcastChannel<FlvTag>,
     cache: RwLock<StreamCache>,
 }
 
 impl LiveChannel {
     pub fn new() -> Self {
-        let (sender, _) = broadcast::channel(1024);
         Self {
-            sender,
+            sender: Channel::broadcast("rtmp_live_tag", "transport.rtmp.live_channel", 1024),
             cache: RwLock::new(StreamCache::default()),
         }
     }
@@ -41,13 +41,20 @@ impl LiveChannel {
             }
         }
 
-        self.sender.send(tag)
+        match self.sender.send(tag.clone()) {
+            ChannelSendStatus::Sent => Ok(1),
+            ChannelSendStatus::Disconnected => Err(broadcast::error::SendError(tag)),
+            ChannelSendStatus::Full => Ok(0),
+        }
     }
 
     /// Subscribes to the channel and returns the real-time receiver along with
     /// any cached initialization tags that missed the live broadcast.
-    pub async fn subscribe(&self) -> (broadcast::Receiver<FlvTag>, Vec<FlvTag>) {
-        let rx = self.sender.subscribe();
+    pub async fn subscribe(
+        &self,
+        listener_name: &'static str,
+    ) -> (ChannelStream<broadcast::Receiver<FlvTag>>, Vec<FlvTag>) {
+        let rx = self.sender.subscribe(listener_name);
 
         let mut initial_tags = Vec::with_capacity(3);
         let cache = self.cache.read().await;

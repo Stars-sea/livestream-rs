@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use crossfire::{MTx, mpsc::Array};
 use retry::OperationResult;
 use retry::delay::{Exponential, jitter};
 use tokio_util::sync::CancellationToken;
@@ -11,7 +10,10 @@ use crate::infra::media::context::InputContext;
 use crate::infra::media::options::SrtInputStreamOptions;
 use crate::infra::media::packet::{Packet, PacketReadResult};
 use crate::infra::media::stream::StaticStreamCollection;
-use crate::transport::contract::message::StreamEvent;
+use crate::queue::{ChannelSendStatus, MpscChannel};
+use crate::transport::contract::message::{
+    StreamEvent, send_stream_init, send_stream_state_change,
+};
 use crate::transport::contract::state::{SessionState, SrtState};
 use crate::transport::srt::packet::WrappedPacket;
 
@@ -20,8 +22,8 @@ pub struct SrtConnection {
 
     av_ctx: InputContext,
 
-    event_tx: MTx<Array<StreamEvent>>,
-    packet_tx: MTx<Array<WrappedPacket>>,
+    event_channel: MpscChannel<StreamEvent>,
+    packet_channel: MpscChannel<WrappedPacket>,
 
     cancel_token: CancellationToken,
 }
@@ -32,32 +34,34 @@ pub struct SrtConnectionBuilder {
     stream_id: String,
     passphrase: Option<String>,
 
-    packet_tx: MTx<Array<WrappedPacket>>,
-    event_tx: MTx<Array<StreamEvent>>,
+    packet_channel: MpscChannel<WrappedPacket>,
+    event_channel: MpscChannel<StreamEvent>,
 }
 
 impl SrtConnection {
     fn new(
         stream_id: String,
         av_ctx: InputContext,
-        event_tx: MTx<Array<StreamEvent>>,
-        packet_tx: MTx<Array<WrappedPacket>>,
+        event_channel: MpscChannel<StreamEvent>,
+        packet_channel: MpscChannel<WrappedPacket>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             stream_id,
-            event_tx,
+            event_channel,
             av_ctx,
-            packet_tx,
+            packet_channel,
             cancel_token,
         }
     }
 
     fn emit_state_change(&self, state: SrtState) -> Result<()> {
-        self.event_tx.send(StreamEvent::StateChange {
-            live_id: self.stream_id.clone(),
-            new_state: SessionState::Srt(state),
-        })?;
+        send_stream_state_change(
+            &self.event_channel,
+            self.stream_id.clone(),
+            SessionState::Srt(state),
+            "srt.connection.emit_state_change",
+        )?;
         Ok(())
     }
 
@@ -66,10 +70,12 @@ impl SrtConnection {
             StaticStreamCollection::from_streams(&self.av_ctx)
                 .map_err(|e| anyhow::anyhow!("Failed to snapshot SRT stream info: {}", e))?,
         );
-        self.event_tx.send(StreamEvent::Init {
-            live_id: self.stream_id.clone(),
-            streams: init_streams,
-        })?;
+        send_stream_init(
+            &self.event_channel,
+            self.stream_id.clone(),
+            init_streams,
+            "srt.connection.on_init",
+        )?;
 
         Ok(())
     }
@@ -81,11 +87,22 @@ impl SrtConnection {
             self.emit_state_change(*state)?;
         }
 
-        self.packet_tx.send(WrappedPacket::new(
-            self.stream_id.clone(),
-            packet,
-            self.cancel_token.clone(),
-        ))?;
+        let packet_channel = self
+            .packet_channel
+            .clone()
+            .with_source("srt.connection.handle_data_packet")
+            .with_live_id(self.stream_id.clone());
+
+        if matches!(
+            packet_channel.send(WrappedPacket::new(
+                self.stream_id.clone(),
+                packet,
+                self.cancel_token.clone(),
+            )),
+            ChannelSendStatus::Disconnected
+        ) {
+            anyhow::bail!("SRT packet queue disconnected");
+        }
 
         Ok(())
     }
@@ -155,15 +172,15 @@ impl SrtConnectionBuilder {
         port: u16,
         stream_id: String,
         passphrase: Option<String>,
-        packet_tx: MTx<Array<WrappedPacket>>,
-        event_tx: MTx<Array<StreamEvent>>,
+        packet_channel: MpscChannel<WrappedPacket>,
+        event_channel: MpscChannel<StreamEvent>,
     ) -> Self {
         Self {
             port,
             stream_id,
             passphrase,
-            packet_tx,
-            event_tx,
+            packet_channel,
+            event_channel,
         }
     }
 
@@ -179,8 +196,8 @@ impl SrtConnectionBuilder {
         Ok(SrtConnection::new(
             self.stream_id,
             av_ctx,
-            self.event_tx,
-            self.packet_tx,
+            self.event_channel,
+            self.packet_channel,
             cancel_token,
         ))
     }

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::infra::media::stream::StreamCollection;
+use crate::queue::ChannelStream;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Protocal {
@@ -59,3 +60,5 @@ impl std::fmt::Debug for SessionEvent {
         }
     }
 }
+
+pub type SessionEventStream = ChannelStream<tokio::sync::broadcast::Receiver<SessionEvent>>;

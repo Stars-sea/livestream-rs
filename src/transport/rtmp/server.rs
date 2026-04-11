@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
-use crossfire::{AsyncRx, MAsyncTx, MTx, mpsc, spsc};
 use dashmap::DashMap;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
@@ -12,7 +11,10 @@ use super::channel::LiveChannel;
 use super::connection::RtmpConnection;
 use crate::infra::media::packet::FlvTag;
 use crate::pipeline::{PipeBus, UnifiedPacketContext};
-use crate::transport::contract::message::{ControlMessage, StreamEvent, StreamFlvTag};
+use crate::queue::{Channel, MpscChannel};
+use crate::transport::contract::message::{
+    ControlMessage, StreamEvent, StreamFlvTag, send_stream_init, send_stream_state_change,
+};
 use crate::transport::contract::state::{
     RtmpState, SessionDescriptor, SessionEndpoint, SessionProtocol, SessionState,
 };
@@ -24,11 +26,10 @@ pub struct RtmpServer {
     listener: TcpListener,
     appname: String,
 
-    ctrl_rx: AsyncRx<spsc::Array<ControlMessage>>,
-    event_tx: MTx<mpsc::Array<StreamEvent>>,
-    publish_tag_rx: AsyncRx<mpsc::Array<WrappedFlvTag>>,
-    publish_tag_tx: MTx<mpsc::Array<WrappedFlvTag>>,
-    rtmp_tag_rx: AsyncRx<mpsc::Array<StreamFlvTag>>,
+    ctrl_channel: MpscChannel<ControlMessage>,
+    event_channel: MpscChannel<StreamEvent>,
+    publish_channel: MpscChannel<WrappedFlvTag>,
+    rtmp_forward_channel: MpscChannel<StreamFlvTag>,
 
     bus: PipeBus,
     active_channels: Arc<DashMap<String, Arc<LiveChannel>>>,
@@ -40,25 +41,26 @@ impl RtmpServer {
     pub async fn create(
         addr: SocketAddr,
         appname: String,
-        ctrl_rx: AsyncRx<spsc::Array<ControlMessage>>,
-        event_tx: MTx<mpsc::Array<StreamEvent>>,
-        rtmp_tag_rx: AsyncRx<mpsc::Array<StreamFlvTag>>,
+        ctrl_channel: MpscChannel<ControlMessage>,
+        event_channel: MpscChannel<StreamEvent>,
+        rtmp_forward_channel: MpscChannel<StreamFlvTag>,
         publish_queue_capacity: usize,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
 
-        let (tag_tx, tag_rx) = mpsc::bounded_blocking_async(publish_queue_capacity);
-
         Ok(Self {
             listener,
             appname,
-            ctrl_rx,
-            event_tx,
-            publish_tag_rx: tag_rx,
-            publish_tag_tx: tag_tx,
-            rtmp_tag_rx,
+            ctrl_channel,
+            event_channel,
+            publish_channel: Channel::mpsc_bounded(
+                "rtmp_publish",
+                "transport.rtmp.server.publish_channel",
+                publish_queue_capacity,
+            ),
+            rtmp_forward_channel,
             bus,
             active_channels: Arc::new(DashMap::new()),
             cancel_token,
@@ -66,6 +68,19 @@ impl RtmpServer {
     }
 
     pub async fn run(mut self) -> Result<()> {
+        let mut ctrl_stream = self
+            .ctrl_channel
+            .subscribe("transport.rtmp.server.control_rx")
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe RTMP control channel: {}", e))?;
+        let mut publish_stream = self
+            .publish_channel
+            .subscribe("transport.rtmp.server.publish_rx")
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe RTMP publish channel: {}", e))?;
+        let mut rtmp_forward_stream = self
+            .rtmp_forward_channel
+            .subscribe("transport.rtmp.server.forward_rx")
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe RTMP forward channel: {}", e))?;
+
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
@@ -73,10 +88,9 @@ impl RtmpServer {
                     break;
                 }
 
-                msg = self.ctrl_rx.recv() => {
-                    match msg {
-                        Ok(msg) => self.handle_control_message(msg).await?,
-                        Err(e) => warn!(error = %e, "Error receiving control message"),
+                msg = ctrl_stream.next() => {
+                    if let Some(msg) = msg {
+                        self.handle_control_message(msg).await?;
                     }
                 }
 
@@ -85,21 +99,17 @@ impl RtmpServer {
                     self.accept_client(socket, addr)?;
                 }
 
-                tag = self.publish_tag_rx.recv() => {
-                    match tag {
-                        Ok(tag) => {
-                            if let Err(e) = self.handle_packet_received(tag).await {
-                                debug!("Error handling received packet: {:?}", e);
-                            }
+                tag = publish_stream.next() => {
+                    if let Some(tag) = tag {
+                        if let Err(e) = self.handle_packet_received(tag).await {
+                            debug!("Error handling received packet: {:?}", e);
                         }
-                        Err(e) => debug!("Error receiving packet: {:?}", e),
                     }
                 }
 
-                tag = self.rtmp_tag_rx.recv() => {
-                    match tag {
-                        Ok(tag) => self.handle_forwarded_tag(tag).await,
-                        Err(e) => debug!("Error receiving forwarded RTMP tag: {:?}", e),
+                tag = rtmp_forward_stream.next() => {
+                    if let Some(tag) = tag {
+                        self.handle_forwarded_tag(tag).await;
                     }
                 }
             }
@@ -114,7 +124,7 @@ impl RtmpServer {
                 // Pre-allocate synchronization resources to circumvent lock contention
                 // when the crucial stream headers arrive.
                 self.bus.prepare_stream(&live_id);
-                
+
                 let session = SessionDescriptor {
                     id: live_id.clone(),
                     protocol: SessionProtocol::Rtmp,
@@ -146,8 +156,12 @@ impl RtmpServer {
         tokio::spawn(spawn_connection_handler(
             self.appname.clone(),
             socket,
-            self.event_tx.clone(),
-            self.publish_tag_tx.clone().into_async(),
+            self.event_channel
+                .clone()
+                .with_source("transport.rtmp.spawn_connection.event_tx"),
+            self.publish_channel
+                .clone()
+                .with_source("transport.rtmp.spawn_connection.tag_tx"),
             self.active_channels.clone(),
         ));
 
@@ -176,10 +190,12 @@ impl RtmpServer {
         } = packet;
 
         if let FlvTag::ScriptData(meta) = &tag {
-            self.event_tx.send(StreamEvent::Init {
-                live_id: stream_key.clone(),
-                streams: Arc::new(meta.clone()),
-            })?;
+            send_stream_init(
+                &self.event_channel,
+                stream_key.clone(),
+                Arc::new(meta.clone()),
+                "rtmp.server.handle_packet_received:init",
+            )?;
         }
 
         // TODO: Consider using a more efficient way to send packets to the pipeline
@@ -190,11 +206,13 @@ impl RtmpServer {
     }
 }
 
-fn emit_rtmp_disconnect_event(event_tx: &MTx<mpsc::Array<StreamEvent>>, stream_key: &str) {
-    if let Err(e) = event_tx.send(StreamEvent::StateChange {
-        live_id: stream_key.to_string(),
-        new_state: SessionState::Rtmp(RtmpState::Disconnected),
-    }) {
+fn emit_rtmp_disconnect_event(event_channel: &MpscChannel<StreamEvent>, stream_key: &str) {
+    if let Err(e) = send_stream_state_change(
+        event_channel,
+        stream_key.to_string(),
+        SessionState::Rtmp(RtmpState::Disconnected),
+        "rtmp.server.emit_disconnect",
+    ) {
         warn!(stream_key = %stream_key, error = %e, "Failed to emit RTMP disconnected event");
     }
 }
@@ -202,8 +220,8 @@ fn emit_rtmp_disconnect_event(event_tx: &MTx<mpsc::Array<StreamEvent>>, stream_k
 async fn spawn_connection_handler(
     appname: String,
     socket: TcpStream,
-    event_tx: MTx<mpsc::Array<StreamEvent>>,
-    tag_tx: MAsyncTx<mpsc::Array<WrappedFlvTag>>,
+    event_channel: MpscChannel<StreamEvent>,
+    tag_channel: MpscChannel<WrappedFlvTag>,
     active_channels: Arc<DashMap<String, Arc<LiveChannel>>>,
 ) {
     let cancel_token = CancellationToken::new();
@@ -220,8 +238,12 @@ async fn spawn_connection_handler(
         }
     };
 
-    let state_event_tx = event_tx.clone();
-    let builder = builder.with_appname(appname).with_event_tx(event_tx);
+    let state_event_channel = event_channel
+        .clone()
+        .with_source("transport.rtmp.connection.state_event_tx");
+    let builder = builder
+        .with_appname(appname)
+        .with_event_channel(event_channel);
     let session = match builder.build() {
         Ok(session) => session,
         Err(e) => {
@@ -249,7 +271,7 @@ async fn spawn_connection_handler(
             error!(stream_key = %stream_key, "No cancellation token found for stream key");
 
             if is_publish {
-                emit_rtmp_disconnect_event(&state_event_tx, &stream_key);
+                emit_rtmp_disconnect_event(&state_event_channel, &stream_key);
             }
             return;
         }
@@ -264,13 +286,14 @@ async fn spawn_connection_handler(
         .entry(stream_key.clone())
         .or_insert_with(|| Arc::new(LiveChannel::new()))
         .clone();
-    let (tag_receiver, cached_tags) = channel.subscribe().await;
+    let (tag_stream, cached_tags) = channel.subscribe("transport.rtmp.play.live_channel").await;
+    let tag_stream = tag_stream.with_live_id(stream_key.clone());
 
     let handler_cancel_token = cancel_token.clone();
     let builder = builder
         .with_cancel_token(cancel_token)
-        .with_tag_tx(tag_tx)
-        .with_tag_rx(tag_receiver)
+        .with_tag_channel(tag_channel)
+        .with_tag_stream(tag_stream)
         .with_cached_tags(cached_tags);
 
     match builder.build() {
@@ -279,7 +302,7 @@ async fn spawn_connection_handler(
                 warn!(error = %e, "Error handling RTMP session");
 
                 if is_publish && !handler_cancel_token.is_cancelled() {
-                    emit_rtmp_disconnect_event(&state_event_tx, &stream_key);
+                    emit_rtmp_disconnect_event(&state_event_channel, &stream_key);
                 }
             }
         }
@@ -287,7 +310,7 @@ async fn spawn_connection_handler(
             warn!(error = %e, "Failed to build RTMP session handler");
 
             if is_publish {
-                emit_rtmp_disconnect_event(&state_event_tx, &stream_key);
+                emit_rtmp_disconnect_event(&state_event_channel, &stream_key);
             }
         }
     }

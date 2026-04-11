@@ -1,7 +1,5 @@
 use anyhow::Result;
 use bytes::BytesMut;
-use crossfire::MTx;
-use crossfire::mpsc::Array;
 use regex::Regex;
 use rml_rtmp::chunk_io::{ChunkSerializer, Packet};
 use rml_rtmp::messages::RtmpMessage;
@@ -13,7 +11,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::infra::media::packet::FlvTag;
-use crate::transport::contract::message::StreamEvent;
+use crate::queue::MpscChannel;
+use crate::transport::contract::message::{StreamEvent, send_stream_state_change};
 use crate::transport::contract::state::{ConnectionStateTrait, RtmpState, SessionState};
 use crate::transport::registry::global;
 
@@ -25,7 +24,7 @@ pub struct SessionGuard {
     session: ServerSession,
     appname: String,
 
-    pub(super) event_tx: MTx<Array<StreamEvent>>,
+    pub(super) event_channel: MpscChannel<StreamEvent>,
 
     chunk_size: u32,
 }
@@ -34,7 +33,7 @@ pub(super) struct SessionGuardBuilder {
     connection: RtmpConnection,
     session: Option<ServerSession>,
     appname: Option<String>,
-    event_tx: Option<MTx<Array<StreamEvent>>>,
+    event_channel: Option<MpscChannel<StreamEvent>>,
 }
 
 impl SessionGuard {
@@ -42,13 +41,13 @@ impl SessionGuard {
         connection: RtmpConnection,
         session: ServerSession,
         appname: String,
-        event_tx: MTx<Array<StreamEvent>>,
+        event_channel: MpscChannel<StreamEvent>,
     ) -> Self {
         Self {
             connection,
             session,
             appname,
-            event_tx,
+            event_channel,
             chunk_size: 2048,
         }
     }
@@ -385,10 +384,12 @@ impl SessionGuard {
         let state = global::get_session_state(&stream_key).await;
         if state.is_none() {
             debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
-            self.event_tx.send(StreamEvent::StateChange {
-                live_id: stream_key.clone(),
-                new_state: SessionState::Rtmp(RtmpState::Disconnected),
-            })?;
+            send_stream_state_change(
+                &self.event_channel,
+                stream_key.clone(),
+                SessionState::Rtmp(RtmpState::Disconnected),
+                "rtmp.session.on_publish_requested:missing_stream",
+            )?;
             self.reject_request(request_id, "StreamNotFound", "Stream not found", ct)
                 .await?;
             anyhow::bail!(
@@ -398,10 +399,12 @@ impl SessionGuard {
         }
 
         if matches!(state, Some(SessionState::Rtmp(RtmpState::Pending))) {
-            self.event_tx.send(StreamEvent::StateChange {
-                live_id: stream_key.clone(),
-                new_state: SessionState::Rtmp(RtmpState::Connecting),
-            })?;
+            send_stream_state_change(
+                &self.event_channel,
+                stream_key.clone(),
+                SessionState::Rtmp(RtmpState::Connecting),
+                "rtmp.session.on_publish_requested:connecting",
+            )?;
 
             let res = self.accept_request(request_id, ct).await;
 
@@ -410,18 +413,22 @@ impl SessionGuard {
             } else {
                 SessionState::Rtmp(RtmpState::Disconnected)
             };
-            self.event_tx.send(StreamEvent::StateChange {
-                live_id: stream_key.clone(),
-                new_state: new_state,
-            })?;
+            send_stream_state_change(
+                &self.event_channel,
+                stream_key.clone(),
+                new_state,
+                "rtmp.session.on_publish_requested:connected_or_disconnected",
+            )?;
 
             res?;
         } else {
             debug!(stream_key = %stream_key, "Client requested to publish to a stream that is already active");
-            self.event_tx.send(StreamEvent::StateChange {
-                live_id: stream_key.clone(),
-                new_state: SessionState::Rtmp(RtmpState::Disconnected),
-            })?;
+            send_stream_state_change(
+                &self.event_channel,
+                stream_key.clone(),
+                SessionState::Rtmp(RtmpState::Disconnected),
+                "rtmp.session.on_publish_requested:already_active",
+            )?;
 
             self.reject_request(
                 request_id,
@@ -446,7 +453,7 @@ impl SessionGuardBuilder {
             connection,
             session: None,
             appname: None,
-            event_tx: None,
+            event_channel: None,
         }
     }
 
@@ -460,8 +467,8 @@ impl SessionGuardBuilder {
         self
     }
 
-    pub fn with_event_tx(mut self, event_tx: MTx<Array<StreamEvent>>) -> Self {
-        self.event_tx = Some(event_tx);
+    pub fn with_event_channel(mut self, event_channel: MpscChannel<StreamEvent>) -> Self {
+        self.event_channel = Some(event_channel);
         self
     }
 
@@ -472,7 +479,7 @@ impl SessionGuardBuilder {
         let appname = self
             .appname
             .ok_or_else(|| anyhow::anyhow!("App name is required to build SessionGuard"))?;
-        let event_tx = self.event_tx.ok_or_else(|| {
+        let event_channel = self.event_channel.ok_or_else(|| {
             anyhow::anyhow!("Event transmitter is required to build SessionGuard")
         })?;
 
@@ -480,7 +487,7 @@ impl SessionGuardBuilder {
             self.connection,
             session,
             appname,
-            event_tx,
+            event_channel,
         ))
     }
 }

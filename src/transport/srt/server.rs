@@ -1,13 +1,14 @@
 use anyhow::Result;
-use crossfire::{AsyncRx, MTx, mpsc, spsc};
 use dashmap::DashMap;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 use super::connection::SrtConnectionBuilder;
 use crate::infra::PortAllocator;
 use crate::pipeline::{PipeBus, UnifiedPacketContext};
-use crate::transport::contract::message::{ControlMessage, StreamEvent};
+use crate::queue::{Channel, MpscChannel};
+use crate::transport::contract::message::{ControlMessage, StreamEvent, send_stream_state_change};
 use crate::transport::contract::state::{
     SessionDescriptor, SessionEndpoint, SessionProtocol, SessionState, SrtState,
 };
@@ -15,42 +16,52 @@ use crate::transport::registry::global;
 use crate::transport::srt::packet::WrappedPacket;
 
 pub struct SrtServer {
-    ctrl_rx: AsyncRx<spsc::Array<ControlMessage>>,
-    event_tx: MTx<mpsc::Array<StreamEvent>>,
-    packet_rx: AsyncRx<mpsc::Array<WrappedPacket>>,
-    packet_tx: MTx<mpsc::Array<WrappedPacket>>,
+    ctrl_channel: MpscChannel<ControlMessage>,
+    event_channel: MpscChannel<StreamEvent>,
+    packet_channel: MpscChannel<WrappedPacket>,
 
     bus: PipeBus,
 
-    port_allocator: PortAllocator,
-    port_cache: DashMap<String, u16>, // live_id -> port
+    port_allocator: Arc<PortAllocator>,
+    port_cache: Arc<DashMap<String, u16>>, // live_id -> port
 
     cancel_token: CancellationToken,
 }
 
 impl SrtServer {
     pub fn new(
-        ctrl_rx: AsyncRx<spsc::Array<ControlMessage>>,
-        event_tx: MTx<mpsc::Array<StreamEvent>>,
+        ctrl_channel: MpscChannel<ControlMessage>,
+        event_channel: MpscChannel<StreamEvent>,
         packet_queue_capacity: usize,
         bus: PipeBus,
         port_allocator: PortAllocator,
         cancel_token: CancellationToken,
     ) -> Self {
-        let (packet_tx, packet_rx) = mpsc::bounded_blocking_async(packet_queue_capacity);
         Self {
-            ctrl_rx,
-            event_tx,
-            packet_rx,
-            packet_tx,
+            ctrl_channel,
+            event_channel,
+            packet_channel: Channel::mpsc_bounded(
+                "srt_packet",
+                "transport.srt.server.packet_channel",
+                packet_queue_capacity,
+            ),
             bus,
-            port_allocator,
-            port_cache: DashMap::new(),
+            port_allocator: Arc::new(port_allocator),
+            port_cache: Arc::new(DashMap::new()),
             cancel_token,
         }
     }
 
     pub async fn run(mut self) -> Result<()> {
+        let mut ctrl_stream = self
+            .ctrl_channel
+            .subscribe("transport.srt.server.control_rx")
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe SRT control channel: {}", e))?;
+        let mut packet_stream = self
+            .packet_channel
+            .subscribe("transport.srt.server.packet_rx")
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe SRT packet channel: {}", e))?;
+
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
@@ -58,21 +69,17 @@ impl SrtServer {
                     break;
                 }
 
-                msg = self.ctrl_rx.recv() => {
-                    match msg {
-                        Ok(msg) => self.handle_control_message(msg).await?,
-                        Err(e) => debug!("Error receiving control message: {:?}", e),
+                msg = ctrl_stream.next() => {
+                    if let Some(msg) = msg {
+                        self.handle_control_message(msg).await?;
                     }
                 }
 
-                packet = self.packet_rx.recv() => {
-                    match packet {
-                        Ok(packet) => {
-                            if let Err(e) = self.handle_packet_received(packet).await {
-                                debug!("Error handling received packet: {:?}", e);
-                            }
+                packet = packet_stream.next() => {
+                    if let Some(packet) = packet {
+                        if let Err(e) = self.handle_packet_received(packet).await {
+                            debug!("Error handling received packet: {:?}", e);
                         }
-                        Err(e) => debug!("Error receiving packet: {:?}", e),
                     }
                 }
             }
@@ -149,23 +156,54 @@ impl SrtServer {
             },
             state: SessionState::Srt(SrtState::Pending),
         };
-        global::register_session(session, cancel_token.clone()).await?;
+        if let Err(e) = global::register_session(session, cancel_token.clone()).await {
+            self.port_cache.remove(&live_id);
+            self.port_allocator.release_port(port);
+            return Err(e);
+        }
+
+        let cleanup_live_id = live_id.clone();
+        let cleanup_port_cache = self.port_cache.clone();
+        let cleanup_port_allocator = self.port_allocator.clone();
+        let cleanup_token = cancel_token.clone();
+
+        tokio::spawn(async move {
+            cleanup_token.cancelled().await;
+            if let Some((_, port)) = cleanup_port_cache.remove(&cleanup_live_id) {
+                cleanup_port_allocator.release_port(port);
+                debug!(
+                    live_id = %cleanup_live_id,
+                    port = port,
+                    "Released SRT port after session cancellation"
+                );
+            }
+        });
 
         let builder = SrtConnectionBuilder::new(
             port,
             live_id,
             passphrase,
-            self.packet_tx.clone(),
-            self.event_tx.clone(),
+            self.packet_channel
+                .clone()
+                .with_source("transport.srt.connection.packet_tx"),
+            self.event_channel
+                .clone()
+                .with_source("transport.srt.connection.event_tx"),
         );
 
-        spawn_connection_handler(builder, self.event_tx.clone(), cancel_token)
+        spawn_connection_handler(
+            builder,
+            self.event_channel
+                .clone()
+                .with_source("transport.srt.spawn_connection.event_tx"),
+            cancel_token,
+        )
     }
 }
 
 fn spawn_connection_handler(
     builder: SrtConnectionBuilder,
-    event_tx: MTx<mpsc::Array<StreamEvent>>,
+    event_channel: MpscChannel<StreamEvent>,
     cancel_token: CancellationToken,
 ) -> Result<()> {
     std::thread::spawn(move || {
@@ -177,10 +215,12 @@ fn spawn_connection_handler(
             Err(e) => {
                 error!(stream_id = %stream_id, "Failed to build SRT connection: {:?}", e);
 
-                if let Err(event_err) = event_tx.send(StreamEvent::StateChange {
-                    live_id: stream_id.clone(),
-                    new_state: SessionState::Srt(SrtState::Disconnected),
-                }) {
+                if let Err(event_err) = send_stream_state_change(
+                    &event_channel,
+                    stream_id.clone(),
+                    SessionState::Srt(SrtState::Disconnected),
+                    "srt.server.spawn_connection_handler:build_failed",
+                ) {
                     error!(stream_id = %stream_id, error = %event_err, "Failed to emit SRT disconnected event after build failure");
                 }
                 return;

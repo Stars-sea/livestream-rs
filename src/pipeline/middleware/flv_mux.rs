@@ -1,6 +1,4 @@
 use anyhow::Result;
-use crossfire::mpsc::Array;
-use crossfire::{AsyncRx, MTx, mpsc};
 use tokio::sync::Mutex;
 use tracing::warn;
 
@@ -9,6 +7,7 @@ use crate::infra::media::context::FlvOutputContext;
 use crate::infra::media::packet::{FlvTag, UnifiedPacket};
 use crate::infra::media::stream::StreamCollection;
 use crate::pipeline::UnifiedPacketContext;
+use crate::queue::{Channel, ChannelSendStatus, MpscChannel};
 use crate::transport::contract::message::StreamFlvTag;
 
 use std::sync::Arc;
@@ -20,7 +19,7 @@ struct ForwardState {
 pub struct FlvMuxForwardMiddleware {
     stream_id: String,
     streams: Arc<dyn StreamCollection + Send + Sync>,
-    rtmp_tag_tx: MTx<Array<StreamFlvTag>>,
+    rtmp_tag_channel: MpscChannel<StreamFlvTag>,
     state: Mutex<ForwardState>,
 }
 
@@ -29,31 +28,51 @@ impl FlvMuxForwardMiddleware {
         stream_id: String,
         streams: Arc<dyn StreamCollection + Send + Sync>,
         flv_relay_queue_capacity: usize,
-        rtmp_tag_tx: MTx<Array<StreamFlvTag>>,
+        rtmp_tag_channel: MpscChannel<StreamFlvTag>,
     ) -> Result<Self> {
-        let (flv_tx, flv_rx) = mpsc::bounded_blocking_async(flv_relay_queue_capacity);
-        let flv_ctx = FlvOutputContext::create(flv_tx, streams.as_ref())?;
-        Self::spawn_flv_relay(flv_rx, rtmp_tag_tx.clone(), stream_id.clone());
+        let flv_relay_channel = Channel::mpsc_bounded(
+            "flv_relay",
+            "pipeline.flv_mux.flv_output_tx",
+            flv_relay_queue_capacity,
+        )
+        .with_live_id(stream_id.clone());
+        let flv_ctx = FlvOutputContext::create(flv_relay_channel.clone(), streams.as_ref())?;
+        Self::spawn_flv_relay(
+            flv_relay_channel.with_source("pipeline.flv_mux.relay_channel"),
+            rtmp_tag_channel.clone(),
+            stream_id.clone(),
+        );
 
         Ok(Self {
             stream_id,
             streams,
-            rtmp_tag_tx,
+            rtmp_tag_channel,
             state: Mutex::new(ForwardState { flv_ctx }),
         })
     }
 
     fn spawn_flv_relay(
-        rx: AsyncRx<Array<FlvTag>>,
-        rtmp_tag_tx: MTx<Array<StreamFlvTag>>,
+        relay_channel: MpscChannel<FlvTag>,
+        rtmp_tag_channel: MpscChannel<StreamFlvTag>,
         stream_id: String,
     ) {
         tokio::spawn(async move {
-            while let Ok(tag) = rx.recv().await {
-                if rtmp_tag_tx
-                    .send(StreamFlvTag::new(stream_id.clone(), tag))
-                    .is_err()
-                {
+            let mut tags = match relay_channel.subscribe("pipeline.flv_mux.relay_rx") {
+                Ok(stream) => stream,
+                Err(e) => {
+                    warn!(error = %e, "Failed to subscribe FLV relay stream");
+                    return;
+                }
+            };
+            let relay_tx_channel = rtmp_tag_channel
+                .with_source("pipeline.flv_mux.relay_tx")
+                .with_live_id(stream_id.clone());
+
+            while let Some(tag) = tags.next().await {
+                if matches!(
+                    relay_tx_channel.send(StreamFlvTag::new(stream_id.clone(), tag)),
+                    ChannelSendStatus::Disconnected
+                ) {
                     break;
                 }
             }
@@ -80,11 +99,20 @@ impl MiddlewareTrait for FlvMuxForwardMiddleware {
                 packet.write(&state.flv_ctx)?;
             }
             UnifiedPacket::FlvTag(tag) => {
-                if let Err(e) = self
-                    .rtmp_tag_tx
-                    .send(StreamFlvTag::new(self.stream_id.clone(), tag.clone()))
-                {
-                    anyhow::bail!("Failed to forward FLV tag for stream {}: {}", stream_id, e);
+                let forward_channel = self
+                    .rtmp_tag_channel
+                    .clone()
+                    .with_source("pipeline.flv_mux.direct")
+                    .with_live_id(self.stream_id.clone());
+
+                if matches!(
+                    forward_channel.send(StreamFlvTag::new(self.stream_id.clone(), tag.clone())),
+                    ChannelSendStatus::Disconnected
+                ) {
+                    anyhow::bail!(
+                        "Failed to forward FLV tag for stream {}: queue disconnected",
+                        stream_id
+                    );
                 }
             }
         }
