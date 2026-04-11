@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::time::Duration;
 
 use anyhow::Result;
 use tokio::task::JoinHandle;
@@ -55,6 +56,7 @@ impl TransportServer {
         event_channel: MpscChannel<StreamEvent>,
     ) -> Result<RtmpServer> {
         let appname = self.rtmp_config.appname.clone();
+        let precreate_ttl = Duration::from_secs(self.rtmp_config.session_ttl_secs);
         let cancel_token = self.cancel_token.child_token();
         let rtmp_tag_channel = self
             .rtmp_tag_channel
@@ -65,6 +67,7 @@ impl TransportServer {
         let server = RtmpServer::create(
             addr,
             appname,
+            precreate_ttl,
             control_channel,
             event_channel,
             rtmp_tag_channel,

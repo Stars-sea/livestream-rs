@@ -15,6 +15,7 @@ mod imp {
         pub transport_queue_drops_total: Counter<u64>,
         pub transport_listener_lag_total: Counter<u64>,
         pub transport_auto_recycle_total: Counter<u64>,
+        pub transport_ttl_expirations_total: Counter<u64>,
     }
 
     pub fn get_metrics() -> &'static OTelMetrics {
@@ -60,6 +61,13 @@ mod imp {
                     .u64_counter("transport_auto_recycle_total")
                     .with_description(
                         "Automatic cleanup executions triggered by disconnected sessions",
+                    )
+                    .with_unit("{session}")
+                    .build(),
+                transport_ttl_expirations_total: meter
+                    .u64_counter("transport_ttl_expirations_total")
+                    .with_description(
+                        "Session cleanups triggered by precreate TTL expiration",
                     )
                     .with_unit("{session}")
                     .build(),
@@ -116,6 +124,16 @@ mod imp {
                 ],
             );
         }
+
+        pub fn record_ttl_expiration(&self, protocol: &'static str, reason: &'static str) {
+            self.transport_ttl_expirations_total.add(
+                1,
+                &[
+                    KeyValue::new("protocol", protocol),
+                    KeyValue::new("reason", reason),
+                ],
+            );
+        }
     }
 }
 
@@ -144,6 +162,8 @@ mod imp {
         pub fn record_listener_lag(&self, _listener: &'static str, _skipped: u64) {}
 
         pub fn record_auto_recycle(&self, _protocol: &'static str, _cause: &'static str) {}
+
+        pub fn record_ttl_expiration(&self, _protocol: &'static str, _reason: &'static str) {}
     }
 }
 

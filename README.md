@@ -33,6 +33,7 @@ export PERSISTENCE_CACHEDIR=
 export GRPC_PORT=50051
 export RTMP_PORT=1935
 export RTMP_APPNAME=lives
+export RTMP_SESSION_TTL_SECS=30
 export MINIO_URI=http://localhost:9000
 export MINIO_ACCESSKEY=minioadmin
 export MINIO_SECRETKEY=miniokey
@@ -61,8 +62,12 @@ Configuration source: `config.toml` + environment variables (env overrides file)
 - `grpc.port` / `GRPC_PORT`
 - `rtmp.port` / `RTMP_PORT`
 - `rtmp.appname` / `RTMP_APPNAME`
+- `rtmp.session_ttl_secs` / `RTMP_SESSION_TTL_SECS`
 - `queue.*` / `QUEUE_*`
 - `minio.uri/accesskey/secretkey/bucket` / `MINIO_*`
+
+`rtmp.session_ttl_secs` 默认值为 30 秒，允许范围为 1..=86400 秒。  
+`rtmp.session_ttl_secs` defaults to 30 seconds, with a valid range of 1..=86400 seconds.
 
 最小必需项：`MINIO_*` 必填，否则启动失败。  
 Minimum required: `MINIO_*` must be provided, otherwise startup fails.

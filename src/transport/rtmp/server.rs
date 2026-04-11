@@ -13,6 +13,7 @@ use super::channel::LiveChannel;
 use super::connection::RtmpConnection;
 use crate::pipeline::PipeBus;
 use crate::queue::MpscChannel;
+use crate::telemetry::metrics;
 use crate::transport::contract::message::{
     ControlMessage, StreamEvent, StreamFlvTag, send_stream_state_change,
 };
@@ -25,6 +26,7 @@ use crate::transport::rtmp::handler::HandlerBuilder;
 pub struct RtmpServer {
     listener: TcpListener,
     appname: String,
+    precreate_ttl: Duration,
 
     ctrl_channel: MpscChannel<ControlMessage>,
     event_channel: MpscChannel<StreamEvent>,
@@ -40,6 +42,7 @@ impl RtmpServer {
     pub async fn create(
         addr: SocketAddr,
         appname: String,
+        precreate_ttl: Duration,
         ctrl_channel: MpscChannel<ControlMessage>,
         event_channel: MpscChannel<StreamEvent>,
         rtmp_forward_channel: MpscChannel<StreamFlvTag>,
@@ -51,6 +54,7 @@ impl RtmpServer {
         Ok(Self {
             listener,
             appname,
+            precreate_ttl,
             ctrl_channel,
             event_channel,
             rtmp_forward_channel,
@@ -130,6 +134,8 @@ impl RtmpServer {
                 // when the crucial stream headers arrive.
                 self.bus.prepare_stream(&live_id);
 
+                let session_token = self.cancel_token.child_token();
+
                 let session = SessionDescriptor {
                     id: live_id.clone(),
                     protocol: SessionProtocol::Rtmp,
@@ -139,7 +145,8 @@ impl RtmpServer {
                     },
                     state: SessionState::Rtmp(RtmpState::Pending),
                 };
-                global::register_session(session, self.cancel_token.child_token()).await?;
+                global::register_session(session, session_token.clone()).await?;
+                self.spawn_precreate_session_ttl(live_id, session_token);
 
                 Ok(())
             }
@@ -152,6 +159,31 @@ impl RtmpServer {
                 Ok(())
             }
         }
+    }
+
+    fn spawn_precreate_session_ttl(&self, live_id: String, session_token: CancellationToken) {
+        let ttl = self.precreate_ttl;
+
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = session_token.cancelled() => {
+                    return;
+                }
+                _ = sleep(ttl) => {}
+            }
+
+            let state = global::get_session_state(&live_id).await;
+            if matches!(state, Some(SessionState::Rtmp(RtmpState::Pending))) {
+                session_token.cancel();
+                metrics::get_metrics().record_ttl_expiration("rtmp", "precreate_pending_timeout");
+
+                warn!(
+                    live_id = %live_id,
+                    ttl_secs = ttl.as_secs(),
+                    "Expired pending RTMP precreated session by TTL"
+                );
+            }
+        });
     }
 
     fn accept_client(&self, socket: TcpStream, addr: SocketAddr) {

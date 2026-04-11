@@ -56,6 +56,10 @@ pub struct RtmpConfig {
     /// RTMP application name (e.g., "live" for rtmp://host/live/streamkey)
     #[serde(default = "default_rtmp_appname")]
     pub appname: String,
+
+    /// TTL in seconds for precreated RTMP sessions that never get published.
+    #[serde(default = "default_rtmp_session_ttl_secs")]
+    pub session_ttl_secs: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -128,6 +132,10 @@ fn default_rtmp_appname() -> String {
     "lives".to_string()
 }
 
+fn default_rtmp_session_ttl_secs() -> u64 {
+    30
+}
+
 fn default_rtmp_forward_queue_capacity() -> usize {
     8192
 }
@@ -197,6 +205,7 @@ impl Default for RtmpConfig {
         Self {
             port: default_rtmp_port(),
             appname: default_rtmp_appname(),
+            session_ttl_secs: default_rtmp_session_ttl_secs(),
         }
     }
 }
@@ -252,6 +261,15 @@ impl AppConfig {
 
         if self.persistence.duration <= 0 {
             anyhow::bail!("Segment duration must be positive");
+        }
+
+        const MAX_RTMP_SESSION_TTL_SECS: u64 = 86_400;
+        if self.rtmp.session_ttl_secs == 0 || self.rtmp.session_ttl_secs > MAX_RTMP_SESSION_TTL_SECS {
+            anyhow::bail!(
+                "RTMP session TTL must be in 1..={} seconds, got {}",
+                MAX_RTMP_SESSION_TTL_SECS,
+                self.rtmp.session_ttl_secs
+            );
         }
 
         let cache_dir = self.persistence.cachedir.trim();
