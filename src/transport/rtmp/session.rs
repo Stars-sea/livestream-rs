@@ -422,13 +422,7 @@ impl SessionGuard {
 
             res?;
         } else {
-            debug!(stream_key = %stream_key, "Client requested to publish to a stream that is already active");
-            send_stream_state_change(
-                &self.event_channel,
-                stream_key.clone(),
-                SessionState::Rtmp(RtmpState::Disconnected),
-                "rtmp.session.on_publish_requested:already_active",
-            )?;
+            debug!(stream_key = %stream_key, current_state = ?state, "Client requested to publish to a stream that is not publishable");
 
             self.reject_request(
                 request_id,

@@ -107,7 +107,8 @@ impl HandlerTrait for PublishHandler {
             }
             ServerSessionEvent::StreamMetadataChanged { metadata, .. } => {
                 let flv_tag = FlvTag::script_data(metadata);
-                self.send_publish_tag(flv_tag, "rtmp.publish.metadata").await?;
+                self.send_publish_tag(flv_tag, "rtmp.publish.metadata")
+                    .await?;
             }
 
             _ => {

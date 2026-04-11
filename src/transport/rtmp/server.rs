@@ -1,9 +1,11 @@
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
 use dashmap::DashMap;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
@@ -82,8 +84,7 @@ impl RtmpServer {
                 }
 
                 accept_res = self.listener.accept() => {
-                    let (socket, addr) = accept_res?;
-                    self.accept_client(socket, addr)?;
+                    self.handle_accept_result(accept_res).await;
                 }
 
                 tag = rtmp_forward_stream.next() => {
@@ -95,6 +96,31 @@ impl RtmpServer {
         }
 
         Ok(())
+    }
+
+    async fn handle_accept_result(&self, accept_res: std::io::Result<(TcpStream, SocketAddr)>) {
+        fn is_retryable_accept_error(err: &std::io::Error) -> bool {
+            matches!(
+                err.kind(),
+                ErrorKind::Interrupted
+                    | ErrorKind::WouldBlock
+                    | ErrorKind::TimedOut
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::ConnectionReset
+            )
+        }
+
+        match accept_res {
+            Ok((socket, addr)) => self.accept_client(socket, addr),
+            Err(err) if is_retryable_accept_error(&err) => {
+                warn!(error = %err, kind = ?err.kind(), "Retryable RTMP accept error, server continues running");
+                sleep(Duration::from_millis(20)).await;
+            }
+            Err(err) => {
+                error!(error = %err, kind = ?err.kind(), "Non-retryable RTMP accept error, server stays alive with backoff");
+                sleep(Duration::from_millis(200)).await;
+            }
+        }
     }
 
     async fn handle_control_message(&mut self, msg: ControlMessage) -> Result<()> {
@@ -128,7 +154,7 @@ impl RtmpServer {
         }
     }
 
-    fn accept_client(&self, socket: TcpStream, addr: SocketAddr) -> Result<()> {
+    fn accept_client(&self, socket: TcpStream, addr: SocketAddr) {
         debug!(client_addr = %addr, "Accepted new RTMP connection");
 
         // Handle the connection in a separate task
@@ -141,8 +167,6 @@ impl RtmpServer {
             self.bus.clone(),
             self.active_channels.clone(),
         ));
-
-        Ok(())
     }
 
     async fn handle_forwarded_tag(&mut self, packet: StreamFlvTag) {
