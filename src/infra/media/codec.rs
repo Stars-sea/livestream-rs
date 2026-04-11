@@ -44,6 +44,9 @@ where
 
     fn profile_name(&self) -> String {
         let name = unsafe { avcodec_profile_name(self.codec_id(), (*self.ptr()).profile) };
+        if name.is_null() {
+            return "unknown".to_string();
+        }
         unsafe { CStr::from_ptr(name) }
             .to_string_lossy()
             .to_string()
@@ -51,6 +54,9 @@ where
 
     fn codec_name(&self) -> String {
         let name = unsafe { avcodec_get_name(self.codec_id()) };
+        if name.is_null() {
+            return "unknown".to_string();
+        }
         unsafe { CStr::from_ptr(name) }
             .to_string_lossy()
             .to_string()
