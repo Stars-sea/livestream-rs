@@ -68,7 +68,6 @@ impl TransportServer {
             control_channel,
             event_channel,
             rtmp_tag_channel,
-            self.queue_config.rtmppublish,
             self.bus.clone(),
             cancel_token,
         )
@@ -94,7 +93,6 @@ impl TransportServer {
         let server = SrtServer::new(
             control_channel,
             event_channel,
-            self.queue_config.srtpacket,
             self.bus.clone(),
             port_allocator,
             cancel_token,

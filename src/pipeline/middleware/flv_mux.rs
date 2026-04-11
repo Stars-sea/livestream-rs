@@ -19,7 +19,7 @@ struct ForwardState {
 pub struct FlvMuxForwardMiddleware {
     stream_id: String,
     streams: Arc<dyn StreamCollection + Send + Sync>,
-    rtmp_tag_channel: MpscChannel<StreamFlvTag>,
+    direct_forward_channel: MpscChannel<StreamFlvTag>,
     state: Mutex<ForwardState>,
 }
 
@@ -30,6 +30,11 @@ impl FlvMuxForwardMiddleware {
         flv_relay_queue_capacity: usize,
         rtmp_tag_channel: MpscChannel<StreamFlvTag>,
     ) -> Result<Self> {
+        let direct_forward_channel = rtmp_tag_channel
+            .clone()
+            .with_source("pipeline.flv_mux.direct")
+            .with_live_id(stream_id.clone());
+
         let flv_relay_channel = Channel::mpsc_bounded(
             "flv_relay",
             "pipeline.flv_mux.flv_output_tx",
@@ -46,7 +51,7 @@ impl FlvMuxForwardMiddleware {
         Ok(Self {
             stream_id,
             streams,
-            rtmp_tag_channel,
+            direct_forward_channel,
             state: Mutex::new(ForwardState { flv_ctx }),
         })
     }
@@ -99,14 +104,9 @@ impl MiddlewareTrait for FlvMuxForwardMiddleware {
                 packet.write(&state.flv_ctx)?;
             }
             UnifiedPacket::FlvTag(tag) => {
-                let forward_channel = self
-                    .rtmp_tag_channel
-                    .clone()
-                    .with_source("pipeline.flv_mux.direct")
-                    .with_live_id(self.stream_id.clone());
-
                 if matches!(
-                    forward_channel.send(StreamFlvTag::new(self.stream_id.clone(), tag.clone())),
+                    self.direct_forward_channel
+                        .send(StreamFlvTag::new(self.stream_id.clone(), tag.clone())),
                     ChannelSendStatus::Disconnected
                 ) {
                     anyhow::bail!(

@@ -9,18 +9,16 @@ use tracing::{debug, error, warn};
 
 use super::channel::LiveChannel;
 use super::connection::RtmpConnection;
-use crate::infra::media::packet::FlvTag;
-use crate::pipeline::{PipeBus, UnifiedPacketContext};
-use crate::queue::{Channel, MpscChannel};
+use crate::pipeline::PipeBus;
+use crate::queue::MpscChannel;
 use crate::transport::contract::message::{
-    ControlMessage, StreamEvent, StreamFlvTag, send_stream_init, send_stream_state_change,
+    ControlMessage, StreamEvent, StreamFlvTag, send_stream_state_change,
 };
 use crate::transport::contract::state::{
     RtmpState, SessionDescriptor, SessionEndpoint, SessionProtocol, SessionState,
 };
 use crate::transport::registry::global;
 use crate::transport::rtmp::handler::HandlerBuilder;
-use crate::transport::rtmp::tag::WrappedFlvTag;
 
 pub struct RtmpServer {
     listener: TcpListener,
@@ -28,7 +26,6 @@ pub struct RtmpServer {
 
     ctrl_channel: MpscChannel<ControlMessage>,
     event_channel: MpscChannel<StreamEvent>,
-    publish_channel: MpscChannel<WrappedFlvTag>,
     rtmp_forward_channel: MpscChannel<StreamFlvTag>,
 
     bus: PipeBus,
@@ -44,7 +41,6 @@ impl RtmpServer {
         ctrl_channel: MpscChannel<ControlMessage>,
         event_channel: MpscChannel<StreamEvent>,
         rtmp_forward_channel: MpscChannel<StreamFlvTag>,
-        publish_queue_capacity: usize,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
@@ -55,11 +51,6 @@ impl RtmpServer {
             appname,
             ctrl_channel,
             event_channel,
-            publish_channel: Channel::mpsc_bounded(
-                "rtmp_publish",
-                "transport.rtmp.server.publish_channel",
-                publish_queue_capacity,
-            ),
             rtmp_forward_channel,
             bus,
             active_channels: Arc::new(DashMap::new()),
@@ -72,10 +63,6 @@ impl RtmpServer {
             .ctrl_channel
             .subscribe("transport.rtmp.server.control_rx")
             .map_err(|e| anyhow::anyhow!("Failed to subscribe RTMP control channel: {}", e))?;
-        let mut publish_stream = self
-            .publish_channel
-            .subscribe("transport.rtmp.server.publish_rx")
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe RTMP publish channel: {}", e))?;
         let mut rtmp_forward_stream = self
             .rtmp_forward_channel
             .subscribe("transport.rtmp.server.forward_rx")
@@ -97,14 +84,6 @@ impl RtmpServer {
                 accept_res = self.listener.accept() => {
                     let (socket, addr) = accept_res?;
                     self.accept_client(socket, addr)?;
-                }
-
-                tag = publish_stream.next() => {
-                    if let Some(tag) = tag {
-                        if let Err(e) = self.handle_packet_received(tag).await {
-                            debug!("Error handling received packet: {:?}", e);
-                        }
-                    }
                 }
 
                 tag = rtmp_forward_stream.next() => {
@@ -159,9 +138,7 @@ impl RtmpServer {
             self.event_channel
                 .clone()
                 .with_source("transport.rtmp.spawn_connection.event_tx"),
-            self.publish_channel
-                .clone()
-                .with_source("transport.rtmp.spawn_connection.tag_tx"),
+            self.bus.clone(),
             self.active_channels.clone(),
         ));
 
@@ -181,29 +158,6 @@ impl RtmpServer {
             debug!(stream_id = %stream_id, "No active RTMP play subscribers");
         }
     }
-
-    async fn handle_packet_received(&mut self, packet: WrappedFlvTag) -> Result<()> {
-        let WrappedFlvTag {
-            stream_key,
-            tag,
-            cancel_token,
-        } = packet;
-
-        if let FlvTag::ScriptData(meta) = &tag {
-            send_stream_init(
-                &self.event_channel,
-                stream_key.clone(),
-                Arc::new(meta.clone()),
-                "rtmp.server.handle_packet_received:init",
-            )?;
-        }
-
-        // TODO: Consider using a more efficient way to send packets to the pipeline
-        // TODO: Consider how to handle ScriptData properly
-        let context = UnifiedPacketContext::new(stream_key, tag.into(), cancel_token);
-        self.bus.send_packet(context).await?;
-        Ok(())
-    }
 }
 
 fn emit_rtmp_disconnect_event(event_channel: &MpscChannel<StreamEvent>, stream_key: &str) {
@@ -221,7 +175,7 @@ async fn spawn_connection_handler(
     appname: String,
     socket: TcpStream,
     event_channel: MpscChannel<StreamEvent>,
-    tag_channel: MpscChannel<WrappedFlvTag>,
+    bus: PipeBus,
     active_channels: Arc<DashMap<String, Arc<LiveChannel>>>,
 ) {
     let cancel_token = CancellationToken::new();
@@ -292,7 +246,7 @@ async fn spawn_connection_handler(
     let handler_cancel_token = cancel_token.clone();
     let builder = builder
         .with_cancel_token(cancel_token)
-        .with_tag_channel(tag_channel)
+        .with_pipe_bus(bus)
         .with_tag_stream(tag_stream)
         .with_cached_tags(cached_tags);
 

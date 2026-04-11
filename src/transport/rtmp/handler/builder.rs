@@ -4,9 +4,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Handler, PlayHandler, PublishHandler};
 use crate::infra::media::packet::FlvTag;
-use crate::queue::{ChannelStream, MpscChannel};
+use crate::pipeline::PipeBus;
+use crate::queue::ChannelStream;
 use crate::transport::rtmp::session::SessionGuard;
-use crate::transport::rtmp::tag::WrappedFlvTag;
 
 pub enum HandlerBuilder {
     Play {
@@ -22,7 +22,7 @@ pub enum HandlerBuilder {
         session: Option<SessionGuard>,
         appname: Option<String>,
         stream_key: String,
-        tag_channel: Option<MpscChannel<WrappedFlvTag>>,
+        bus: Option<PipeBus>,
         cancel_token: Option<CancellationToken>,
     },
 }
@@ -45,7 +45,7 @@ impl HandlerBuilder {
             session: None,
             appname: None,
             stream_key,
-            tag_channel: None,
+            bus: None,
             cancel_token: None,
         }
     }
@@ -93,12 +93,9 @@ impl HandlerBuilder {
         self
     }
 
-    pub fn with_tag_channel(mut self, tag_channel: MpscChannel<WrappedFlvTag>) -> Self {
-        if let HandlerBuilder::Publish {
-            tag_channel: tx, ..
-        } = &mut self
-        {
-            *tx = Some(tag_channel);
+    pub fn with_pipe_bus(mut self, bus: PipeBus) -> Self {
+        if let HandlerBuilder::Publish { bus: b, .. } = &mut self {
+            *b = Some(bus);
         }
         self
     }
@@ -150,7 +147,7 @@ impl HandlerBuilder {
                 session,
                 appname,
                 stream_key,
-                tag_channel,
+                bus,
                 cancel_token,
             } => {
                 let appname = appname.ok_or_else(|| {
@@ -159,8 +156,8 @@ impl HandlerBuilder {
                 let session = session.ok_or_else(|| {
                     anyhow::anyhow!("Session is required to build PublishHandler")
                 })?;
-                let tag_channel = tag_channel.ok_or_else(|| {
-                    anyhow::anyhow!("FLV tag sender is required to build PublishHandler")
+                let bus = bus.ok_or_else(|| {
+                    anyhow::anyhow!("Pipe bus is required to build PublishHandler")
                 })?;
                 let cancel_token = cancel_token.ok_or_else(|| {
                     anyhow::anyhow!("Cancellation token is required to build PublishHandler")
@@ -169,7 +166,7 @@ impl HandlerBuilder {
                     session,
                     appname,
                     stream_key,
-                    tag_channel,
+                    bus,
                     cancel_token,
                 )))
             }

@@ -56,7 +56,16 @@ pub fn send_stream_event_nonblocking(
         .clone()
         .with_source(source)
         .with_live_id(live_id);
-    map_stream_event_send_status(channel.send(event), channel.source())
+
+    match channel.send(event) {
+        ChannelSendStatus::Sent => Ok(()),
+        ChannelSendStatus::Full => {
+            anyhow::bail!("Transport event queue full at {}", source)
+        }
+        ChannelSendStatus::Disconnected => {
+            anyhow::bail!("Transport event queue disconnected at {}", source)
+        }
+    }
 }
 
 pub fn send_stream_state_change(
@@ -89,18 +98,6 @@ pub fn send_stream_init(
         },
         source,
     )
-}
-
-fn map_stream_event_send_status(status: ChannelSendStatus, source: &'static str) -> Result<()> {
-    match status {
-        ChannelSendStatus::Sent => Ok(()),
-        ChannelSendStatus::Full => {
-            anyhow::bail!("Transport event queue full at {}", source)
-        }
-        ChannelSendStatus::Disconnected => {
-            anyhow::bail!("Transport event queue disconnected at {}", source)
-        }
-    }
 }
 
 #[derive(Clone, Debug)]

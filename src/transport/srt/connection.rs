@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use retry::OperationResult;
 use retry::delay::{Exponential, jitter};
+use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -10,12 +11,12 @@ use crate::infra::media::context::InputContext;
 use crate::infra::media::options::SrtInputStreamOptions;
 use crate::infra::media::packet::{Packet, PacketReadResult};
 use crate::infra::media::stream::StaticStreamCollection;
-use crate::queue::{ChannelSendStatus, MpscChannel};
+use crate::pipeline::{PipeBus, UnifiedPacketContext};
+use crate::queue::MpscChannel;
 use crate::transport::contract::message::{
     StreamEvent, send_stream_init, send_stream_state_change,
 };
 use crate::transport::contract::state::{SessionState, SrtState};
-use crate::transport::srt::packet::WrappedPacket;
 
 pub struct SrtConnection {
     stream_id: String,
@@ -23,7 +24,8 @@ pub struct SrtConnection {
     av_ctx: InputContext,
 
     event_channel: MpscChannel<StreamEvent>,
-    packet_channel: MpscChannel<WrappedPacket>,
+    bus: PipeBus,
+    runtime_handle: Handle,
 
     cancel_token: CancellationToken,
 }
@@ -34,8 +36,9 @@ pub struct SrtConnectionBuilder {
     stream_id: String,
     passphrase: Option<String>,
 
-    packet_channel: MpscChannel<WrappedPacket>,
     event_channel: MpscChannel<StreamEvent>,
+    bus: PipeBus,
+    runtime_handle: Handle,
 }
 
 impl SrtConnection {
@@ -43,14 +46,16 @@ impl SrtConnection {
         stream_id: String,
         av_ctx: InputContext,
         event_channel: MpscChannel<StreamEvent>,
-        packet_channel: MpscChannel<WrappedPacket>,
+        bus: PipeBus,
+        runtime_handle: Handle,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             stream_id,
             event_channel,
             av_ctx,
-            packet_channel,
+            bus,
+            runtime_handle,
             cancel_token,
         }
     }
@@ -87,22 +92,14 @@ impl SrtConnection {
             self.emit_state_change(*state)?;
         }
 
-        let packet_channel = self
-            .packet_channel
-            .clone()
-            .with_source("srt.connection.handle_data_packet")
-            .with_live_id(self.stream_id.clone());
-
-        if matches!(
-            packet_channel.send(WrappedPacket::new(
-                self.stream_id.clone(),
-                packet,
-                self.cancel_token.clone(),
-            )),
-            ChannelSendStatus::Disconnected
-        ) {
-            anyhow::bail!("SRT packet queue disconnected");
-        }
+        let context = UnifiedPacketContext::new(
+            self.stream_id.clone(),
+            packet.into(),
+            self.cancel_token.clone(),
+        );
+        self.runtime_handle
+            .block_on(self.bus.send_packet(context))
+            .map_err(|e| anyhow::anyhow!("Failed to send SRT packet to pipeline: {}", e))?;
 
         Ok(())
     }
@@ -172,15 +169,17 @@ impl SrtConnectionBuilder {
         port: u16,
         stream_id: String,
         passphrase: Option<String>,
-        packet_channel: MpscChannel<WrappedPacket>,
         event_channel: MpscChannel<StreamEvent>,
+        bus: PipeBus,
+        runtime_handle: Handle,
     ) -> Self {
         Self {
             port,
             stream_id,
             passphrase,
-            packet_channel,
             event_channel,
+            bus,
+            runtime_handle,
         }
     }
 
@@ -197,7 +196,8 @@ impl SrtConnectionBuilder {
             self.stream_id,
             av_ctx,
             self.event_channel,
-            self.packet_channel,
+            self.bus,
+            self.runtime_handle,
             cancel_token,
         ))
     }

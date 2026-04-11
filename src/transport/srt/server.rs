@@ -1,24 +1,23 @@
 use anyhow::Result;
 use dashmap::DashMap;
 use std::sync::Arc;
+use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 use super::connection::SrtConnectionBuilder;
 use crate::infra::PortAllocator;
-use crate::pipeline::{PipeBus, UnifiedPacketContext};
-use crate::queue::{Channel, MpscChannel};
+use crate::pipeline::PipeBus;
+use crate::queue::MpscChannel;
 use crate::transport::contract::message::{ControlMessage, StreamEvent, send_stream_state_change};
 use crate::transport::contract::state::{
     SessionDescriptor, SessionEndpoint, SessionProtocol, SessionState, SrtState,
 };
 use crate::transport::registry::global;
-use crate::transport::srt::packet::WrappedPacket;
 
 pub struct SrtServer {
     ctrl_channel: MpscChannel<ControlMessage>,
     event_channel: MpscChannel<StreamEvent>,
-    packet_channel: MpscChannel<WrappedPacket>,
 
     bus: PipeBus,
 
@@ -32,7 +31,6 @@ impl SrtServer {
     pub fn new(
         ctrl_channel: MpscChannel<ControlMessage>,
         event_channel: MpscChannel<StreamEvent>,
-        packet_queue_capacity: usize,
         bus: PipeBus,
         port_allocator: PortAllocator,
         cancel_token: CancellationToken,
@@ -40,11 +38,6 @@ impl SrtServer {
         Self {
             ctrl_channel,
             event_channel,
-            packet_channel: Channel::mpsc_bounded(
-                "srt_packet",
-                "transport.srt.server.packet_channel",
-                packet_queue_capacity,
-            ),
             bus,
             port_allocator: Arc::new(port_allocator),
             port_cache: Arc::new(DashMap::new()),
@@ -57,10 +50,6 @@ impl SrtServer {
             .ctrl_channel
             .subscribe("transport.srt.server.control_rx")
             .map_err(|e| anyhow::anyhow!("Failed to subscribe SRT control channel: {}", e))?;
-        let mut packet_stream = self
-            .packet_channel
-            .subscribe("transport.srt.server.packet_rx")
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe SRT packet channel: {}", e))?;
 
         loop {
             tokio::select! {
@@ -72,14 +61,6 @@ impl SrtServer {
                 msg = ctrl_stream.next() => {
                     if let Some(msg) = msg {
                         self.handle_control_message(msg).await?;
-                    }
-                }
-
-                packet = packet_stream.next() => {
-                    if let Some(packet) = packet {
-                        if let Err(e) = self.handle_packet_received(packet).await {
-                            debug!("Error handling received packet: {:?}", e);
-                        }
                     }
                 }
             }
@@ -116,19 +97,6 @@ impl SrtServer {
                 Ok(())
             }
         }
-    }
-
-    async fn handle_packet_received(&mut self, packet: WrappedPacket) -> Result<()> {
-        let WrappedPacket {
-            stream_id,
-            packet: payload,
-            cancel_token,
-        } = packet;
-
-        let context = UnifiedPacketContext::new(stream_id, payload.into(), cancel_token);
-        self.bus.send_packet(context).await?;
-
-        Ok(())
     }
 
     async fn spawn_connection_handler(
@@ -183,12 +151,11 @@ impl SrtServer {
             port,
             live_id,
             passphrase,
-            self.packet_channel
-                .clone()
-                .with_source("transport.srt.connection.packet_tx"),
             self.event_channel
                 .clone()
                 .with_source("transport.srt.connection.event_tx"),
+            self.bus.clone(),
+            Handle::current(),
         );
 
         spawn_connection_handler(

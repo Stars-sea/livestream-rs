@@ -80,14 +80,6 @@ pub struct QueueConfig {
     #[serde(default = "default_flv_relay_queue_capacity")]
     pub flvrelay: usize,
 
-    /// Capacity for RTMP publish tag queue
-    #[serde(default = "default_rtmp_publish_queue_capacity")]
-    pub rtmppublish: usize,
-
-    /// Capacity for SRT packet queue
-    #[serde(default = "default_srt_packet_queue_capacity")]
-    pub srtpacket: usize,
-
     /// Capacity for transport control queues (RTMP/SRT)
     #[serde(default = "default_control_queue_capacity")]
     pub control: usize,
@@ -142,14 +134,6 @@ fn default_rtmp_forward_queue_capacity() -> usize {
 
 fn default_flv_relay_queue_capacity() -> usize {
     2048
-}
-
-fn default_rtmp_publish_queue_capacity() -> usize {
-    4096
-}
-
-fn default_srt_packet_queue_capacity() -> usize {
-    4096
 }
 
 fn default_control_queue_capacity() -> usize {
@@ -231,8 +215,6 @@ impl Default for QueueConfig {
         Self {
             rtmpforward: default_rtmp_forward_queue_capacity(),
             flvrelay: default_flv_relay_queue_capacity(),
-            rtmppublish: default_rtmp_publish_queue_capacity(),
-            srtpacket: default_srt_packet_queue_capacity(),
             control: default_control_queue_capacity(),
             event: default_event_queue_capacity(),
         }
@@ -279,8 +261,6 @@ impl AppConfig {
 
         if self.queue.rtmpforward == 0
             || self.queue.flvrelay == 0
-            || self.queue.rtmppublish == 0
-            || self.queue.srtpacket == 0
             || self.queue.control == 0
             || self.queue.event == 0
         {
