@@ -235,6 +235,26 @@ impl SessionGuard {
         Ok(())
     }
 
+    async fn emit_state_change_with_fallback(
+        &self,
+        stream_key: &str,
+        new_state: SessionState,
+        source: &'static str,
+    ) -> Result<()> {
+        if let Err(e) = send_stream_state_change(
+            &self.event_channel,
+            stream_key.to_string(),
+            new_state,
+            source,
+        ) {
+            warn!(stream_key = %stream_key, error = %e, source = source, "Failed to emit RTMP state change; falling back to direct registry update");
+
+            global::update_session_state(stream_key, new_state).await?;
+        }
+
+        Ok(())
+    }
+
     async fn handle_connect_event(
         &mut self,
         event: ServerSessionEvent,
@@ -384,12 +404,14 @@ impl SessionGuard {
         let state = global::get_session_state(&stream_key).await;
         if state.is_none() {
             debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
-            send_stream_state_change(
+            if let Err(e) = send_stream_state_change(
                 &self.event_channel,
                 stream_key.clone(),
                 SessionState::Rtmp(RtmpState::Disconnected),
                 "rtmp.session.on_publish_requested:missing_stream",
-            )?;
+            ) {
+                warn!(stream_key = %stream_key, error = %e, "Failed to emit disconnected for missing RTMP stream");
+            }
             self.reject_request(request_id, "StreamNotFound", "Stream not found", ct)
                 .await?;
             anyhow::bail!(
@@ -399,12 +421,12 @@ impl SessionGuard {
         }
 
         if matches!(state, Some(SessionState::Rtmp(RtmpState::Pending))) {
-            send_stream_state_change(
-                &self.event_channel,
-                stream_key.clone(),
+            self.emit_state_change_with_fallback(
+                &stream_key,
                 SessionState::Rtmp(RtmpState::Connecting),
                 "rtmp.session.on_publish_requested:connecting",
-            )?;
+            )
+            .await?;
 
             let res = self.accept_request(request_id, ct).await;
 
@@ -413,12 +435,12 @@ impl SessionGuard {
             } else {
                 SessionState::Rtmp(RtmpState::Disconnected)
             };
-            send_stream_state_change(
-                &self.event_channel,
-                stream_key.clone(),
+            self.emit_state_change_with_fallback(
+                &stream_key,
                 new_state,
                 "rtmp.session.on_publish_requested:connected_or_disconnected",
-            )?;
+            )
+            .await?;
 
             res?;
         } else {

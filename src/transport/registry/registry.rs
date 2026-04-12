@@ -3,9 +3,12 @@ use std::sync::Arc;
 use anyhow::Result;
 use dashmap::{DashMap, Entry};
 use tokio::sync::{OnceCell, RwLock};
+use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
 
 use crate::transport::contract::state::*;
+
+const SESSION_REMOVAL_GRACE_PERIOD: Duration = Duration::from_millis(200);
 
 static REGISTRY: OnceCell<Arc<ConnectionRegistry>> = OnceCell::const_new();
 
@@ -42,13 +45,26 @@ impl ConnectionRegistry {
                 anyhow::bail!("Stream key {} is already in use", stream_key);
             }
             Entry::Vacant(entry) => {
-                entry.insert((session, ct.clone()));
+                entry.insert((session.clone(), ct.clone()));
             }
         }
 
         let connections = self.connections.clone();
+        let session_for_cleanup = session.clone();
         tokio::spawn(async move {
             ct.cancelled().await;
+
+            {
+                let mut descriptor = session_for_cleanup.write().await;
+                descriptor.state = match descriptor.protocol {
+                    SessionProtocol::Rtmp => SessionState::Rtmp(RtmpState::Disconnected),
+                    SessionProtocol::Srt => SessionState::Srt(SrtState::Disconnected),
+                };
+            }
+
+            // Keep a short tombstone window so polling-based watchers can observe
+            // the final disconnected state before the session entry disappears.
+            sleep(SESSION_REMOVAL_GRACE_PERIOD).await;
             connections.remove(&stream_key);
         });
 

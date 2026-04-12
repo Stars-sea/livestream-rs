@@ -3,12 +3,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use rml_rtmp::sessions::ServerSessionEvent;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::infra::media::packet::FlvTag;
 use crate::pipeline::{PipeBus, UnifiedPacketContext};
 use crate::transport::contract::message::{send_stream_init, send_stream_state_change};
 use crate::transport::contract::state::{RtmpState, SessionState};
+use crate::transport::registry::global;
 use crate::transport::rtmp::handler::HandlerTrait;
 use crate::transport::rtmp::session::SessionGuard;
 
@@ -40,15 +41,29 @@ impl PublishHandler {
         }
     }
 
-    fn publish_finished(&mut self) -> Result<()> {
+    async fn publish_finished(&mut self) -> Result<()> {
         debug!("Publish finished for stream key: {}", self.stream_key);
 
-        send_stream_state_change(
+        let state_change_result = send_stream_state_change(
             &self.session.event_channel,
             self.stream_key.clone(),
             SessionState::Rtmp(RtmpState::Disconnected),
             "rtmp.publish.publish_finished",
-        )?;
+        );
+
+        if let Err(e) = state_change_result {
+            warn!(stream_key = %self.stream_key, error = %e, "Failed to emit RTMP disconnected state on publish finish");
+
+            if let Err(update_err) = global::update_session_state(
+                &self.stream_key,
+                SessionState::Rtmp(RtmpState::Disconnected),
+            )
+            .await
+            {
+                warn!(stream_key = %self.stream_key, error = %update_err, "Failed to fallback-update RTMP disconnected state on publish finish");
+            }
+        }
+
         self.cancel_token.cancel();
         Ok(())
     }
@@ -91,7 +106,7 @@ impl HandlerTrait for PublishHandler {
     async fn on_custom_events(&mut self, event: ServerSessionEvent) -> Result<()> {
         match event {
             ServerSessionEvent::PublishStreamFinished { .. } => {
-                self.publish_finished()?;
+                self.publish_finished().await?;
             }
             ServerSessionEvent::AudioDataReceived {
                 data, timestamp, ..

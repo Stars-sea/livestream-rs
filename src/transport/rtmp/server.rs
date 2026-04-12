@@ -18,7 +18,8 @@ use crate::transport::contract::message::{
     ControlMessage, StreamEvent, StreamFlvTag, send_stream_state_change,
 };
 use crate::transport::contract::state::{
-    RtmpState, SessionDescriptor, SessionEndpoint, SessionProtocol, SessionState,
+    ConnectionStateTrait, RtmpState, SessionDescriptor, SessionEndpoint, SessionProtocol,
+    SessionState,
 };
 use crate::transport::registry::global;
 use crate::transport::rtmp::handler::HandlerBuilder;
@@ -83,7 +84,9 @@ impl RtmpServer {
 
                 msg = ctrl_stream.next() => {
                     if let Some(msg) = msg {
-                        self.handle_control_message(msg).await?;
+                        if let Err(e) = self.handle_control_message(msg).await {
+                            error!(error = %e, "Failed to handle RTMP control message");
+                        }
                     }
                 }
 
@@ -204,6 +207,19 @@ impl RtmpServer {
     async fn handle_forwarded_tag(&mut self, packet: StreamFlvTag) {
         let StreamFlvTag { stream_id, tag } = packet;
 
+        let state = global::get_session_state(&stream_id).await;
+        let Some(state) = state else {
+            self.active_channels.remove(&stream_id);
+            debug!(stream_id = %stream_id, "Dropping forwarded RTMP tag for unknown session");
+            return;
+        };
+
+        if !state.is_active() {
+            self.active_channels.remove(&stream_id);
+            debug!(stream_id = %stream_id, state = ?state, "Dropping forwarded RTMP tag for inactive session");
+            return;
+        }
+
         let channel = self
             .active_channels
             .entry(stream_id.clone())
@@ -216,7 +232,7 @@ impl RtmpServer {
     }
 }
 
-fn emit_rtmp_disconnect_event(event_channel: &MpscChannel<StreamEvent>, stream_key: &str) {
+async fn emit_rtmp_disconnect_event(event_channel: &MpscChannel<StreamEvent>, stream_key: &str) {
     if let Err(e) = send_stream_state_change(
         event_channel,
         stream_key.to_string(),
@@ -224,6 +240,15 @@ fn emit_rtmp_disconnect_event(event_channel: &MpscChannel<StreamEvent>, stream_k
         "rtmp.server.emit_disconnect",
     ) {
         warn!(stream_key = %stream_key, error = %e, "Failed to emit RTMP disconnected event");
+
+        if let Err(update_err) = global::update_session_state(
+            stream_key,
+            SessionState::Rtmp(RtmpState::Disconnected),
+        )
+        .await
+        {
+            warn!(stream_key = %stream_key, error = %update_err, "Failed to fallback-update RTMP disconnected state");
+        }
     }
 }
 
@@ -281,7 +306,7 @@ async fn spawn_connection_handler(
             error!(stream_key = %stream_key, "No cancellation token found for stream key");
 
             if is_publish {
-                emit_rtmp_disconnect_event(&state_event_channel, &stream_key);
+                emit_rtmp_disconnect_event(&state_event_channel, &stream_key).await;
             }
             return;
         }
@@ -312,7 +337,7 @@ async fn spawn_connection_handler(
                 warn!(error = %e, "Error handling RTMP session");
 
                 if is_publish && !handler_cancel_token.is_cancelled() {
-                    emit_rtmp_disconnect_event(&state_event_channel, &stream_key);
+                    emit_rtmp_disconnect_event(&state_event_channel, &stream_key).await;
                 }
             }
         }
@@ -320,8 +345,13 @@ async fn spawn_connection_handler(
             warn!(error = %e, "Failed to build RTMP session handler");
 
             if is_publish {
-                emit_rtmp_disconnect_event(&state_event_channel, &stream_key);
+                emit_rtmp_disconnect_event(&state_event_channel, &stream_key).await;
             }
         }
+    }
+
+    if is_publish {
+        active_channels.remove(&stream_key);
+        debug!(stream_key = %stream_key, "Removed RTMP live channel cache after publish session ended");
     }
 }

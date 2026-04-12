@@ -60,7 +60,9 @@ impl SrtServer {
 
                 msg = ctrl_stream.next() => {
                     if let Some(msg) = msg {
-                        self.handle_control_message(msg).await?;
+                        if let Err(e) = self.handle_control_message(msg).await {
+                            error!(error = %e, "Failed to handle SRT control message");
+                        }
                     }
                 }
             }
