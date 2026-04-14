@@ -29,7 +29,7 @@ pub struct RtmpServer {
     precreate_ttl: Duration,
 
     ctrl_channel: MpscRx<ControlMessage>,
-    rtmp_forward_channel: MpscRx<Box<dyn IngestPacket<FlvTag> + Send>>,
+    rtmp_forward_channel: MpscRx<IngestPacket<FlvTag>>,
 
     bus: PipeBus,
     pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
@@ -44,7 +44,7 @@ impl RtmpServer {
         appname: String,
         precreate_ttl: Duration,
         ctrl_channel: MpscRx<ControlMessage>,
-        rtmp_forward_channel: MpscRx<Box<dyn IngestPacket<FlvTag> + Send>>,
+        rtmp_forward_channel: MpscRx<IngestPacket<FlvTag>>,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
@@ -64,15 +64,6 @@ impl RtmpServer {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        // let mut ctrl_stream = self
-        //     .ctrl_channel
-        //     .subscribe("transport.rtmp.server.control_rx")
-        //     .map_err(|e| anyhow::anyhow!("Failed to subscribe RTMP control channel: {}", e))?;
-        // let mut rtmp_forward_stream = self
-        //     .rtmp_forward_channel
-        //     .subscribe("transport.rtmp.server.forward_rx")
-        //     .map_err(|e| anyhow::anyhow!("Failed to subscribe RTMP forward channel: {}", e))?;
-
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
@@ -210,9 +201,9 @@ impl RtmpServer {
         ));
     }
 
-    async fn handle_forwarded_tag(&mut self, packet: Box<dyn IngestPacket<FlvTag> + Send>) {
+    async fn handle_forwarded_tag(&mut self, packet: IngestPacket<FlvTag>) {
         let stream_id = packet.live_id().to_string();
-        let tag = packet.packet();
+        let tag = packet.into_packet();
 
         let state = global::get_session_state(&stream_id).await;
         let Some(state) = state else {

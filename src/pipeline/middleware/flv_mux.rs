@@ -16,31 +16,10 @@ struct ForwardState {
     flv_ctx: FlvOutputContext,
 }
 
-struct WrappedFlvTag {
-    stream_id: String,
-    tag: FlvTag,
-}
-
-impl WrappedFlvTag {
-    fn new(stream_id: String, tag: FlvTag) -> Self {
-        Self { stream_id, tag }
-    }
-}
-
-impl IngestPacket<FlvTag> for WrappedFlvTag {
-    fn live_id(&self) -> &str {
-        &self.stream_id
-    }
-
-    fn packet(&self) -> FlvTag {
-        self.tag.clone()
-    }
-}
-
 pub struct FlvMuxForwardMiddleware {
     stream_id: String,
     streams: Arc<dyn StreamCollection + Send + Sync>,
-    direct_forward_channel: MpscTx<Box<dyn IngestPacket<FlvTag> + Send>>,
+    direct_forward_channel: MpscTx<IngestPacket<FlvTag>>,
     state: Mutex<ForwardState>,
 }
 
@@ -49,7 +28,7 @@ impl FlvMuxForwardMiddleware {
         stream_id: String,
         streams: Arc<dyn StreamCollection + Send + Sync>,
         flv_relay_queue_capacity: usize,
-        rtmp_tag_tx: &MpscTx<Box<dyn IngestPacket<FlvTag> + Send>>,
+        rtmp_tag_tx: &MpscTx<IngestPacket<FlvTag>>,
     ) -> Result<Self> {
         let direct_forward_channel = rtmp_tag_tx.clone().with_live_id(stream_id.clone());
 
@@ -71,16 +50,13 @@ impl FlvMuxForwardMiddleware {
 
     fn spawn_flv_relay(
         mut tags: MpscRx<FlvTag>,
-        rtmp_tag_channel: MpscTx<Box<dyn IngestPacket<FlvTag> + Send>>,
+        rtmp_tag_channel: MpscTx<IngestPacket<FlvTag>>,
         stream_id: String,
     ) {
         tokio::spawn(async move {
             while let Some(tag) = tags.next().await {
-                let wrapped = WrappedFlvTag::new(stream_id.clone(), tag);
-                if matches!(
-                    rtmp_tag_channel.send(Box::new(wrapped)),
-                    Err(SendError::Closed)
-                ) {
+                let wrapped = IngestPacket::new(&stream_id, tag);
+                if matches!(rtmp_tag_channel.send(wrapped), Err(SendError::Closed)) {
                     break;
                 }
             }
@@ -99,7 +75,7 @@ impl MiddlewareTrait for FlvMuxForwardMiddleware {
             return Ok(ctx);
         }
 
-        match ctx.payload() {
+        match ctx.payload().to_owned() {
             UnifiedPacket::AVPacket(packet) => {
                 let mut packet = packet.clone();
                 let state = self.state.lock().await;
@@ -107,9 +83,9 @@ impl MiddlewareTrait for FlvMuxForwardMiddleware {
                 packet.write(&state.flv_ctx)?;
             }
             UnifiedPacket::FlvTag(tag) => {
-                let wrapped = WrappedFlvTag::new(stream_id.to_string(), tag.clone());
+                let wrapped = IngestPacket::new(stream_id, tag);
                 if matches!(
-                    self.direct_forward_channel.send(Box::new(wrapped)),
+                    self.direct_forward_channel.send(wrapped),
                     Err(SendError::Closed)
                 ) {
                     anyhow::bail!(

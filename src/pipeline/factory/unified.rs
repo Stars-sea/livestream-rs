@@ -14,7 +14,7 @@ use crate::transport::abstraction::IngestPacket;
 
 #[derive(Clone)]
 pub struct UnifiedPipeFactory {
-    rtmp_tag_tx: MpscTx<Box<dyn IngestPacket<FlvTag> + Send>>,
+    rtmp_tag_tx: MpscTx<IngestPacket<FlvTag>>,
     segment_duration: Duration,
     segment_cachedir: String,
     flv_relay_queue_capacity: usize,
@@ -25,7 +25,7 @@ impl UnifiedPipeFactory {
         segment_duration: Duration,
         segment_cachedir: String,
         flv_relay_queue_capacity: usize,
-        rtmp_tag_tx: MpscTx<Box<dyn IngestPacket<FlvTag> + Send>>,
+        rtmp_tag_tx: MpscTx<IngestPacket<FlvTag>>,
     ) -> Self {
         Self {
             rtmp_tag_tx,

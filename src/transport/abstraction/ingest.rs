@@ -1,7 +1,27 @@
-pub trait IngestPacket<P> {
-    fn live_id(&self) -> &str;
+pub struct IngestPacket<P> {
+    live_id: String,
+    packet: P,
+}
 
-    fn packet(&self) -> P;
+impl<P> IngestPacket<P> {
+    pub fn new(live_id: impl Into<String>, packet: P) -> Self {
+        Self {
+            live_id: live_id.into(),
+            packet,
+        }
+    }
+
+    pub fn live_id(&self) -> &str {
+        &self.live_id
+    }
+
+    pub fn packet(&self) -> &P {
+        &self.packet
+    }
+
+    pub fn into_packet(self) -> P {
+        self.packet
+    }
 }
 
 pub trait IngestHandler {}

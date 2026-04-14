@@ -22,7 +22,7 @@ pub struct TransportServer {
     rtmp_config: RtmpConfig,
     srt_config: SrtConfig,
     queue_config: QueueConfig,
-    rtmp_tag_channel: Option<MpscRx<Box<dyn IngestPacket<FlvTag> + Send>>>,
+    rtmp_tag_channel: Option<MpscRx<IngestPacket<FlvTag>>>,
 
     bus: PipeBus,
 
@@ -34,7 +34,7 @@ impl TransportServer {
         rtmp_config: RtmpConfig,
         srt_config: SrtConfig,
         queue_config: QueueConfig,
-        rtmp_tag_channel: MpscRx<Box<dyn IngestPacket<FlvTag> + Send>>,
+        rtmp_tag_channel: MpscRx<IngestPacket<FlvTag>>,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Self {
