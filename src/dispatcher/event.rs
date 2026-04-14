@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tokio::sync::broadcast::Receiver;
+
 use crate::infra::media::stream::StreamCollection;
 use crate::queue::ChannelStream;
 
-#[derive(Clone, Copy, Debug)]
-pub enum Protocal {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Protocol {
     Rtmp,
     Srt,
 }
@@ -14,7 +16,7 @@ pub enum Protocal {
 pub enum SessionEvent {
     SessionStarted {
         live_id: String,
-        protocal: Protocal,
+        protocol: Protocol,
     },
 
     SessionInit {
@@ -25,7 +27,7 @@ pub enum SessionEvent {
     // TODO: add more fields, such as error code, error message, etc.
     SessionEnded {
         live_id: String,
-        protocal: Protocal,
+        protocol: Protocol,
     },
 
     SegmentComplete {
@@ -37,17 +39,20 @@ pub enum SessionEvent {
 impl std::fmt::Debug for SessionEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SessionEvent::SessionStarted { live_id, protocal } => f
+            SessionEvent::SessionStarted { live_id, protocol } => f
                 .debug_struct("SessionStarted")
                 .field("live_id", live_id)
-                .field("protocal", protocal)
+                .field("protocal", protocol)
                 .finish(),
             SessionEvent::SessionInit { live_id, .. } => f
                 .debug_struct("StreamInitialized")
                 .field("live_id", live_id)
                 .field("streams", &"<stream collection>")
                 .finish(),
-            SessionEvent::SessionEnded { live_id, protocal } => f
+            SessionEvent::SessionEnded {
+                live_id,
+                protocol: protocal,
+            } => f
                 .debug_struct("SessionEnded")
                 .field("live_id", live_id)
                 .field("protocal", protocal)
@@ -61,4 +66,4 @@ impl std::fmt::Debug for SessionEvent {
     }
 }
 
-pub type SessionEventStream = ChannelStream<tokio::sync::broadcast::Receiver<SessionEvent>>;
+pub type SessionEventStream = ChannelStream<Receiver<SessionEvent>>;

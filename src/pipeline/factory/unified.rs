@@ -3,17 +3,18 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use crate::infra::media::packet::FlvTag;
 use crate::infra::media::stream::StreamCollection;
 use crate::pipeline::Pipe;
 use crate::pipeline::UnifiedPacketContext;
 use crate::pipeline::middleware::{FlvMuxForwardMiddleware, OTelMiddleware, SegmentMiddleware};
 use crate::pipeline::pipe::PipeFactory;
 use crate::queue::MpscChannel;
-use crate::transport::contract::message::StreamFlvTag;
+use crate::transport::abstraction::IngestPacket;
 
 #[derive(Clone)]
 pub struct UnifiedPipeFactory {
-    rtmp_tag_channel: MpscChannel<StreamFlvTag>,
+    rtmp_tag_channel: MpscChannel<Box<dyn IngestPacket<FlvTag> + Send>>,
     segment_duration: Duration,
     segment_cachedir: String,
     flv_relay_queue_capacity: usize,
@@ -24,7 +25,7 @@ impl UnifiedPipeFactory {
         segment_duration: Duration,
         segment_cachedir: String,
         flv_relay_queue_capacity: usize,
-        rtmp_tag_channel: MpscChannel<StreamFlvTag>,
+        rtmp_tag_channel: MpscChannel<Box<dyn IngestPacket<FlvTag> + Send>>,
     ) -> Self {
         Self {
             rtmp_tag_channel,

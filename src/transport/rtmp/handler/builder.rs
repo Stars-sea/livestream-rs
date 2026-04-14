@@ -6,6 +6,7 @@ use super::{Handler, PlayHandler, PublishHandler};
 use crate::infra::media::packet::FlvTag;
 use crate::pipeline::PipeBus;
 use crate::queue::ChannelStream;
+use crate::transport::lifecycle::HandlerLifecycle;
 use crate::transport::rtmp::session::SessionGuard;
 
 pub enum HandlerBuilder {
@@ -23,6 +24,7 @@ pub enum HandlerBuilder {
         appname: Option<String>,
         stream_key: String,
         bus: Option<PipeBus>,
+        lifecycle: Option<HandlerLifecycle>,
         cancel_token: Option<CancellationToken>,
     },
 }
@@ -46,6 +48,7 @@ impl HandlerBuilder {
             appname: None,
             stream_key,
             bus: None,
+            lifecycle: None,
             cancel_token: None,
         }
     }
@@ -73,15 +76,9 @@ impl HandlerBuilder {
         self
     }
 
-    pub fn with_tag_stream(
-        mut self,
-        tag_stream: ChannelStream<broadcast::Receiver<FlvTag>>,
-    ) -> Self {
-        if let HandlerBuilder::Play {
-            tag_stream: stream, ..
-        } = &mut self
-        {
-            *stream = Some(tag_stream);
+    pub fn with_tag_stream(mut self, stream: ChannelStream<broadcast::Receiver<FlvTag>>) -> Self {
+        if let HandlerBuilder::Play { tag_stream, .. } = &mut self {
+            *tag_stream = Some(stream);
         }
         self
     }
@@ -100,14 +97,17 @@ impl HandlerBuilder {
         self
     }
 
-    pub fn with_cancel_token(mut self, cancel_token: CancellationToken) -> Self {
+    pub fn with_lifecycle(mut self, lifecycle: HandlerLifecycle) -> Self {
+        if let HandlerBuilder::Publish { lifecycle: l, .. } = &mut self {
+            *l = Some(lifecycle);
+        }
+        self
+    }
+
+    pub fn with_cancel_token(mut self, ct: CancellationToken) -> Self {
         match &mut self {
-            HandlerBuilder::Play {
-                cancel_token: ct, ..
-            } => *ct = Some(cancel_token),
-            HandlerBuilder::Publish {
-                cancel_token: ct, ..
-            } => *ct = Some(cancel_token),
+            HandlerBuilder::Play { cancel_token, .. } => *cancel_token = Some(ct),
+            HandlerBuilder::Publish { cancel_token, .. } => *cancel_token = Some(ct),
         }
         self
     }
@@ -148,6 +148,7 @@ impl HandlerBuilder {
                 appname,
                 stream_key,
                 bus,
+                lifecycle,
                 cancel_token,
             } => {
                 let appname = appname.ok_or_else(|| {
@@ -162,11 +163,15 @@ impl HandlerBuilder {
                 let cancel_token = cancel_token.ok_or_else(|| {
                     anyhow::anyhow!("Cancellation token is required to build PublishHandler")
                 })?;
+                let lifecycle = lifecycle.ok_or_else(|| {
+                    anyhow::anyhow!("Handler lifecycle is required to build PublishHandler")
+                })?;
                 Ok(Handler::Publish(PublishHandler::new(
                     session,
                     appname,
                     stream_key,
                     bus,
+                    lifecycle,
                     cancel_token,
                 )))
             }

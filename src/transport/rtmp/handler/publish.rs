@@ -7,9 +7,7 @@ use tracing::{debug, warn};
 
 use crate::infra::media::packet::FlvTag;
 use crate::pipeline::{PipeBus, UnifiedPacketContext};
-use crate::transport::contract::message::{send_stream_init, send_stream_state_change};
-use crate::transport::contract::state::{RtmpState, SessionState};
-use crate::transport::registry::global;
+use crate::transport::lifecycle::HandlerLifecycle;
 use crate::transport::rtmp::handler::HandlerTrait;
 use crate::transport::rtmp::session::SessionGuard;
 
@@ -21,6 +19,7 @@ pub struct PublishHandler {
     stream_key: String,
     bus: PipeBus,
 
+    lifecycle: HandlerLifecycle,
     cancel_token: CancellationToken,
 }
 
@@ -30,6 +29,7 @@ impl PublishHandler {
         appname: String,
         stream_key: String,
         bus: PipeBus,
+        lifecycle: HandlerLifecycle,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
@@ -37,6 +37,7 @@ impl PublishHandler {
             appname,
             stream_key,
             bus,
+            lifecycle,
             cancel_token,
         }
     }
@@ -44,24 +45,8 @@ impl PublishHandler {
     async fn publish_finished(&mut self) -> Result<()> {
         debug!("Publish finished for stream key: {}", self.stream_key);
 
-        let state_change_result = send_stream_state_change(
-            &self.session.event_channel,
-            self.stream_key.clone(),
-            SessionState::Rtmp(RtmpState::Disconnected),
-            "rtmp.publish.publish_finished",
-        );
-
-        if let Err(e) = state_change_result {
+        if let Err(e) = self.lifecycle.disconnected().await {
             warn!(stream_key = %self.stream_key, error = %e, "Failed to emit RTMP disconnected state on publish finish");
-
-            if let Err(update_err) = global::update_session_state(
-                &self.stream_key,
-                SessionState::Rtmp(RtmpState::Disconnected),
-            )
-            .await
-            {
-                warn!(stream_key = %self.stream_key, error = %update_err, "Failed to fallback-update RTMP disconnected state on publish finish");
-            }
         }
 
         self.cancel_token.cancel();
@@ -69,13 +54,12 @@ impl PublishHandler {
     }
 
     async fn send_publish_tag(&self, tag: FlvTag, source: &'static str) -> Result<()> {
+        if let Err(e) = self.lifecycle.connected().await {
+            warn!(stream_key = %self.stream_key, error = %e, "Failed to emit RTMP connected state on publish tag");
+        }
+
         if let FlvTag::ScriptData(meta) = &tag {
-            send_stream_init(
-                &self.session.event_channel,
-                self.stream_key.clone(),
-                Arc::new(meta.clone()),
-                "rtmp.publish.metadata.init",
-            )?;
+            self.lifecycle.init(Arc::new(meta.clone())).await;
         }
 
         let context = UnifiedPacketContext::new(

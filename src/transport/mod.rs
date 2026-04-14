@@ -1,6 +1,7 @@
-pub mod contract;
+pub mod abstraction;
 mod controller;
 pub mod grpc;
+mod lifecycle;
 mod registry;
 mod server;
 

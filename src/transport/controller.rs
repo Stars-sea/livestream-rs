@@ -1,7 +1,18 @@
 use anyhow::Result;
 
-use super::contract::message::ControlMessage;
 use crate::queue::{ChannelSendStatus, MpscChannel};
+
+#[derive(Debug, Clone)]
+pub enum ControlMessage {
+    PrecreateStream {
+        live_id: String,
+        passphrase: Option<String>,
+    },
+
+    StopStream {
+        live_id: String,
+    },
+}
 
 pub struct TransportController {
     rtmp_channel: MpscChannel<ControlMessage>,

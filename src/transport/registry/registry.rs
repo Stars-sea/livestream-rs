@@ -6,7 +6,7 @@ use tokio::sync::{OnceCell, RwLock};
 use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
 
-use crate::transport::contract::state::*;
+use crate::transport::registry::state::*;
 
 const SESSION_REMOVAL_GRACE_PERIOD: Duration = Duration::from_millis(200);
 
@@ -19,7 +19,7 @@ pub async fn global_registry() -> Arc<ConnectionRegistry> {
         .clone()
 }
 
-pub type SessionEntry = (Arc<RwLock<SessionDescriptor>>, CancellationToken);
+type SessionEntry = (Arc<RwLock<SessionDescriptor>>, CancellationToken);
 
 pub struct ConnectionRegistry {
     // Map of stream keys to active connections
@@ -56,10 +56,7 @@ impl ConnectionRegistry {
 
             {
                 let mut descriptor = session_for_cleanup.write().await;
-                descriptor.state = match descriptor.protocol {
-                    SessionProtocol::Rtmp => SessionState::Rtmp(RtmpState::Disconnected),
-                    SessionProtocol::Srt => SessionState::Srt(SrtState::Disconnected),
-                };
+                descriptor.state = SessionState::Disconnected;
             }
 
             // Keep a short tombstone window so polling-based watchers can observe
@@ -69,28 +66,6 @@ impl ConnectionRegistry {
         });
 
         Ok(())
-    }
-
-    pub async fn remove_session(
-        &self,
-        session: Arc<RwLock<SessionDescriptor>>,
-    ) -> Result<(String, SessionEntry)> {
-        let id = &session.read().await.id;
-        self.remove(id).await
-    }
-
-    pub async fn remove(&self, stream_key: &str) -> Result<(String, SessionEntry)> {
-        match self.connections.entry(stream_key.to_string()) {
-            Entry::Occupied(entry) => {
-                let (value, _) = entry.get().clone();
-                if value.read().await.state.is_active() {
-                    anyhow::bail!("Session for stream key {} is still active", stream_key);
-                }
-
-                Ok(entry.remove_entry())
-            }
-            Entry::Vacant(_) => anyhow::bail!("No session found for stream key {}", stream_key),
-        }
     }
 
     fn get(&self, stream_key: &str) -> Option<SessionEntry> {
@@ -141,64 +116,30 @@ impl ConnectionRegistry {
         };
 
         let current_state = session.read().await.state;
-        match current_state {
-            SessionState::Rtmp(state) => Self::update_rtmp_state(session, state, new_state).await?,
-            SessionState::Srt(state) => Self::update_srt_state(session, state, new_state).await?,
-        };
+        if current_state == new_state {
+            return Ok(()); // No state change needed
+        }
 
-        Ok(())
+        Self::update_session_state(session.clone(), current_state, new_state).await
     }
 
-    async fn update_rtmp_state(
+    async fn update_session_state(
         session: Arc<RwLock<SessionDescriptor>>,
-        current_state: RtmpState,
+        current_state: SessionState,
         new_state: SessionState,
     ) -> Result<()> {
-        let new_state = match new_state {
-            SessionState::Rtmp(state) => state,
-            _ => anyhow::bail!("Invalid state type"),
-        };
-
         session.write().await.state = match new_state {
-            RtmpState::Connecting if current_state == RtmpState::Pending => {
-                SessionState::Rtmp(RtmpState::Connecting)
+            SessionState::Connecting if current_state == SessionState::Pending => {
+                SessionState::Connecting
             }
-            RtmpState::Connected if current_state == RtmpState::Connecting => {
-                SessionState::Rtmp(RtmpState::Connected)
+            SessionState::Connected if current_state == SessionState::Pending => {
+                SessionState::Connected
             }
-            RtmpState::Disconnected if current_state == RtmpState::Connected => {
-                SessionState::Rtmp(RtmpState::Disconnected)
+            SessionState::Connected if current_state == SessionState::Connecting => {
+                SessionState::Connected
             }
-            RtmpState::Disconnected if current_state == RtmpState::Connecting => {
-                SessionState::Rtmp(RtmpState::Disconnected)
-            }
-            _ => {
-                anyhow::bail!("Invalid state transition");
-            }
-        };
-        Ok(())
-    }
+            SessionState::Disconnected => SessionState::Disconnected,
 
-    async fn update_srt_state(
-        session: Arc<RwLock<SessionDescriptor>>,
-        current_state: SrtState,
-        new_state: SessionState,
-    ) -> Result<()> {
-        let new_state = match new_state {
-            SessionState::Srt(state) => state,
-            _ => anyhow::bail!("Invalid state type"),
-        };
-
-        session.write().await.state = match new_state {
-            SrtState::Connected if current_state == SrtState::Pending => {
-                SessionState::Srt(SrtState::Connected)
-            }
-            SrtState::Disconnected if current_state == SrtState::Connected => {
-                SessionState::Srt(SrtState::Disconnected)
-            }
-            SrtState::Disconnected if current_state == SrtState::Pending => {
-                SessionState::Srt(SrtState::Disconnected)
-            }
             _ => {
                 anyhow::bail!("Invalid state transition");
             }

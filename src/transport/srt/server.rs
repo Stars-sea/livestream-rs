@@ -6,18 +6,17 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 use super::connection::SrtConnectionBuilder;
+use crate::dispatcher::Protocol;
 use crate::infra::PortAllocator;
 use crate::pipeline::PipeBus;
 use crate::queue::MpscChannel;
-use crate::transport::contract::message::{ControlMessage, StreamEvent, send_stream_state_change};
-use crate::transport::contract::state::{
-    SessionDescriptor, SessionEndpoint, SessionProtocol, SessionState, SrtState,
-};
+use crate::transport::controller::ControlMessage;
+use crate::transport::lifecycle::HandlerLifecycle;
 use crate::transport::registry::global;
+use crate::transport::registry::state::*;
 
 pub struct SrtServer {
     ctrl_channel: MpscChannel<ControlMessage>,
-    event_channel: MpscChannel<StreamEvent>,
 
     bus: PipeBus,
 
@@ -30,14 +29,12 @@ pub struct SrtServer {
 impl SrtServer {
     pub fn new(
         ctrl_channel: MpscChannel<ControlMessage>,
-        event_channel: MpscChannel<StreamEvent>,
         bus: PipeBus,
         port_allocator: PortAllocator,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             ctrl_channel,
-            event_channel,
             bus,
             port_allocator: Arc::new(port_allocator),
             port_cache: Arc::new(DashMap::new()),
@@ -117,16 +114,15 @@ impl SrtServer {
         };
         self.port_cache.insert(live_id.clone(), port);
 
-        let session = SessionDescriptor {
-            id: live_id.clone(),
-            protocol: SessionProtocol::Srt,
-            endpoint: SessionEndpoint {
-                port: Some(port),
-                passphrase: passphrase.clone(),
-            },
-            state: SessionState::Srt(SrtState::Pending),
-        };
-        if let Err(e) = global::register_session(session, cancel_token.clone()).await {
+        let lifecycle = HandlerLifecycle::new(live_id.clone(), Protocol::Srt);
+
+        if let Err(e) = lifecycle
+            .pending(
+                SessionEndpoint::new(Some(port), passphrase.clone()),
+                cancel_token.clone(),
+            )
+            .await
+        {
             self.port_cache.remove(&live_id);
             self.port_allocator.release_port(port);
             return Err(e);
@@ -153,26 +149,17 @@ impl SrtServer {
             port,
             live_id,
             passphrase,
-            self.event_channel
-                .clone()
-                .with_source("transport.srt.connection.event_tx"),
             self.bus.clone(),
             Handle::current(),
         );
 
-        spawn_connection_handler(
-            builder,
-            self.event_channel
-                .clone()
-                .with_source("transport.srt.spawn_connection.event_tx"),
-            cancel_token,
-        )
+        spawn_connection_handler(builder, lifecycle, cancel_token)
     }
 }
 
 fn spawn_connection_handler(
     builder: SrtConnectionBuilder,
-    event_channel: MpscChannel<StreamEvent>,
+    lifecycle: HandlerLifecycle,
     cancel_token: CancellationToken,
 ) -> Result<()> {
     std::thread::spawn(move || {
@@ -183,20 +170,11 @@ fn spawn_connection_handler(
             Ok(c) => c,
             Err(e) => {
                 error!(stream_id = %stream_id, "Failed to build SRT connection: {:?}", e);
-
-                if let Err(event_err) = send_stream_state_change(
-                    &event_channel,
-                    stream_id.clone(),
-                    SessionState::Srt(SrtState::Disconnected),
-                    "srt.server.spawn_connection_handler:build_failed",
-                ) {
-                    error!(stream_id = %stream_id, error = %event_err, "Failed to emit SRT disconnected event after build failure");
-                }
                 return;
             }
         };
 
-        if let Err(e) = connection.run() {
+        if let Err(e) = connection.run(lifecycle) {
             error!(stream_id = %stream_id, "Error in SRT connection handler: {:?}", e);
         }
     });

@@ -1,30 +1,27 @@
 use anyhow::Result;
 use bytes::BytesMut;
+use dashmap::DashMap;
 use regex::Regex;
 use rml_rtmp::chunk_io::{ChunkSerializer, Packet};
 use rml_rtmp::messages::RtmpMessage;
 use rml_rtmp::rml_amf0::Amf0Value;
 use rml_rtmp::sessions::{ServerSession, ServerSessionEvent, ServerSessionResult};
 use rml_rtmp::time::RtmpTimestamp;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::infra::media::packet::FlvTag;
-use crate::queue::MpscChannel;
-use crate::transport::contract::message::{StreamEvent, send_stream_state_change};
-use crate::transport::contract::state::{ConnectionStateTrait, RtmpState, SessionState};
-use crate::transport::registry::global;
-
 use super::connection::RtmpConnection;
 use super::handler::HandlerBuilder;
+use crate::infra::media::packet::FlvTag;
+use crate::transport::lifecycle::HandlerLifecycle;
+use crate::transport::registry::global;
+use crate::transport::registry::state::*;
 
 pub struct SessionGuard {
     connection: RtmpConnection,
     session: ServerSession,
     appname: String,
-
-    pub(super) event_channel: MpscChannel<StreamEvent>,
 
     chunk_size: u32,
 }
@@ -33,21 +30,14 @@ pub(super) struct SessionGuardBuilder {
     connection: RtmpConnection,
     session: Option<ServerSession>,
     appname: Option<String>,
-    event_channel: Option<MpscChannel<StreamEvent>>,
 }
 
 impl SessionGuard {
-    pub(self) fn new(
-        connection: RtmpConnection,
-        session: ServerSession,
-        appname: String,
-        event_channel: MpscChannel<StreamEvent>,
-    ) -> Self {
+    pub(self) fn new(connection: RtmpConnection, session: ServerSession, appname: String) -> Self {
         Self {
             connection,
             session,
             appname,
-            event_channel,
             chunk_size: 2048,
         }
     }
@@ -198,13 +188,20 @@ impl SessionGuard {
         Ok(())
     }
 
-    pub async fn connect(mut self, ct: &CancellationToken) -> Result<HandlerBuilder> {
+    pub async fn connect(
+        mut self,
+        pending_lifecycle: &Arc<DashMap<String, HandlerLifecycle>>,
+        ct: &CancellationToken,
+    ) -> Result<HandlerBuilder> {
         loop {
             let results = self.read_result(ct).await?;
 
             let events = self.handle_results(results, ct).await?;
             for event in events {
-                let handler_builder = match self.handle_connect_event(event, ct).await? {
+                let handler_builder = match self
+                    .handle_connect_event(event, pending_lifecycle, ct)
+                    .await?
+                {
                     Some(builder) => builder,
                     None => continue,
                 };
@@ -235,29 +232,10 @@ impl SessionGuard {
         Ok(())
     }
 
-    async fn emit_state_change_with_fallback(
-        &self,
-        stream_key: &str,
-        new_state: SessionState,
-        source: &'static str,
-    ) -> Result<()> {
-        if let Err(e) = send_stream_state_change(
-            &self.event_channel,
-            stream_key.to_string(),
-            new_state,
-            source,
-        ) {
-            warn!(stream_key = %stream_key, error = %e, source = source, "Failed to emit RTMP state change; falling back to direct registry update");
-
-            global::update_session_state(stream_key, new_state).await?;
-        }
-
-        Ok(())
-    }
-
     async fn handle_connect_event(
         &mut self,
         event: ServerSessionEvent,
+        pending_lifecycle: &Arc<DashMap<String, HandlerLifecycle>>,
         ct: &CancellationToken,
     ) -> Result<Option<HandlerBuilder>> {
         static APP_AND_STREAM_RE: OnceLock<Regex> = OnceLock::new();
@@ -325,7 +303,8 @@ impl SessionGuard {
                 });
                 let stream_key = stream_key.unwrap_or_default();
 
-                self.on_publish_requested(request_id, stream_key, ct).await
+                self.on_publish_requested(request_id, stream_key, pending_lifecycle, ct)
+                    .await
             }
             ServerSessionEvent::UnhandleableAmf0Command {
                 command_name,
@@ -378,7 +357,7 @@ impl SessionGuard {
         ct: &CancellationToken,
     ) -> Result<Option<HandlerBuilder>> {
         let is_active = match global::get_session_state(&stream_key).await {
-            Some(state) => state.is_active(),
+            Some(state) => state == SessionState::Connected,
             None => false,
         };
         if !is_active {
@@ -399,50 +378,56 @@ impl SessionGuard {
         &mut self,
         request_id: u32,
         stream_key: String,
+        pending_lifecycle: &Arc<DashMap<String, HandlerLifecycle>>,
         ct: &CancellationToken,
     ) -> Result<Option<HandlerBuilder>> {
-        let state = global::get_session_state(&stream_key).await;
-        if state.is_none() {
-            debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
-            if let Err(e) = send_stream_state_change(
-                &self.event_channel,
-                stream_key.clone(),
-                SessionState::Rtmp(RtmpState::Disconnected),
-                "rtmp.session.on_publish_requested:missing_stream",
-            ) {
-                warn!(stream_key = %stream_key, error = %e, "Failed to emit disconnected for missing RTMP stream");
+        let lifecycle = match pending_lifecycle.get(&stream_key) {
+            Some(entry) => entry,
+            None => {
+                anyhow::bail!(
+                    "Client requested to publish to stream {} which has no pending lifecycle",
+                    stream_key
+                );
             }
-            self.reject_request(request_id, "StreamNotFound", "Stream not found", ct)
-                .await?;
-            anyhow::bail!(
-                "Client requested to publish to a stream that does not exist: {}",
-                stream_key
-            );
-        }
+        };
 
-        if matches!(state, Some(SessionState::Rtmp(RtmpState::Pending))) {
-            self.emit_state_change_with_fallback(
-                &stream_key,
-                SessionState::Rtmp(RtmpState::Connecting),
-                "rtmp.session.on_publish_requested:connecting",
-            )
-            .await?;
+        let state = match global::get_session_state(&stream_key).await {
+            Some(state) => state,
+            None => {
+                debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
+                if let Err(e) = lifecycle.disconnected().await {
+                    warn!(stream_key = %stream_key, error = %e, "Failed to emit disconnected state for pending lifecycle");
+                }
 
+                self.reject_request(request_id, "StreamNotFound", "Stream not found", ct)
+                    .await?;
+                anyhow::bail!(
+                    "Client requested to publish to a stream that does not exist: {}",
+                    stream_key
+                );
+            }
+        };
+
+        if state == SessionState::Pending {
             let res = self.accept_request(request_id, ct).await;
 
-            let new_state = if res.is_ok() {
-                SessionState::Rtmp(RtmpState::Connected)
-            } else {
-                SessionState::Rtmp(RtmpState::Disconnected)
-            };
-            self.emit_state_change_with_fallback(
-                &stream_key,
-                new_state,
-                "rtmp.session.on_publish_requested:connected_or_disconnected",
-            )
-            .await?;
-
-            res?;
+            match res {
+                Ok(()) => {
+                    if let Err(e) = lifecycle.connecting().await {
+                        warn!(stream_key = %stream_key, error = %e, "Failed to emit connecting state for pending lifecycle");
+                    }
+                }
+                Err(e) => {
+                    if let Err(e) = lifecycle.disconnected().await {
+                        warn!(stream_key = %stream_key, error = %e, "Failed to emit disconnected state for pending lifecycle after accept_request failure");
+                    }
+                    anyhow::bail!(
+                        "Failed to accept publish request for stream {}: {}",
+                        stream_key,
+                        e
+                    );
+                }
+            }
         } else {
             debug!(stream_key = %stream_key, current_state = ?state, "Client requested to publish to a stream that is not publishable");
 
@@ -469,7 +454,6 @@ impl SessionGuardBuilder {
             connection,
             session: None,
             appname: None,
-            event_channel: None,
         }
     }
 
@@ -483,11 +467,6 @@ impl SessionGuardBuilder {
         self
     }
 
-    pub fn with_event_channel(mut self, event_channel: MpscChannel<StreamEvent>) -> Self {
-        self.event_channel = Some(event_channel);
-        self
-    }
-
     pub fn build(self) -> Result<SessionGuard> {
         let session = self
             .session
@@ -495,15 +474,7 @@ impl SessionGuardBuilder {
         let appname = self
             .appname
             .ok_or_else(|| anyhow::anyhow!("App name is required to build SessionGuard"))?;
-        let event_channel = self.event_channel.ok_or_else(|| {
-            anyhow::anyhow!("Event transmitter is required to build SessionGuard")
-        })?;
 
-        Ok(SessionGuard::new(
-            self.connection,
-            session,
-            appname,
-            event_channel,
-        ))
+        Ok(SessionGuard::new(self.connection, session, appname))
     }
 }

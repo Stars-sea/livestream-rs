@@ -21,9 +21,10 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use super::api;
 use super::api::livestream_server::LivestreamServer;
 use crate::config::{GrpcConfig, RtmpConfig};
+use crate::dispatcher::Protocol;
 use crate::transport::TransportController;
-use crate::transport::contract::state::*;
 use crate::transport::registry::global;
+use crate::transport::registry::state::*;
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
 const DESCRIPTOR_READY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -365,20 +366,17 @@ impl api::livestream_server::Livestream for IngestGrpcService {
 impl IngestGrpcService {
     fn session_state_to_proto(state: SessionState) -> i32 {
         match state {
-            SessionState::Rtmp(RtmpState::Pending) => api::SessionStatus::Pending as i32,
-            SessionState::Rtmp(RtmpState::Connecting) => api::SessionStatus::Connecting as i32,
-            SessionState::Rtmp(RtmpState::Connected) => api::SessionStatus::Connected as i32,
-            SessionState::Rtmp(RtmpState::Disconnected) => api::SessionStatus::Disconnected as i32,
-            SessionState::Srt(SrtState::Pending) => api::SessionStatus::Pending as i32,
-            SessionState::Srt(SrtState::Connected) => api::SessionStatus::Connected as i32,
-            SessionState::Srt(SrtState::Disconnected) => api::SessionStatus::Disconnected as i32,
+            SessionState::Pending => api::SessionStatus::Pending as i32,
+            SessionState::Connecting => api::SessionStatus::Connecting as i32,
+            SessionState::Connected => api::SessionStatus::Connected as i32,
+            SessionState::Disconnected => api::SessionStatus::Disconnected as i32,
         }
     }
 
     fn descriptor_to_proto(&self, descriptor: SessionDescriptor) -> api::StreamDescriptor {
         let input_protocol = match descriptor.protocol {
-            SessionProtocol::Srt => api::InputProtocol::Srt as i32,
-            SessionProtocol::Rtmp => api::InputProtocol::Rtmp as i32,
+            Protocol::Srt => api::InputProtocol::Srt as i32,
+            Protocol::Rtmp => api::InputProtocol::Rtmp as i32,
         };
 
         let status = Self::session_state_to_proto(descriptor.state);

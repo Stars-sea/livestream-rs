@@ -11,17 +11,16 @@ use tracing::{debug, error, warn};
 
 use super::channel::LiveChannel;
 use super::connection::RtmpConnection;
+use crate::dispatcher::Protocol;
+use crate::infra::media::packet::FlvTag;
 use crate::pipeline::PipeBus;
 use crate::queue::MpscChannel;
 use crate::telemetry::metrics;
-use crate::transport::contract::message::{
-    ControlMessage, StreamEvent, StreamFlvTag, send_stream_state_change,
-};
-use crate::transport::contract::state::{
-    ConnectionStateTrait, RtmpState, SessionDescriptor, SessionEndpoint, SessionProtocol,
-    SessionState,
-};
-use crate::transport::registry::global;
+use crate::transport::abstraction::IngestPacket;
+use crate::transport::controller::ControlMessage;
+use crate::transport::lifecycle::HandlerLifecycle;
+use crate::transport::registry::state::{SessionEndpoint, SessionState};
+use crate::transport::registry::*;
 use crate::transport::rtmp::handler::HandlerBuilder;
 
 pub struct RtmpServer {
@@ -30,10 +29,10 @@ pub struct RtmpServer {
     precreate_ttl: Duration,
 
     ctrl_channel: MpscChannel<ControlMessage>,
-    event_channel: MpscChannel<StreamEvent>,
-    rtmp_forward_channel: MpscChannel<StreamFlvTag>,
+    rtmp_forward_channel: MpscChannel<Box<dyn IngestPacket<FlvTag> + Send>>,
 
     bus: PipeBus,
+    pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
     active_channels: Arc<DashMap<String, Arc<LiveChannel>>>,
 
     cancel_token: CancellationToken,
@@ -45,8 +44,7 @@ impl RtmpServer {
         appname: String,
         precreate_ttl: Duration,
         ctrl_channel: MpscChannel<ControlMessage>,
-        event_channel: MpscChannel<StreamEvent>,
-        rtmp_forward_channel: MpscChannel<StreamFlvTag>,
+        rtmp_forward_channel: MpscChannel<Box<dyn IngestPacket<FlvTag> + Send>>,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
@@ -57,9 +55,9 @@ impl RtmpServer {
             appname,
             precreate_ttl,
             ctrl_channel,
-            event_channel,
             rtmp_forward_channel,
             bus,
+            pending_lifecycle: Arc::new(DashMap::new()),
             active_channels: Arc::new(DashMap::new()),
             cancel_token,
         })
@@ -139,17 +137,12 @@ impl RtmpServer {
 
                 let session_token = self.cancel_token.child_token();
 
-                let session = SessionDescriptor {
-                    id: live_id.clone(),
-                    protocol: SessionProtocol::Rtmp,
-                    endpoint: SessionEndpoint {
-                        port: None,
-                        passphrase: None,
-                    },
-                    state: SessionState::Rtmp(RtmpState::Pending),
-                };
-                global::register_session(session, session_token.clone()).await?;
-                self.spawn_precreate_session_ttl(live_id, session_token);
+                let lifecycle = HandlerLifecycle::new(live_id.clone(), Protocol::Rtmp);
+                lifecycle
+                    .pending(SessionEndpoint::default(), session_token.clone())
+                    .await?;
+
+                self.spawn_precreate_session_ttl(live_id, lifecycle, session_token);
 
                 Ok(())
             }
@@ -164,28 +157,43 @@ impl RtmpServer {
         }
     }
 
-    fn spawn_precreate_session_ttl(&self, live_id: String, session_token: CancellationToken) {
+    fn spawn_precreate_session_ttl(
+        &self,
+        live_id: String,
+        lifecycle: HandlerLifecycle,
+        session_token: CancellationToken,
+    ) {
+        let pending_lifecycle = self.pending_lifecycle.clone();
+        pending_lifecycle.insert(live_id.clone(), lifecycle);
+
         let ttl = self.precreate_ttl;
 
         tokio::spawn(async move {
             tokio::select! {
-                _ = session_token.cancelled() => {
-                    return;
-                }
+                _ = session_token.cancelled() => { return; }
                 _ = sleep(ttl) => {}
             }
 
-            let state = global::get_session_state(&live_id).await;
-            if matches!(state, Some(SessionState::Rtmp(RtmpState::Pending))) {
-                session_token.cancel();
-                metrics::get_metrics().record_ttl_expiration("rtmp", "precreate_pending_timeout");
-
-                warn!(
-                    live_id = %live_id,
-                    ttl_secs = ttl.as_secs(),
-                    "Expired pending RTMP precreated session by TTL"
-                );
+            // Check if the lifecycle is still pending before expiring
+            if !pending_lifecycle.contains_key(&live_id) {
+                return;
             }
+
+            metrics::get_metrics().record_ttl_expiration("rtmp", "precreate_pending_timeout");
+
+            let Some((_, lifecycle)) = pending_lifecycle.remove(&live_id) else {
+                debug!(live_id = %live_id, "Pending lifecycle already removed for live_id, skipping TTL expiration");
+                return;
+            };
+            if let Err(e) = lifecycle.disconnected().await {
+                error!(live_id = %live_id, error = %e, "Failed to notify lifecycle of disconnection");
+            }
+
+            warn!(
+                live_id = %live_id,
+                ttl_secs = ttl.as_secs(),
+                "Expired pending RTMP precreated session by TTL"
+            );
         });
     }
 
@@ -196,16 +204,15 @@ impl RtmpServer {
         tokio::spawn(spawn_connection_handler(
             self.appname.clone(),
             socket,
-            self.event_channel
-                .clone()
-                .with_source("transport.rtmp.spawn_connection.event_tx"),
             self.bus.clone(),
+            self.pending_lifecycle.clone(),
             self.active_channels.clone(),
         ));
     }
 
-    async fn handle_forwarded_tag(&mut self, packet: StreamFlvTag) {
-        let StreamFlvTag { stream_id, tag } = packet;
+    async fn handle_forwarded_tag(&mut self, packet: Box<dyn IngestPacket<FlvTag> + Send>) {
+        let stream_id = packet.live_id().to_string();
+        let tag = packet.packet();
 
         let state = global::get_session_state(&stream_id).await;
         let Some(state) = state else {
@@ -214,7 +221,7 @@ impl RtmpServer {
             return;
         };
 
-        if !state.is_active() {
+        if state != SessionState::Connected {
             self.active_channels.remove(&stream_id);
             debug!(stream_id = %stream_id, state = ?state, "Dropping forwarded RTMP tag for inactive session");
             return;
@@ -232,39 +239,19 @@ impl RtmpServer {
     }
 }
 
-async fn emit_rtmp_disconnect_event(event_channel: &MpscChannel<StreamEvent>, stream_key: &str) {
-    if let Err(e) = send_stream_state_change(
-        event_channel,
-        stream_key.to_string(),
-        SessionState::Rtmp(RtmpState::Disconnected),
-        "rtmp.server.emit_disconnect",
-    ) {
-        warn!(stream_key = %stream_key, error = %e, "Failed to emit RTMP disconnected event");
-
-        if let Err(update_err) = global::update_session_state(
-            stream_key,
-            SessionState::Rtmp(RtmpState::Disconnected),
-        )
-        .await
-        {
-            warn!(stream_key = %stream_key, error = %update_err, "Failed to fallback-update RTMP disconnected state");
-        }
-    }
-}
-
 async fn spawn_connection_handler(
     appname: String,
     socket: TcpStream,
-    event_channel: MpscChannel<StreamEvent>,
     bus: PipeBus,
+    pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
     active_channels: Arc<DashMap<String, Arc<LiveChannel>>>,
 ) {
+    // Temperary cancellation token
     let cancel_token = CancellationToken::new();
     let _cancel_guard = cancel_token.drop_guard_ref();
 
     let connection = RtmpConnection::new(socket);
 
-    // TODO: If the handshake fails, we should still send a StreamEvent::StateChange to update the session state to Failed
     let builder = match connection.perform_handshake(&cancel_token).await {
         Ok(builder) => builder,
         Err(e) => {
@@ -273,12 +260,7 @@ async fn spawn_connection_handler(
         }
     };
 
-    let state_event_channel = event_channel
-        .clone()
-        .with_source("transport.rtmp.connection.state_event_tx");
-    let builder = builder
-        .with_appname(appname)
-        .with_event_channel(event_channel);
+    let builder = builder.with_appname(appname);
     let session = match builder.build() {
         Ok(session) => session,
         Err(e) => {
@@ -287,7 +269,7 @@ async fn spawn_connection_handler(
         }
     };
 
-    let builder = match session.connect(&cancel_token).await {
+    let builder = match session.connect(&pending_lifecycle, &cancel_token).await {
         Ok(builder) => builder,
         Err(e) => {
             warn!(error = %e, "Failed to connect RTMP session");
@@ -300,16 +282,10 @@ async fn spawn_connection_handler(
     let stream_key = builder.stream_key().to_string();
     let is_publish = matches!(&builder, HandlerBuilder::Publish { .. });
 
-    let cancel_token = match global::get_cancel_token(&stream_key).await {
-        Some(token) => token,
-        None => {
-            error!(stream_key = %stream_key, "No cancellation token found for stream key");
-
-            if is_publish {
-                emit_rtmp_disconnect_event(&state_event_channel, &stream_key).await;
-            }
-            return;
-        }
+    // Retrieve the cancellation token for this stream key, which should have been created during the precreate phase.
+    let Some(cancel_token) = global::get_cancel_token(&stream_key).await else {
+        error!(stream_key = %stream_key, "No cancellation token found for stream key");
+        return;
     };
 
     let _cancel_guard = match &builder {
@@ -317,36 +293,35 @@ async fn spawn_connection_handler(
         HandlerBuilder::Publish { .. } => Some(cancel_token.clone().drop_guard()),
     };
 
-    let channel = active_channels
-        .entry(stream_key.clone())
-        .or_insert_with(|| Arc::new(LiveChannel::new()))
-        .clone();
-    let (tag_stream, cached_tags) = channel.subscribe("transport.rtmp.play.live_channel").await;
-    let tag_stream = tag_stream.with_live_id(stream_key.clone());
+    let builder = if is_publish {
+        // For publish sessions, we don't need to subscribe since we will be broadcasting to the channel.
+        let Some((_, lifecycle)) = pending_lifecycle.remove(&stream_key) else {
+            warn!(stream_key = %stream_key, "No pending lifecycle found, exiting...");
+            return;
+        };
+        builder.with_lifecycle(lifecycle)
+    } else {
+        // For play sessions, we need to subscribe to the live channel to receive the stream data.
+        let channel = active_channels
+            .entry(stream_key.clone())
+            .or_insert_with(|| Arc::new(LiveChannel::new()))
+            .clone();
+        let (tag_stream, cached_tags) = channel.subscribe("transport.rtmp.play.live_channel").await;
+        builder
+            .with_tag_stream(tag_stream.with_live_id(stream_key.clone()))
+            .with_cached_tags(cached_tags)
+    };
 
-    let handler_cancel_token = cancel_token.clone();
-    let builder = builder
-        .with_cancel_token(cancel_token)
-        .with_pipe_bus(bus)
-        .with_tag_stream(tag_stream)
-        .with_cached_tags(cached_tags);
+    let builder = builder.with_cancel_token(cancel_token).with_pipe_bus(bus);
 
     match builder.build() {
         Ok(mut handler) => {
             if let Err(e) = handler.handle().await {
                 warn!(error = %e, "Error handling RTMP session");
-
-                if is_publish && !handler_cancel_token.is_cancelled() {
-                    emit_rtmp_disconnect_event(&state_event_channel, &stream_key).await;
-                }
             }
         }
         Err(e) => {
             warn!(error = %e, "Failed to build RTMP session handler");
-
-            if is_publish {
-                emit_rtmp_disconnect_event(&state_event_channel, &stream_key).await;
-            }
         }
     }
 

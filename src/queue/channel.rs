@@ -185,7 +185,6 @@ impl<Tx, F: Flavor> Channel<Tx, Arc<Mutex<Option<AsyncRx<F>>>>> {
 }
 
 impl<Tx, F: Flavor + FlavorMC> Channel<Tx, MAsyncRx<F>> {
-    #[allow(dead_code)]
     pub fn subscribe(&self, listener_name: &'static str) -> ChannelStream<MAsyncRx<F>> {
         ChannelStream::new(
             self.rx.clone(),

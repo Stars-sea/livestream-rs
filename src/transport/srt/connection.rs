@@ -5,25 +5,19 @@ use retry::OperationResult;
 use retry::delay::{Exponential, jitter};
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
 use crate::infra::media::context::InputContext;
 use crate::infra::media::options::SrtInputStreamOptions;
 use crate::infra::media::packet::{Packet, PacketReadResult};
 use crate::infra::media::stream::StaticStreamCollection;
 use crate::pipeline::{PipeBus, UnifiedPacketContext};
-use crate::queue::MpscChannel;
-use crate::transport::contract::message::{
-    StreamEvent, send_stream_init, send_stream_state_change,
-};
-use crate::transport::contract::state::{SessionState, SrtState};
+use crate::transport::lifecycle::HandlerLifecycle;
 
 pub struct SrtConnection {
     stream_id: String,
 
     av_ctx: InputContext,
 
-    event_channel: MpscChannel<StreamEvent>,
     bus: PipeBus,
     runtime_handle: Handle,
 
@@ -36,7 +30,6 @@ pub struct SrtConnectionBuilder {
     stream_id: String,
     passphrase: Option<String>,
 
-    event_channel: MpscChannel<StreamEvent>,
     bus: PipeBus,
     runtime_handle: Handle,
 }
@@ -45,14 +38,12 @@ impl SrtConnection {
     fn new(
         stream_id: String,
         av_ctx: InputContext,
-        event_channel: MpscChannel<StreamEvent>,
         bus: PipeBus,
         runtime_handle: Handle,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             stream_id,
-            event_channel,
             av_ctx,
             bus,
             runtime_handle,
@@ -60,36 +51,11 @@ impl SrtConnection {
         }
     }
 
-    fn emit_state_change(&self, state: SrtState) -> Result<()> {
-        send_stream_state_change(
-            &self.event_channel,
-            self.stream_id.clone(),
-            SessionState::Srt(state),
-            "srt.connection.emit_state_change",
-        )?;
-        Ok(())
-    }
-
-    fn on_init(&self) -> Result<()> {
-        let init_streams = Arc::new(
-            StaticStreamCollection::from_streams(&self.av_ctx)
-                .map_err(|e| anyhow::anyhow!("Failed to snapshot SRT stream info: {}", e))?,
-        );
-        send_stream_init(
-            &self.event_channel,
-            self.stream_id.clone(),
-            init_streams,
-            "srt.connection.on_init",
-        )?;
-
-        Ok(())
-    }
-
-    fn handle_data_packet(&self, state: &mut SrtState, packet: Packet) -> Result<()> {
-        if *state == SrtState::Pending {
-            self.on_init()?;
-            *state = SrtState::Connected;
-            self.emit_state_change(*state)?;
+    fn handle_data_packet(&self, lifecycle: &mut HandlerLifecycle, packet: Packet) -> Result<()> {
+        if !lifecycle.initialized() {
+            let streams = StaticStreamCollection::from_streams(&self.av_ctx)?;
+            // TODO: make this function async and await the lifecycle init & recevie packet from channel
+            lifecycle.init(Arc::new(streams));
         }
 
         let context = UnifiedPacketContext::new(
@@ -104,32 +70,17 @@ impl SrtConnection {
         Ok(())
     }
 
-    fn run_loop(&self, state: &mut SrtState) -> Result<()> {
+    pub fn run(self, mut lifecycle: HandlerLifecycle) -> Result<()> {
         while !self.cancel_token.is_cancelled() {
             let mut packet = Packet::alloc()?;
             match read_packet_with_retry(&self.av_ctx, &mut packet) {
-                Ok(ReadResult::Ok) => self.handle_data_packet(state, packet)?,
+                Ok(ReadResult::Ok) => self.handle_data_packet(&mut lifecycle, packet)?,
                 Ok(ReadResult::Eof) => break,
                 Err(e) => anyhow::bail!("Error reading packet: {}", e),
             }
         }
 
         Ok(())
-    }
-
-    pub fn run(self) -> Result<()> {
-        let mut state = SrtState::Pending;
-        let run_result = self.run_loop(&mut state);
-
-        if let Err(e) = self.emit_state_change(SrtState::Disconnected) {
-            if run_result.is_ok() {
-                return Err(e);
-            }
-
-            warn!(stream_id = %self.stream_id, error = %e, "Failed to emit SRT disconnected state after run error");
-        }
-
-        run_result
     }
 }
 
@@ -169,7 +120,6 @@ impl SrtConnectionBuilder {
         port: u16,
         stream_id: String,
         passphrase: Option<String>,
-        event_channel: MpscChannel<StreamEvent>,
         bus: PipeBus,
         runtime_handle: Handle,
     ) -> Self {
@@ -177,7 +127,6 @@ impl SrtConnectionBuilder {
             port,
             stream_id,
             passphrase,
-            event_channel,
             bus,
             runtime_handle,
         }
@@ -195,7 +144,6 @@ impl SrtConnectionBuilder {
         Ok(SrtConnection::new(
             self.stream_id,
             av_ctx,
-            self.event_channel,
             self.bus,
             self.runtime_handle,
             cancel_token,
