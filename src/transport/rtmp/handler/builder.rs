@@ -1,11 +1,10 @@
 use anyhow::Result;
-use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use super::{Handler, PlayHandler, PublishHandler};
+use crate::channel::BroadcastRx;
 use crate::infra::media::packet::FlvTag;
 use crate::pipeline::PipeBus;
-use crate::queue::ChannelStream;
 use crate::transport::lifecycle::HandlerLifecycle;
 use crate::transport::rtmp::session::SessionGuard;
 
@@ -15,7 +14,7 @@ pub enum HandlerBuilder {
         session: Option<SessionGuard>,
         appname: Option<String>,
         stream_key: String,
-        tag_stream: Option<ChannelStream<broadcast::Receiver<FlvTag>>>,
+        tag_stream: Option<BroadcastRx<FlvTag>>,
         cached_tags: Vec<FlvTag>,
         cancel_token: Option<CancellationToken>,
     },
@@ -76,7 +75,7 @@ impl HandlerBuilder {
         self
     }
 
-    pub fn with_tag_stream(mut self, stream: ChannelStream<broadcast::Receiver<FlvTag>>) -> Self {
+    pub fn with_tag_stream(mut self, stream: BroadcastRx<FlvTag>) -> Self {
         if let HandlerBuilder::Play { tag_stream, .. } = &mut self {
             *tag_stream = Some(stream);
         }

@@ -14,7 +14,7 @@ pub struct HandlerLifecycle {
     live_id: String,
     protocol: Protocol,
 
-    initialized: AtomicBool,
+    initialized: Arc<AtomicBool>,
 }
 
 impl HandlerLifecycle {
@@ -22,7 +22,7 @@ impl HandlerLifecycle {
         Self {
             live_id,
             protocol,
-            initialized: AtomicBool::new(false),
+            initialized: Arc::new(AtomicBool::new(false)),
         }
     }
 

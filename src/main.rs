@@ -10,16 +10,15 @@ use tracing::{error, info, warn};
 use crate::infra::MinioClient;
 use crate::pipeline::handler::SegmentPersistenceHandler;
 use crate::pipeline::{PipeBus, UnifiedPipeFactory};
-use crate::queue::Channel;
 use crate::transport::TransportServer;
 use crate::transport::grpc::GrpcServer;
 
 mod abstraction;
+mod channel;
 mod config;
 mod dispatcher;
 mod infra;
 mod pipeline;
-mod queue;
 mod telemetry;
 mod transport;
 
@@ -48,17 +47,13 @@ async fn main() -> Result<()> {
     SegmentPersistenceHandler::spawn(minio_client);
 
     let cancel_token = CancellationToken::new();
-    let rtmp_forward_channel = Channel::mpsc_bounded(
-        "rtmp_forward",
-        "main.rtmp_forward",
-        config.queue.rtmpforward,
-    );
+    let (tx, rx) = channel::mpsc("rtmp_forward", None, config.queue.rtmpforward);
 
     let factory = Arc::new(UnifiedPipeFactory::new(
         segment_duration,
         segment_cachedir,
         config.queue.flvrelay,
-        rtmp_forward_channel.clone(),
+        tx.clone(),
     ));
     let packet_bus = PipeBus::new();
     packet_bus.spawn_session_listener(factory);
@@ -67,7 +62,7 @@ async fn main() -> Result<()> {
         config.rtmp.clone(),
         config.srt.clone(),
         config.queue.clone(),
-        rtmp_forward_channel,
+        rx,
         packet_bus,
         cancel_token.child_token(),
     );

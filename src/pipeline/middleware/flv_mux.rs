@@ -3,11 +3,11 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait};
+use crate::channel::{self, MpscRx, MpscTx, SendError};
 use crate::infra::media::context::FlvOutputContext;
 use crate::infra::media::packet::{FlvTag, UnifiedPacket};
 use crate::infra::media::stream::StreamCollection;
 use crate::pipeline::UnifiedPacketContext;
-use crate::queue::{Channel, ChannelSendStatus, MpscChannel};
 use crate::transport::abstraction::IngestPacket;
 
 use std::sync::Arc;
@@ -40,7 +40,7 @@ impl IngestPacket<FlvTag> for WrappedFlvTag {
 pub struct FlvMuxForwardMiddleware {
     stream_id: String,
     streams: Arc<dyn StreamCollection + Send + Sync>,
-    direct_forward_channel: MpscChannel<Box<dyn IngestPacket<FlvTag> + Send>>,
+    direct_forward_channel: MpscTx<Box<dyn IngestPacket<FlvTag> + Send>>,
     state: Mutex<ForwardState>,
 }
 
@@ -49,25 +49,17 @@ impl FlvMuxForwardMiddleware {
         stream_id: String,
         streams: Arc<dyn StreamCollection + Send + Sync>,
         flv_relay_queue_capacity: usize,
-        rtmp_tag_channel: MpscChannel<Box<dyn IngestPacket<FlvTag> + Send>>,
+        rtmp_tag_tx: &MpscTx<Box<dyn IngestPacket<FlvTag> + Send>>,
     ) -> Result<Self> {
-        let direct_forward_channel = rtmp_tag_channel
-            .clone()
-            .with_source("pipeline.flv_mux.direct")
-            .with_live_id(stream_id.clone());
+        let direct_forward_channel = rtmp_tag_tx.clone().with_live_id(stream_id.clone());
 
-        let flv_relay_channel = Channel::mpsc_bounded(
+        let (tx, rx) = channel::mpsc(
             "flv_relay",
-            "pipeline.flv_mux.flv_output_tx",
+            Some(stream_id.clone()),
             flv_relay_queue_capacity,
-        )
-        .with_live_id(stream_id.clone());
-        let flv_ctx = FlvOutputContext::create(flv_relay_channel.clone(), streams.as_ref())?;
-        Self::spawn_flv_relay(
-            flv_relay_channel.with_source("pipeline.flv_mux.relay_channel"),
-            rtmp_tag_channel.clone(),
-            stream_id.clone(),
         );
+        let flv_ctx = FlvOutputContext::create(tx, streams.as_ref())?;
+        Self::spawn_flv_relay(rx, direct_forward_channel.clone(), stream_id.clone());
 
         Ok(Self {
             stream_id,
@@ -78,24 +70,16 @@ impl FlvMuxForwardMiddleware {
     }
 
     fn spawn_flv_relay(
-        relay_channel: MpscChannel<FlvTag>,
-        rtmp_tag_channel: MpscChannel<Box<dyn IngestPacket<FlvTag> + Send>>,
+        mut tags: MpscRx<FlvTag>,
+        rtmp_tag_channel: MpscTx<Box<dyn IngestPacket<FlvTag> + Send>>,
         stream_id: String,
     ) {
-        let mut tags = match relay_channel.subscribe("pipeline.flv_mux.relay_rx") {
-            Ok(stream) => stream,
-            Err(e) => {
-                warn!(error = %e, "Failed to subscribe FLV relay stream");
-                return;
-            }
-        };
-
         tokio::spawn(async move {
             while let Some(tag) = tags.next().await {
                 let wrapped = WrappedFlvTag::new(stream_id.clone(), tag);
                 if matches!(
                     rtmp_tag_channel.send(Box::new(wrapped)),
-                    ChannelSendStatus::Disconnected
+                    Err(SendError::Closed)
                 ) {
                     break;
                 }
@@ -126,7 +110,7 @@ impl MiddlewareTrait for FlvMuxForwardMiddleware {
                 let wrapped = WrappedFlvTag::new(stream_id.to_string(), tag.clone());
                 if matches!(
                     self.direct_forward_channel.send(Box::new(wrapped)),
-                    ChannelSendStatus::Disconnected
+                    Err(SendError::Closed)
                 ) {
                     anyhow::bail!(
                         "Failed to forward FLV tag for stream {}: queue disconnected",

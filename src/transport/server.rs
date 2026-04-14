@@ -10,11 +10,11 @@ use tracing::error;
 use super::TransportController;
 use super::rtmp::RtmpServer;
 use super::srt::SrtServer;
+use crate::channel::{self, MpscRx};
 use crate::config::{QueueConfig, RtmpConfig, SrtConfig};
 use crate::infra::PortAllocator;
 use crate::infra::media::packet::FlvTag;
 use crate::pipeline::PipeBus;
-use crate::queue::{Channel, MpscChannel};
 use crate::transport::abstraction::IngestPacket;
 use crate::transport::controller::ControlMessage;
 
@@ -22,7 +22,7 @@ pub struct TransportServer {
     rtmp_config: RtmpConfig,
     srt_config: SrtConfig,
     queue_config: QueueConfig,
-    rtmp_tag_channel: Option<MpscChannel<Box<dyn IngestPacket<FlvTag> + Send>>>,
+    rtmp_tag_channel: Option<MpscRx<Box<dyn IngestPacket<FlvTag> + Send>>>,
 
     bus: PipeBus,
 
@@ -34,7 +34,7 @@ impl TransportServer {
         rtmp_config: RtmpConfig,
         srt_config: SrtConfig,
         queue_config: QueueConfig,
-        rtmp_tag_channel: MpscChannel<Box<dyn IngestPacket<FlvTag> + Send>>,
+        rtmp_tag_channel: MpscRx<Box<dyn IngestPacket<FlvTag> + Send>>,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Self {
@@ -48,10 +48,7 @@ impl TransportServer {
         }
     }
 
-    async fn rtmp_server(
-        &mut self,
-        control_channel: MpscChannel<ControlMessage>,
-    ) -> Result<RtmpServer> {
+    async fn rtmp_server(&mut self, control_channel: MpscRx<ControlMessage>) -> Result<RtmpServer> {
         let appname = self.rtmp_config.appname.clone();
         let precreate_ttl = Duration::from_secs(self.rtmp_config.session_ttl_secs);
         let cancel_token = self.cancel_token.child_token();
@@ -74,7 +71,7 @@ impl TransportServer {
         Ok(server)
     }
 
-    async fn srt_server(&self, control_channel: MpscChannel<ControlMessage>) -> Result<SrtServer> {
+    async fn srt_server(&self, control_channel: MpscRx<ControlMessage>) -> Result<SrtServer> {
         let cancel_token = self.cancel_token.child_token();
 
         let port_allocator = match self.srt_config.srt_port_range() {
@@ -95,30 +92,18 @@ impl TransportServer {
     }
 
     pub async fn spawn_task(mut self) -> Result<(TransportController, JoinHandle<Result<()>>)> {
-        let rtmp_control_channel = Channel::mpsc_bounded(
-            "control_rtmp",
-            "transport.server.rtmp_control",
-            self.queue_config.control,
-        );
-        let srt_control_channel = Channel::mpsc_bounded(
-            "control_srt",
-            "transport.server.srt_control",
-            self.queue_config.control,
-        );
+        let (rtmp_tx, rtmp_rx) = channel::mpsc("control_rtmp", None, self.queue_config.control);
+        let (srt_tx, srt_rx) = channel::mpsc("control_srt", None, self.queue_config.control);
 
-        let rtmp_server = self.rtmp_server(rtmp_control_channel.clone()).await?;
-        let srt_server = self.srt_server(srt_control_channel.clone()).await?;
+        let rtmp_server = self.rtmp_server(rtmp_rx).await?;
+        let srt_server = self.srt_server(srt_rx).await?;
 
         let handle = tokio::spawn(async move {
             tokio::try_join!(rtmp_server.run(), srt_server.run())?;
             Ok(())
         });
-        let handle = tokio::spawn(async { Ok(()) });
 
-        let controller = TransportController::new(
-            rtmp_control_channel.with_source("transport.controller.rtmp_tx"),
-            srt_control_channel.with_source("transport.controller.srt_tx"),
-        );
+        let controller = TransportController::new(rtmp_tx, srt_tx);
         Ok((controller, handle))
     }
 }

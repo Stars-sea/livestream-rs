@@ -10,10 +10,10 @@ use std::ffi::{c_int, c_void};
 use std::ptr::null_mut;
 
 use super::{Context, OutputContext};
+use crate::channel::{MpscTx, SendError};
 use crate::infra::media::ffmpeg_error;
 use crate::infra::media::packet::FlvTag;
 use crate::infra::media::stream::StreamCollection;
-use crate::queue::{ChannelSendStatus, MpscChannel};
 
 const FLV_HEADER_AND_PREV_TAG_SIZE_LEN: usize = 13;
 const FLV_TAG_HEADER_LEN: usize = 11;
@@ -28,10 +28,7 @@ pub struct FlvOutputContext {
 }
 
 impl FlvOutputContext {
-    pub fn create(
-        flv_tag_channel: MpscChannel<FlvTag>,
-        streams: &dyn StreamCollection,
-    ) -> Result<Self> {
+    pub fn create(flv_tag_tx: MpscTx<FlvTag>, streams: &dyn StreamCollection) -> Result<Self> {
         let ctx = Self::alloc_output_ctx("flv", None)?;
 
         if let Err(e) = Self::copy_streams(ctx, streams) {
@@ -41,7 +38,7 @@ impl FlvOutputContext {
 
         if unsafe { (*ctx).pb.is_null() } {
             let opaque = Box::new(FlvAvioOpaque {
-                flv_tag_channel: flv_tag_channel.with_source("infra.media.flv_output.write_packet"),
+                flv_tag_tx,
                 write_state: Mutex::new(FlvWriteState::default()),
             });
             let opaque_ptr = Box::into_raw(opaque) as *mut c_void;
@@ -163,7 +160,7 @@ impl OutputContext for FlvOutputContext {
 }
 
 struct FlvAvioOpaque {
-    flv_tag_channel: MpscChannel<FlvTag>,
+    flv_tag_tx: MpscTx<FlvTag>,
     write_state: Mutex<FlvWriteState>,
 }
 
@@ -258,10 +255,7 @@ extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int)
     };
 
     for tag in tags_to_send {
-        if matches!(
-            opaque_ref.flv_tag_channel.send(tag),
-            ChannelSendStatus::Disconnected
-        ) {
+        if matches!(opaque_ref.flv_tag_tx.send(tag), Err(SendError::Closed)) {
             return AVERROR_EOF;
         }
     }

@@ -162,7 +162,7 @@ impl PipeBus {
 
         tokio::spawn(async move {
             let dispatcher = dispatcher::singleton().await;
-            let mut events = dispatcher.subscribe_stream("pipeline.bus.session_listener");
+            let mut events = dispatcher.subscribe_stream();
 
             while let Some(event) = events.next().await {
                 if let Err(e) = bus.handle_session_event(event, factory.as_ref()) {

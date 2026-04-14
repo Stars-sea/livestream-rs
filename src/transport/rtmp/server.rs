@@ -11,10 +11,10 @@ use tracing::{debug, error, warn};
 
 use super::channel::LiveChannel;
 use super::connection::RtmpConnection;
+use crate::channel::MpscRx;
 use crate::dispatcher::Protocol;
 use crate::infra::media::packet::FlvTag;
 use crate::pipeline::PipeBus;
-use crate::queue::MpscChannel;
 use crate::telemetry::metrics;
 use crate::transport::abstraction::IngestPacket;
 use crate::transport::controller::ControlMessage;
@@ -28,8 +28,8 @@ pub struct RtmpServer {
     appname: String,
     precreate_ttl: Duration,
 
-    ctrl_channel: MpscChannel<ControlMessage>,
-    rtmp_forward_channel: MpscChannel<Box<dyn IngestPacket<FlvTag> + Send>>,
+    ctrl_channel: MpscRx<ControlMessage>,
+    rtmp_forward_channel: MpscRx<Box<dyn IngestPacket<FlvTag> + Send>>,
 
     bus: PipeBus,
     pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
@@ -43,8 +43,8 @@ impl RtmpServer {
         addr: SocketAddr,
         appname: String,
         precreate_ttl: Duration,
-        ctrl_channel: MpscChannel<ControlMessage>,
-        rtmp_forward_channel: MpscChannel<Box<dyn IngestPacket<FlvTag> + Send>>,
+        ctrl_channel: MpscRx<ControlMessage>,
+        rtmp_forward_channel: MpscRx<Box<dyn IngestPacket<FlvTag> + Send>>,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
@@ -64,14 +64,14 @@ impl RtmpServer {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        let mut ctrl_stream = self
-            .ctrl_channel
-            .subscribe("transport.rtmp.server.control_rx")
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe RTMP control channel: {}", e))?;
-        let mut rtmp_forward_stream = self
-            .rtmp_forward_channel
-            .subscribe("transport.rtmp.server.forward_rx")
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe RTMP forward channel: {}", e))?;
+        // let mut ctrl_stream = self
+        //     .ctrl_channel
+        //     .subscribe("transport.rtmp.server.control_rx")
+        //     .map_err(|e| anyhow::anyhow!("Failed to subscribe RTMP control channel: {}", e))?;
+        // let mut rtmp_forward_stream = self
+        //     .rtmp_forward_channel
+        //     .subscribe("transport.rtmp.server.forward_rx")
+        //     .map_err(|e| anyhow::anyhow!("Failed to subscribe RTMP forward channel: {}", e))?;
 
         loop {
             tokio::select! {
@@ -80,7 +80,7 @@ impl RtmpServer {
                     break;
                 }
 
-                msg = ctrl_stream.next() => {
+                msg = self.ctrl_channel.next() => {
                     if let Some(msg) = msg {
                         if let Err(e) = self.handle_control_message(msg).await {
                             error!(error = %e, "Failed to handle RTMP control message");
@@ -92,7 +92,7 @@ impl RtmpServer {
                     self.handle_accept_result(accept_res).await;
                 }
 
-                tag = rtmp_forward_stream.next() => {
+                tag = self.rtmp_forward_channel.next() => {
                     if let Some(tag) = tag {
                         self.handle_forwarded_tag(tag).await;
                     }
@@ -103,7 +103,7 @@ impl RtmpServer {
         Ok(())
     }
 
-    async fn handle_accept_result(&self, accept_res: std::io::Result<(TcpStream, SocketAddr)>) {
+    async fn handle_accept_result(&mut self, accept_res: std::io::Result<(TcpStream, SocketAddr)>) {
         fn is_retryable_accept_error(err: &std::io::Error) -> bool {
             matches!(
                 err.kind(),
@@ -158,7 +158,7 @@ impl RtmpServer {
     }
 
     fn spawn_precreate_session_ttl(
-        &self,
+        &mut self,
         live_id: String,
         lifecycle: HandlerLifecycle,
         session_token: CancellationToken,
@@ -230,7 +230,7 @@ impl RtmpServer {
         let channel = self
             .active_channels
             .entry(stream_id.clone())
-            .or_insert_with(|| Arc::new(LiveChannel::new()))
+            .or_insert_with(|| Arc::new(LiveChannel::new(&stream_id)))
             .clone();
 
         if channel.broadcast_tag(tag).await.is_err() {
@@ -304,9 +304,9 @@ async fn spawn_connection_handler(
         // For play sessions, we need to subscribe to the live channel to receive the stream data.
         let channel = active_channels
             .entry(stream_key.clone())
-            .or_insert_with(|| Arc::new(LiveChannel::new()))
+            .or_insert_with(|| Arc::new(LiveChannel::new(&stream_key)))
             .clone();
-        let (tag_stream, cached_tags) = channel.subscribe("transport.rtmp.play.live_channel").await;
+        let (tag_stream, cached_tags) = channel.subscribe().await;
         builder
             .with_tag_stream(tag_stream.with_live_id(stream_key.clone()))
             .with_cached_tags(cached_tags)

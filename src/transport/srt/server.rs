@@ -6,17 +6,17 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 use super::connection::SrtConnectionBuilder;
+use crate::channel::MpscRx;
 use crate::dispatcher::Protocol;
 use crate::infra::PortAllocator;
 use crate::pipeline::PipeBus;
-use crate::queue::MpscChannel;
 use crate::transport::controller::ControlMessage;
 use crate::transport::lifecycle::HandlerLifecycle;
 use crate::transport::registry::global;
 use crate::transport::registry::state::*;
 
 pub struct SrtServer {
-    ctrl_channel: MpscChannel<ControlMessage>,
+    ctrl_channel: MpscRx<ControlMessage>,
 
     bus: PipeBus,
 
@@ -28,7 +28,7 @@ pub struct SrtServer {
 
 impl SrtServer {
     pub fn new(
-        ctrl_channel: MpscChannel<ControlMessage>,
+        ctrl_channel: MpscRx<ControlMessage>,
         bus: PipeBus,
         port_allocator: PortAllocator,
         cancel_token: CancellationToken,
@@ -43,11 +43,6 @@ impl SrtServer {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        let mut ctrl_stream = self
-            .ctrl_channel
-            .subscribe("transport.srt.server.control_rx")
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe SRT control channel: {}", e))?;
-
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
@@ -55,7 +50,7 @@ impl SrtServer {
                     break;
                 }
 
-                msg = ctrl_stream.next() => {
+                msg = self.ctrl_channel.next() => {
                     if let Some(msg) = msg {
                         if let Err(e) = self.handle_control_message(msg).await {
                             error!(error = %e, "Failed to handle SRT control message");

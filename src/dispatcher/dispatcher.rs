@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use tokio::sync::OnceCell;
 
-use super::{SessionEvent, SessionEventStream};
-use crate::queue::{BroadcastChannel, Channel};
+use super::SessionEvent;
+use crate::channel::{self, BroadcastRx, BroadcastTx};
 
 static DISPATCHER: OnceCell<Arc<EventDispatcher>> = OnceCell::const_new();
 
@@ -15,18 +15,17 @@ pub async fn singleton() -> Arc<EventDispatcher> {
 }
 
 pub struct EventDispatcher {
-    channel: BroadcastChannel<SessionEvent>,
+    channel: BroadcastTx<SessionEvent>,
 }
 
 impl EventDispatcher {
     fn new() -> Self {
-        Self {
-            channel: Channel::broadcast("session_event", "dispatcher.event", 16),
-        }
+        let (tx, _) = channel::broadcast("session_event", None, 16);
+        Self { channel: tx }
     }
 
-    pub fn subscribe_stream(&self, listener_name: &'static str) -> SessionEventStream {
-        self.channel.subscribe(listener_name)
+    pub fn subscribe_stream(&self) -> BroadcastRx<SessionEvent> {
+        self.channel.subscribe()
     }
 
     #[allow(unused)]
@@ -35,7 +34,7 @@ impl EventDispatcher {
         F: Fn(SessionEvent) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        let mut events = self.subscribe_stream("dispatcher.on_session_event");
+        let mut events = self.subscribe_stream();
         tokio::spawn(async move {
             while let Some(event) = events.next().await {
                 callback(event).await;
