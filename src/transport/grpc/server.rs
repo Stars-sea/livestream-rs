@@ -1,12 +1,10 @@
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::Result;
 use regex::Regex;
-use tokio::sync::Mutex;
-use tokio::time::{Instant, sleep};
+use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tonic::codegen::tokio_stream;
 use tonic::transport::Server;
@@ -26,8 +24,7 @@ use crate::transport::registry::state::*;
 use crate::transport::{TransportController, registry};
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
-const DESCRIPTOR_READY_TIMEOUT: Duration = Duration::from_secs(2);
-const SESSION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 pub struct GrpcServer {
@@ -42,7 +39,7 @@ impl GrpcServer {
     pub fn new(
         grpc_config: GrpcConfig,
         rtmp_config: RtmpConfig,
-        control: Arc<Mutex<TransportController>>,
+        control: Arc<TransportController>,
     ) -> Self {
         Self {
             grpc_config,
@@ -104,58 +101,16 @@ fn server_trace_span(request: &tonic::codegen::http::Request<()>) -> Span {
 
 #[derive(Clone)]
 struct IngestGrpcService {
-    control: Arc<Mutex<TransportController>>,
+    control: Arc<TransportController>,
     rtmp_config: RtmpConfig,
 }
 
 impl IngestGrpcService {
-    fn new(control: Arc<Mutex<TransportController>>, rtmp_config: RtmpConfig) -> Self {
+    fn new(control: Arc<TransportController>, rtmp_config: RtmpConfig) -> Self {
         Self {
             control,
             rtmp_config,
         }
-    }
-
-    async fn wait_until<T, F, Fut>(&self, timeout: Duration, mut check: F) -> Option<T>
-    where
-        F: FnMut() -> Fut,
-        Fut: Future<Output = Option<T>>,
-    {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(value) = check().await {
-                return Some(value);
-            }
-
-            if Instant::now() >= deadline {
-                return None;
-            }
-
-            sleep(POLL_INTERVAL).await;
-        }
-    }
-
-    async fn wait_for_descriptor(
-        &self,
-        live_id: &str,
-        timeout: Duration,
-    ) -> Option<SessionDescriptor> {
-        self.wait_until(timeout, || async {
-            registry::INSTANCE.get_descriptor(live_id).await
-        })
-        .await
-    }
-
-    async fn wait_for_session_removed(&self, live_id: &str, timeout: Duration) -> bool {
-        self.wait_until(timeout, || async {
-            if registry::INSTANCE.get_session(live_id).is_none() {
-                Some(())
-            } else {
-                None
-            }
-        })
-        .await
-        .is_some()
     }
 }
 
@@ -193,7 +148,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         let protocol = api::InputProtocol::try_from(request.input_protocol)
             .map_err(|_| Status::invalid_argument("input_protocol is invalid"))?;
 
-        match protocol {
+        let ack = match protocol {
             api::InputProtocol::Srt => {
                 let passphrase = request
                     .passphrase
@@ -208,43 +163,24 @@ impl api::livestream_server::Livestream for IngestGrpcService {
                 }
 
                 self.control
-                    .lock()
-                    .await
                     .precreate_srt_session(live_id.clone(), passphrase)
-                    .map_err(|e| Status::internal(e.to_string()))?;
+                    .map_err(|e| Status::internal(e.to_string()))?
             }
-            api::InputProtocol::Rtmp => {
-                self.control
-                    .lock()
-                    .await
-                    .precreate_rtmp_session(live_id.clone())
-                    .map_err(|e| Status::internal(e.to_string()))?;
-            }
-        }
-
-        let descriptor = self
-            .wait_for_descriptor(&live_id, DESCRIPTOR_READY_TIMEOUT)
-            .await;
-
-        let descriptor = match descriptor {
-            Some(descriptor) => descriptor,
-            None => {
-                if let Err(e) = self.control.lock().await.close_session(live_id.clone()) {
-                    warn!(live_id = %live_id, error = %e, "failed to cleanup timed-out stream session");
-                }
-
-                if !self
-                    .wait_for_session_removed(&live_id, SESSION_CLEANUP_TIMEOUT)
-                    .await
-                {
-                    warn!(live_id = %live_id, "timed out waiting for session cleanup after start timeout");
-                }
-
-                return Err(Status::deadline_exceeded(
-                    "stream descriptor creation timed out",
-                ));
-            }
+            api::InputProtocol::Rtmp => self
+                .control
+                .precreate_rtmp_session(live_id.clone())
+                .map_err(|e| Status::internal(e.to_string()))?,
         };
+
+        let res = ack.recv_async().await.map_err(|_| {
+            Status::internal("failed to receive acknowledgment from transport controller")
+        })?;
+
+        let descriptor = res.map_err(|e| {
+            Status::internal(format!(
+                "transport controller failed to precreate session: {e}"
+            ))
+        })?;
 
         Ok(Response::new(api::StartLivestreamResponse {
             stream: Some(self.descriptor_to_proto(descriptor)),
@@ -271,18 +207,18 @@ impl api::livestream_server::Livestream for IngestGrpcService {
             return Err(Status::not_found("stream not found"));
         }
 
-        self.control
-            .lock()
-            .await
+        let ack = self
+            .control
             .close_session(live_id.clone())
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let is_success = self
-            .wait_for_session_removed(&live_id, SESSION_CLEANUP_TIMEOUT)
-            .await;
+        let res = ack.recv_async().await.map_err(|_| {
+            Status::internal("failed to receive acknowledgment from transport controller")
+        })?;
 
-        if !is_success {
-            warn!(live_id = %live_id, "timed out waiting for stream cleanup after stop request");
+        let is_success = res.is_ok();
+        if let Err(e) = res {
+            warn!(live_id = %live_id, error = %e, "timed out waiting for stream cleanup after stop request");
         }
 
         Ok(Response::new(api::StopLivestreamResponse { is_success }))

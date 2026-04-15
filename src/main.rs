@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -68,7 +67,7 @@ async fn main() -> Result<()> {
     );
 
     let (controller, mut controller_task) = transport_server.spawn_task().await?;
-    let controller = Arc::new(Mutex::new(controller));
+    let controller = Arc::new(controller);
 
     let grpc_server = GrpcServer::new(config.grpc.clone(), config.rtmp.clone(), controller.clone());
 
