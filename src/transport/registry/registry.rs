@@ -115,20 +115,17 @@ impl ConnectionRegistry {
             None => anyhow::bail!("No session found for stream key {}", stream_key),
         };
 
-        let current_state = session.read().await.state;
+        let mut session = session.write().await;
+        let current_state = session.state;
+
+        if current_state == SessionState::Disconnected {
+            anyhow::bail!("Cannot update state of a disconnected session");
+        }
         if current_state == new_state {
             return Ok(()); // No state change needed
         }
 
-        Self::update_session_state(session.clone(), current_state, new_state).await
-    }
-
-    async fn update_session_state(
-        session: Arc<RwLock<SessionDescriptor>>,
-        current_state: SessionState,
-        new_state: SessionState,
-    ) -> Result<()> {
-        session.write().await.state = match new_state {
+        session.state = match new_state {
             SessionState::Connecting if current_state == SessionState::Pending => {
                 SessionState::Connecting
             }
