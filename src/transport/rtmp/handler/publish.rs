@@ -45,16 +45,14 @@ impl PublishHandler {
     async fn publish_finished(&mut self) -> Result<()> {
         debug!("Publish finished for stream key: {}", self.stream_key);
 
-        if let Err(e) = self.lifecycle.disconnected().await {
-            warn!(stream_key = %self.stream_key, error = %e, "Failed to emit RTMP disconnected state on publish finish");
-        }
+        self.lifecycle.disconnect();
 
         self.cancel_token.cancel();
         Ok(())
     }
 
     async fn send_publish_tag(&self, tag: FlvTag, source: &'static str) -> Result<()> {
-        if let Err(e) = self.lifecycle.connected().await {
+        if let Err(e) = self.lifecycle.connect().await {
             warn!(stream_key = %self.stream_key, error = %e, "Failed to emit RTMP connected state on publish tag");
         }
 

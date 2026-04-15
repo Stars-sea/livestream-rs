@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::Result;
 use dashmap::{DashMap, Entry};
-use tokio::sync::{OnceCell, RwLock};
+use tokio::sync::RwLock;
 use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
 
@@ -10,14 +10,8 @@ use crate::transport::registry::state::*;
 
 const SESSION_REMOVAL_GRACE_PERIOD: Duration = Duration::from_millis(200);
 
-static REGISTRY: OnceCell<Arc<ConnectionRegistry>> = OnceCell::const_new();
-
-pub async fn global_registry() -> Arc<ConnectionRegistry> {
-    REGISTRY
-        .get_or_init(async || Arc::new(ConnectionRegistry::new()))
-        .await
-        .clone()
-}
+pub static INSTANCE: LazyLock<Arc<ConnectionRegistry>> =
+    LazyLock::new(|| Arc::new(ConnectionRegistry::new()));
 
 type SessionEntry = (Arc<RwLock<SessionDescriptor>>, CancellationToken);
 

@@ -19,8 +19,8 @@ use crate::telemetry::metrics;
 use crate::transport::abstraction::IngestPacket;
 use crate::transport::controller::ControlMessage;
 use crate::transport::lifecycle::HandlerLifecycle;
+use crate::transport::registry;
 use crate::transport::registry::state::{SessionEndpoint, SessionState};
-use crate::transport::registry::*;
 use crate::transport::rtmp::handler::HandlerBuilder;
 
 pub struct RtmpServer {
@@ -138,8 +138,7 @@ impl RtmpServer {
                 Ok(())
             }
             ControlMessage::StopStream { live_id } => {
-                let token = global::get_cancel_token(&live_id).await;
-                if let Some(token) = token {
+                if let Some(token) = registry::INSTANCE.get_cancel_token(&live_id) {
                     token.cancel();
                 }
 
@@ -176,9 +175,7 @@ impl RtmpServer {
                 debug!(live_id = %live_id, "Pending lifecycle already removed for live_id, skipping TTL expiration");
                 return;
             };
-            if let Err(e) = lifecycle.disconnected().await {
-                error!(live_id = %live_id, error = %e, "Failed to notify lifecycle of disconnection");
-            }
+            lifecycle.disconnect();
 
             warn!(
                 live_id = %live_id,
@@ -205,8 +202,7 @@ impl RtmpServer {
         let stream_id = packet.live_id().to_string();
         let tag = packet.into_packet();
 
-        let state = global::get_session_state(&stream_id).await;
-        let Some(state) = state else {
+        let Some(state) = registry::INSTANCE.get_state(&stream_id).await else {
             self.active_channels.remove(&stream_id);
             debug!(stream_id = %stream_id, "Dropping forwarded RTMP tag for unknown session");
             return;
@@ -274,7 +270,7 @@ async fn spawn_connection_handler(
     let is_publish = matches!(&builder, HandlerBuilder::Publish { .. });
 
     // Retrieve the cancellation token for this stream key, which should have been created during the precreate phase.
-    let Some(cancel_token) = global::get_cancel_token(&stream_key).await else {
+    let Some(cancel_token) = registry::INSTANCE.get_cancel_token(&stream_key) else {
         error!(stream_key = %stream_key, "No cancellation token found for stream key");
         return;
     };

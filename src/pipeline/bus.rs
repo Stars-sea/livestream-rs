@@ -161,8 +161,7 @@ impl PipeBus {
         let bus = self.clone();
 
         tokio::spawn(async move {
-            let dispatcher = dispatcher::singleton().await;
-            let mut events = dispatcher.subscribe_stream();
+            let mut events = dispatcher::INSTANCE.subscribe_stream();
 
             while let Some(event) = events.next().await {
                 if let Err(e) = bus.handle_session_event(event, factory.as_ref()) {

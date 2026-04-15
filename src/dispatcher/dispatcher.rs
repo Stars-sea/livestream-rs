@@ -1,18 +1,10 @@
-use std::sync::Arc;
-
-use tokio::sync::OnceCell;
+use std::sync::{Arc, LazyLock};
 
 use super::SessionEvent;
 use crate::channel::{self, BroadcastRx, BroadcastTx};
 
-static DISPATCHER: OnceCell<Arc<EventDispatcher>> = OnceCell::const_new();
-
-pub async fn singleton() -> Arc<EventDispatcher> {
-    DISPATCHER
-        .get_or_init(async || Arc::new(EventDispatcher::new()))
-        .await
-        .clone()
-}
+pub static INSTANCE: LazyLock<Arc<EventDispatcher>> =
+    LazyLock::new(|| Arc::new(EventDispatcher::new()));
 
 pub struct EventDispatcher {
     channel: BroadcastTx<SessionEvent>,

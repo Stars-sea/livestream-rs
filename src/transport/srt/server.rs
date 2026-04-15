@@ -11,7 +11,7 @@ use crate::infra::PortAllocator;
 use crate::pipeline::PipeBus;
 use crate::transport::controller::ControlMessage;
 use crate::transport::lifecycle::HandlerLifecycle;
-use crate::transport::registry::global;
+use crate::transport::registry;
 use crate::transport::registry::state::*;
 
 pub struct SrtServer {
@@ -77,7 +77,7 @@ impl SrtServer {
                 self.spawn_connection_handler(live_id, passphrase).await
             }
             ControlMessage::StopStream { live_id } => {
-                if let Some(cancel_token) = global::get_cancel_token(&live_id).await {
+                if let Some(cancel_token) = registry::INSTANCE.get_cancel_token(&live_id) {
                     cancel_token.cancel();
                 }
 

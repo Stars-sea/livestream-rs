@@ -71,7 +71,7 @@ impl SrtConnection {
             read_packet_loop(live_id_for_log, self.av_ctx, tx, cancel_token)
         });
 
-        if let Err(e) = lifecycle.connected().await {
+        if let Err(e) = lifecycle.connect().await {
             error!("Error during lifecycle connected callback: {}", e);
         }
 

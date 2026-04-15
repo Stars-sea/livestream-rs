@@ -22,9 +22,8 @@ use super::api;
 use super::api::livestream_server::LivestreamServer;
 use crate::config::{GrpcConfig, RtmpConfig};
 use crate::dispatcher::Protocol;
-use crate::transport::TransportController;
-use crate::transport::registry::global;
 use crate::transport::registry::state::*;
+use crate::transport::{TransportController, registry};
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
 const DESCRIPTOR_READY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -142,14 +141,14 @@ impl IngestGrpcService {
         timeout: Duration,
     ) -> Option<SessionDescriptor> {
         self.wait_until(timeout, || async {
-            global::get_session_descriptor(live_id).await
+            registry::INSTANCE.get_descriptor(live_id).await
         })
         .await
     }
 
     async fn wait_for_session_removed(&self, live_id: &str, timeout: Duration) -> bool {
         self.wait_until(timeout, || async {
-            if global::get_session(live_id).await.is_none() {
+            if registry::INSTANCE.get_session(live_id).is_none() {
                 Some(())
             } else {
                 None
@@ -187,7 +186,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
             return Err(Status::invalid_argument("live_id cannot be empty"));
         }
 
-        if global::get_session(&live_id).await.is_some() {
+        if registry::INSTANCE.get_session(&live_id).is_some() {
             return Err(Status::already_exists("stream already exists"));
         }
 
@@ -268,7 +267,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
             return Err(Status::invalid_argument("live_id cannot be empty"));
         }
 
-        if global::get_session(&live_id).await.is_none() {
+        if registry::INSTANCE.get_session(&live_id).is_none() {
             return Err(Status::not_found("stream not found"));
         }
 
@@ -299,7 +298,8 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         &self,
         _request: Request<api::ListLivestreamsRequest>,
     ) -> Result<Response<api::ListLivestreamsResponse>, Status> {
-        let streams = global::list_session_descriptors()
+        let streams = registry::INSTANCE
+            .list_descriptors()
             .await
             .into_iter()
             .map(|descriptor| self.descriptor_to_proto(descriptor))
@@ -324,7 +324,8 @@ impl api::livestream_server::Livestream for IngestGrpcService {
             return Err(Status::invalid_argument("live_id cannot be empty"));
         }
 
-        let descriptor = global::get_session_descriptor(&live_id)
+        let descriptor = registry::INSTANCE
+            .get_descriptor(&live_id)
             .await
             .ok_or_else(|| Status::not_found("stream not found"))?;
 
@@ -350,7 +351,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         }
 
         let stream = async_stream::try_stream! {
-            while let Some(state) = global::get_session_state(&live_id).await {
+            while let Some(state) = registry::INSTANCE.get_state(&live_id).await {
                 yield api::WatchLivestreamResponse {
                     stream: Self::session_state_to_proto(state),
                 };

@@ -149,12 +149,10 @@ impl SegmentMiddleware {
     }
 
     async fn emit_segment_complete(live_id: String, segment_path: PathBuf) {
-        dispatcher::singleton()
-            .await
-            .send(SessionEvent::SegmentComplete {
-                live_id,
-                path: segment_path,
-            });
+        dispatcher::INSTANCE.send(SessionEvent::SegmentComplete {
+            live_id,
+            path: segment_path,
+        });
     }
 
     fn create_stream_temp_dir(stream_id: &str, cache_dir: &str) -> Result<TempDir> {

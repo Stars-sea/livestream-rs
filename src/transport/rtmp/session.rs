@@ -15,8 +15,7 @@ use super::connection::RtmpConnection;
 use super::handler::HandlerBuilder;
 use crate::infra::media::packet::FlvTag;
 use crate::transport::lifecycle::HandlerLifecycle;
-use crate::transport::registry::global;
-use crate::transport::registry::state::*;
+use crate::transport::registry::{self, state::*};
 
 pub struct SessionGuard {
     connection: RtmpConnection,
@@ -356,7 +355,7 @@ impl SessionGuard {
         stream_id: u32,
         ct: &CancellationToken,
     ) -> Result<Option<HandlerBuilder>> {
-        let is_active = match global::get_session_state(&stream_key).await {
+        let is_active = match registry::INSTANCE.get_state(&stream_key).await {
             Some(state) => state == SessionState::Connected,
             None => false,
         };
@@ -391,21 +390,16 @@ impl SessionGuard {
             }
         };
 
-        let state = match global::get_session_state(&stream_key).await {
-            Some(state) => state,
-            None => {
-                debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
-                if let Err(e) = lifecycle.disconnected().await {
-                    warn!(stream_key = %stream_key, error = %e, "Failed to emit disconnected state for pending lifecycle");
-                }
+        let Some(state) = registry::INSTANCE.get_state(&stream_key).await else {
+            debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
+            lifecycle.disconnect();
 
-                self.reject_request(request_id, "StreamNotFound", "Stream not found", ct)
-                    .await?;
-                anyhow::bail!(
-                    "Client requested to publish to a stream that does not exist: {}",
-                    stream_key
-                );
-            }
+            self.reject_request(request_id, "StreamNotFound", "Stream not found", ct)
+                .await?;
+            anyhow::bail!(
+                "Client requested to publish to a stream that does not exist: {}",
+                stream_key
+            );
         };
 
         if state == SessionState::Pending {
@@ -418,9 +412,7 @@ impl SessionGuard {
                     }
                 }
                 Err(e) => {
-                    if let Err(e) = lifecycle.disconnected().await {
-                        warn!(stream_key = %stream_key, error = %e, "Failed to emit disconnected state for pending lifecycle after accept_request failure");
-                    }
+                    lifecycle.disconnect();
                     anyhow::bail!(
                         "Failed to accept publish request for stream {}: {}",
                         stream_key,
