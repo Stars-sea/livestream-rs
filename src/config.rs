@@ -84,6 +84,10 @@ pub struct QueueConfig {
     #[serde(default = "default_flv_relay_queue_capacity")]
     pub flvrelay: usize,
 
+    /// Capacity for internal AVPacket relay queue in SRT connection handler
+    #[serde(default = "default_packet_relay_queue_capacity")]
+    pub packetrelay: usize,
+
     /// Capacity for transport control queues (RTMP/SRT)
     #[serde(default = "default_control_queue_capacity")]
     pub control: usize,
@@ -150,6 +154,10 @@ fn default_control_queue_capacity() -> usize {
 
 fn default_event_queue_capacity() -> usize {
     4096
+}
+
+fn default_packet_relay_queue_capacity() -> usize {
+    2048
 }
 
 impl SrtConfig {
@@ -226,6 +234,7 @@ impl Default for QueueConfig {
             flvrelay: default_flv_relay_queue_capacity(),
             control: default_control_queue_capacity(),
             event: default_event_queue_capacity(),
+            packetrelay: default_packet_relay_queue_capacity(),
         }
     }
 }
@@ -264,7 +273,8 @@ impl AppConfig {
         }
 
         const MAX_RTMP_SESSION_TTL_SECS: u64 = 86_400;
-        if self.rtmp.session_ttl_secs == 0 || self.rtmp.session_ttl_secs > MAX_RTMP_SESSION_TTL_SECS {
+        if self.rtmp.session_ttl_secs == 0 || self.rtmp.session_ttl_secs > MAX_RTMP_SESSION_TTL_SECS
+        {
             anyhow::bail!(
                 "RTMP session TTL must be in 1..={} seconds, got {}",
                 MAX_RTMP_SESSION_TTL_SECS,

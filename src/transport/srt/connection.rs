@@ -21,15 +21,18 @@ pub struct SrtConnection {
     bus: PipeBus,
 
     cancel_token: CancellationToken,
+    relay_queue_capacity: usize,
 }
 
 pub struct SrtConnectionBuilder {
     port: u16,
 
-    stream_id: String,
+    live_id: String,
     passphrase: Option<String>,
 
     bus: PipeBus,
+
+    relay_queue_capacity: usize,
 }
 
 impl SrtConnection {
@@ -38,12 +41,14 @@ impl SrtConnection {
         av_ctx: InputContext,
         bus: PipeBus,
         cancel_token: CancellationToken,
+        relay_queue_capacity: usize,
     ) -> Self {
         Self {
             stream_id,
             av_ctx,
             bus,
             cancel_token,
+            relay_queue_capacity,
         }
     }
 
@@ -57,7 +62,11 @@ impl SrtConnection {
         let live_id_for_log = live_id.clone();
         let cancel_token = self.cancel_token.clone();
 
-        let (tx, mut rx) = channel::spsc("srt-relay", Some(live_id.clone()), 1024);
+        let (tx, mut rx) = channel::spsc(
+            "srt-relay",
+            Some(live_id.clone()),
+            self.relay_queue_capacity,
+        );
         tokio::task::spawn_blocking(move || {
             read_packet_loop(live_id_for_log, self.av_ctx, tx, cancel_token)
         });
@@ -90,7 +99,7 @@ fn read_packet_loop(
             Ok(p) => p,
             Err(e) => {
                 error!("Failed to allocate packet: {}, retrying...", e);
-                break;
+                continue;
             }
         };
 
@@ -150,29 +159,36 @@ fn read_packet_loop(
 }
 
 impl SrtConnectionBuilder {
-    pub fn new(port: u16, stream_id: String, passphrase: Option<String>, bus: PipeBus) -> Self {
+    pub fn new(
+        port: u16,
+        live_id: String,
+        passphrase: Option<String>,
+        bus: PipeBus,
+        relay_queue_capacity: usize,
+    ) -> Self {
         Self {
             port,
-            stream_id,
+            live_id,
             passphrase,
             bus,
+            relay_queue_capacity,
         }
     }
 
-    pub fn stream_id(&self) -> &str {
-        &self.stream_id
+    pub fn live_id(&self) -> &str {
+        &self.live_id
     }
 
     pub fn build(self, cancel_token: CancellationToken) -> Result<SrtConnection> {
-        let options =
-            SrtInputStreamOptions::new(self.port, self.stream_id.clone(), self.passphrase);
+        let options = SrtInputStreamOptions::new(self.port, self.live_id.clone(), self.passphrase);
 
         let av_ctx = InputContext::open(&options, cancel_token.clone())?;
         Ok(SrtConnection::new(
-            self.stream_id,
+            self.live_id,
             av_ctx,
             self.bus,
             cancel_token,
+            self.relay_queue_capacity,
         ))
     }
 }

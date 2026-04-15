@@ -18,6 +18,7 @@ pub struct SrtServer {
     ctrl_channel: MpscRx<ControlMessage>,
 
     bus: PipeBus,
+    relay_queue_capacity: usize,
 
     port_allocator: Arc<PortAllocator>,
     port_cache: Arc<DashMap<String, u16>>, // live_id -> port
@@ -29,12 +30,14 @@ impl SrtServer {
     pub fn new(
         ctrl_channel: MpscRx<ControlMessage>,
         bus: PipeBus,
+        relay_queue_capacity: usize,
         port_allocator: PortAllocator,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             ctrl_channel,
             bus,
+            relay_queue_capacity,
             port_allocator: Arc::new(port_allocator),
             port_cache: Arc::new(DashMap::new()),
             cancel_token,
@@ -139,7 +142,13 @@ impl SrtServer {
             }
         });
 
-        let builder = SrtConnectionBuilder::new(port, live_id, passphrase, self.bus.clone());
+        let builder = SrtConnectionBuilder::new(
+            port,
+            live_id,
+            passphrase,
+            self.bus.clone(),
+            self.relay_queue_capacity,
+        );
 
         spawn_connection_handler(builder, lifecycle, cancel_token).await
     }
@@ -151,7 +160,7 @@ async fn spawn_connection_handler(
     cancel_token: CancellationToken,
 ) -> Result<()> {
     let _cancel_guard = cancel_token.clone().drop_guard();
-    let stream_id = builder.stream_id().to_string();
+    let stream_id = builder.live_id().to_string();
 
     if let Err(e) = lifecycle.connecting().await {
         error!(stream_id = %stream_id, "Failed to transition to connecting state: {:?}", e);

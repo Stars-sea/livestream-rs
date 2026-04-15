@@ -15,6 +15,7 @@ pub struct HandlerLifecycle {
     protocol: Protocol,
 
     initialized: AtomicBool,
+    disconnected: AtomicBool,
 }
 
 impl HandlerLifecycle {
@@ -23,6 +24,7 @@ impl HandlerLifecycle {
             live_id,
             protocol,
             initialized: AtomicBool::new(false),
+            disconnected: AtomicBool::new(false),
         }
     }
 
@@ -85,10 +87,24 @@ impl HandlerLifecycle {
     }
 
     pub async fn disconnected(&self) -> Result<()> {
-        global::update_session_state(&self.live_id, SessionState::Disconnected).await?;
-        let Some(ct) = global::get_cancel_token(&self.live_id).await else {
+        if !self.try_mark_disconnected() {
+            return Ok(());
+        }
+
+        Self::run_disconnected(&self.live_id, self.protocol).await
+    }
+
+    fn try_mark_disconnected(&self) -> bool {
+        self.disconnected
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    async fn run_disconnected(live_id: &str, protocol: Protocol) -> Result<()> {
+        global::update_session_state(live_id, SessionState::Disconnected).await?;
+        let Some(ct) = global::get_cancel_token(live_id).await else {
             // This can happen if the session was never fully registered or if it was already cleaned up
-            debug!(live_id = %self.live_id, "No cancellation token found for live_id during disconnect");
+            debug!(live_id = %live_id, "No cancellation token found for live_id during disconnect");
             return Ok(());
         };
         ct.cancel();
@@ -96,8 +112,8 @@ impl HandlerLifecycle {
         dispatcher::singleton()
             .await
             .send(SessionEvent::SessionEnded {
-                live_id: self.live_id.clone(),
-                protocol: self.protocol,
+                live_id: live_id.to_string(),
+                protocol,
             });
 
         Ok(())
@@ -106,10 +122,29 @@ impl HandlerLifecycle {
 
 impl Drop for HandlerLifecycle {
     fn drop(&mut self) {
-        // TODO:
-        // This is a safety net to ensure we mark the session as disconnected if the lifecycle handler is dropped without an explicit disconnect.
-        // However, since this is a synchronous drop, we can't await the async disconnected() method.
-        // In a real implementation, we might want to have a synchronous way to mark the session as disconnected or ensure that all lifecycles are properly cleaned up before dropping.
-        self.disconnected();
+        if !self.try_mark_disconnected() {
+            return;
+        }
+
+        let live_id = self.live_id.clone();
+        let protocol = self.protocol;
+
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            debug!(
+                live_id = %live_id,
+                "No Tokio runtime available in Drop; skip async disconnected fallback"
+            );
+            return;
+        };
+
+        handle.spawn(async move {
+            if let Err(e) = Self::run_disconnected(&live_id, protocol).await {
+                debug!(
+                    live_id = %live_id,
+                    error = %e,
+                    "Drop fallback failed to mark session disconnected"
+                );
+            }
+        });
     }
 }

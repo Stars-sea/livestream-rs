@@ -85,6 +85,7 @@ impl TransportServer {
         let server = SrtServer::new(
             control_channel,
             self.bus.clone(),
+            self.queue_config.packetrelay,
             port_allocator,
             cancel_token,
         );
