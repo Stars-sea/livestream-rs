@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crossfire::{AsyncRx, MTx, Tx, mpsc, spsc};
 use tokio::sync::broadcast;
 
@@ -17,46 +19,43 @@ pub type BroadcastTx<T> = sender::Sender<broadcast::Sender<T>>;
 pub type BroadcastRx<T> = receiver::Receiver<broadcast::Receiver<T>>;
 
 pub fn mpsc<T: Send + 'static>(
-    queue: impl Into<String>,
+    queue: &'static str,
     live_id: impl Into<Option<String>>,
     size: usize,
 ) -> (MpscTx<T>, MpscRx<T>) {
     let (tx, rx) = mpsc::bounded_blocking_async(size);
 
-    let queue = queue.into();
-    let live_id = live_id.into();
+    let live_id: Option<Arc<str>> = live_id.into().map(|s| s.into());
 
-    let tx = MpscTx::new(tx, &queue, live_id.clone());
-    let rx = MpscRx::new(rx, &queue, live_id);
+    let tx = MpscTx::new(tx, queue, live_id.clone());
+    let rx = MpscRx::new(rx, queue, live_id);
     (tx, rx)
 }
 
 pub fn spsc<T: Send + 'static>(
-    queue: impl Into<String>,
+    queue: &'static str,
     live_id: impl Into<Option<String>>,
     size: usize,
 ) -> (SpscTx<T>, SpscRx<T>) {
     let (tx, rx) = spsc::bounded_blocking_async(size);
 
-    let queue = queue.into();
-    let live_id = live_id.into();
+    let live_id: Option<Arc<str>> = live_id.into().map(|s| s.into());
 
-    let tx = SpscTx::new(tx, &queue, live_id.clone());
-    let rx = SpscRx::new(rx, &queue, live_id);
+    let tx = SpscTx::new(tx, queue, live_id.clone());
+    let rx = SpscRx::new(rx, queue, live_id);
     (tx, rx)
 }
 
 pub fn broadcast<T: Clone + Send + 'static>(
-    queue: impl Into<String>,
+    queue: &'static str,
     live_id: impl Into<Option<String>>,
     size: usize,
 ) -> (BroadcastTx<T>, BroadcastRx<T>) {
     let (tx, rx) = broadcast::channel(size);
 
-    let queue = queue.into();
-    let live_id = live_id.into();
+    let live_id: Option<Arc<str>> = live_id.into().map(|s| s.into());
 
-    let tx = BroadcastTx::new(tx, &queue, live_id.clone());
-    let rx = BroadcastRx::new(rx, &queue, live_id);
+    let tx = BroadcastTx::new(tx, queue, live_id.clone());
+    let rx = BroadcastRx::new(rx, queue, live_id);
     (tx, rx)
 }

@@ -1,68 +1,62 @@
 use crossfire::{BlockingTxTrait, MTx, TrySendError, Tx, mpsc, spsc};
+use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::warn;
 
 use crate::channel::{error::SendError, receiver::Receiver};
-use crate::telemetry::metrics;
+use crate::metric_queue_drop;
 
 pub struct Sender<T> {
     inner: T,
 
-    queue: String,
-    live_id: Option<String>,
+    queue: &'static str,
+    live_id: Option<Arc<str>>,
 }
 
 impl<T> Sender<T> {
-    pub(super) fn new(
-        inner: T,
-        queue: impl Into<String>,
-        live_id: Option<impl Into<String>>,
-    ) -> Self {
+    pub(super) fn new(inner: T, queue: &'static str, live_id: Option<Arc<str>>) -> Self {
         Self {
             inner,
-            queue: queue.into(),
-            live_id: live_id.map(|id| id.into()),
+            queue,
+            live_id,
         }
     }
 
-    pub fn with_live_id(self, live_id: impl Into<String>) -> Self {
-        Self {
-            inner: self.inner,
-            queue: self.queue.clone(),
-            live_id: Some(live_id.into()),
-        }
+    pub fn with_live_id(mut self, live_id: impl Into<Arc<str>>) -> Self {
+        self.live_id = Some(live_id.into());
+        self
     }
 }
 
 fn send_impl<T>(
-    name: impl Into<String>,
+    queue: &'static str,
+    live_id: &Option<Arc<str>>,
     sender: &impl BlockingTxTrait<T>,
     item: T,
 ) -> Result<(), SendError>
 where
     T: Send + 'static,
 {
-    let name = name.into();
     match sender.try_send(item) {
         Ok(()) => Ok(()),
         Err(TrySendError::Full(_)) => {
             warn!(
-                queue = name,
-                live_id = "N/A",
+                queue = queue,
+                live_id = %live_id.as_deref().unwrap_or("N/A"),
                 error = "channel full",
                 "Sender channel is full, dropping item"
             );
-            metrics::get_metrics().record_queue_drop(&name, "full");
+            metric_queue_drop!(queue, "full");
             Err(SendError::Full)
         }
         Err(TrySendError::Disconnected(_)) => {
             warn!(
-                queue = name,
-                live_id = "N/A",
+                queue = queue,
+                live_id = %live_id.as_deref().unwrap_or("N/A"),
                 error = "channel disconnected",
                 "Sender stream closed"
             );
-            metrics::get_metrics().record_queue_drop(&name, "disconnected");
+            metric_queue_drop!(queue, "disconnected");
             Err(SendError::Closed)
         }
     }
@@ -73,7 +67,7 @@ where
     T: Send + 'static,
 {
     pub fn send(&self, item: T) -> Result<(), SendError> {
-        send_impl(&self.queue, &self.inner, item)
+        send_impl(self.queue, &self.live_id, &self.inner, item)
     }
 }
 
@@ -82,7 +76,7 @@ where
     T: Send + 'static,
 {
     pub fn send(&self, item: T) -> Result<(), SendError> {
-        send_impl(&self.queue, &self.inner, item)
+        send_impl(self.queue, &self.live_id, &self.inner, item)
     }
 }
 
@@ -96,18 +90,18 @@ where
             Err(e) => {
                 warn!(
                     queue = self.queue,
-                    live_id = self.live_id.as_deref().unwrap_or("N/A"),
+                    live_id = %self.live_id.as_deref().unwrap_or("N/A"),
                     error = %e,
                     "Sender stream closed"
                 );
-                metrics::get_metrics().record_queue_drop(&self.queue, "disconnected");
+                metric_queue_drop!(self.queue, "disconnected");
                 Err(SendError::Closed)
             }
         }
     }
 
     pub fn subscribe(&self) -> Receiver<broadcast::Receiver<T>> {
-        Receiver::new(self.inner.subscribe(), &self.queue, self.live_id.clone())
+        Receiver::new(self.inner.subscribe(), self.queue, self.live_id.clone())
     }
 }
 
@@ -118,7 +112,7 @@ where
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            queue: self.queue.clone(),
+            queue: self.queue,
             live_id: self.live_id.clone(),
         }
     }

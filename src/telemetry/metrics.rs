@@ -14,7 +14,6 @@ mod imp {
         pub pipeline_middleware_latency_us: Histogram<u64>,
         pub transport_queue_drops_total: Counter<u64>,
         pub transport_listener_lag_total: Counter<u64>,
-        pub transport_auto_recycle_total: Counter<u64>,
         pub transport_ttl_expirations_total: Counter<u64>,
     }
 
@@ -57,13 +56,6 @@ mod imp {
                     .with_description("Lagged messages observed by broadcast listeners")
                     .with_unit("{item}")
                     .build(),
-                transport_auto_recycle_total: meter
-                    .u64_counter("transport_auto_recycle_total")
-                    .with_description(
-                        "Automatic cleanup executions triggered by disconnected sessions",
-                    )
-                    .with_unit("{session}")
-                    .build(),
                 transport_ttl_expirations_total: meter
                     .u64_counter("transport_ttl_expirations_total")
                     .with_description("Session cleanups triggered by precreate TTL expiration")
@@ -82,64 +74,60 @@ mod imp {
             self.pipeline_active_streams.add(-1, &[]);
         }
 
-        pub fn record_pipeline_packet(&self, packet_kind: impl Into<String>, bytes: u64) {
-            let labels = [KeyValue::new("packet.kind", packet_kind.into())];
+        pub fn record_pipeline_packet(&self, packet_kind: &'static str, bytes: u64) {
+            let labels = [KeyValue::new("packet.kind", packet_kind)];
             self.pipeline_packets_total.add(1, &labels);
             self.pipeline_bytes_total.add(bytes, &labels);
         }
 
-        pub fn record_pipeline_error(&self, stage: impl Into<String>) {
+        pub fn record_pipeline_error(&self, stage: &'static str) {
             self.pipeline_errors_total
-                .add(1, &[KeyValue::new("pipeline.stage", stage.into())]);
+                .add(1, &[KeyValue::new("pipeline.stage", stage)]);
         }
 
-        pub fn record_middleware_latency(&self, middleware: impl Into<String>, duration_us: u64) {
-            self.pipeline_middleware_latency_us.record(
-                duration_us,
-                &[KeyValue::new("middleware", middleware.into())],
-            );
+        pub fn record_middleware_latency(&self, middleware: &'static str, duration_us: u64) {
+            self.pipeline_middleware_latency_us
+                .record(duration_us, &[KeyValue::new("middleware", middleware)]);
         }
 
-        pub fn record_queue_drop(&self, queue: impl Into<String>, reason: impl Into<String>) {
+        pub fn record_queue_drop(&self, queue: &'static str, reason: &'static str) {
             self.transport_queue_drops_total.add(
                 1,
                 &[
-                    KeyValue::new("queue", queue.into()),
-                    KeyValue::new("reason", reason.into()),
+                    KeyValue::new("queue", queue),
+                    KeyValue::new("reason", reason),
                 ],
             );
         }
 
-        pub fn record_listener_lag(&self, listener: impl Into<String>, skipped: u64) {
-            self.transport_listener_lag_total.add(
-                skipped.max(1),
-                &[KeyValue::new("listener", listener.into())],
-            );
+        pub fn record_listener_lag(&self, listener: &'static str, skipped: u64) {
+            self.transport_listener_lag_total
+                .add(skipped.max(1), &[KeyValue::new("listener", listener)]);
         }
 
-        pub fn record_auto_recycle(&self, protocol: impl Into<String>, cause: impl Into<String>) {
-            self.transport_auto_recycle_total.add(
-                1,
-                &[
-                    KeyValue::new("protocol", protocol.into()),
-                    KeyValue::new("cause", cause.into()),
-                ],
-            );
-        }
-
-        pub fn record_ttl_expiration(
-            &self,
-            protocol: impl Into<String>,
-            reason: impl Into<String>,
-        ) {
+        pub fn record_ttl_expiration(&self, protocol: &'static str, reason: &'static str) {
             self.transport_ttl_expirations_total.add(
                 1,
                 &[
-                    KeyValue::new("protocol", protocol.into()),
-                    KeyValue::new("reason", reason.into()),
+                    KeyValue::new("protocol", protocol),
+                    KeyValue::new("reason", reason),
                 ],
             );
         }
+    }
+
+    #[macro_export]
+    macro_rules! metric_queue_drop {
+        ($queue:expr, $reason:expr) => {
+            $crate::telemetry::metrics::get_metrics().record_queue_drop($queue, $reason)
+        };
+    }
+
+    #[macro_export]
+    macro_rules! metric_listener_lag {
+        ($listener:expr, $skipped:expr) => {
+            $crate::telemetry::metrics::get_metrics().record_listener_lag($listener, $skipped)
+        };
     }
 }
 
@@ -157,26 +145,27 @@ mod imp {
 
         pub fn pipeline_stream_ended(&self) {}
 
-        pub fn record_pipeline_packet(&self, _packet_kind: impl Into<String>, _bytes: u64) {}
+        pub fn record_pipeline_packet(&self, _packet_kind: &'static str, _bytes: u64) {}
 
-        pub fn record_pipeline_error(&self, _stage: impl Into<String>) {}
+        pub fn record_pipeline_error(&self, _stage: &'static str) {}
 
-        pub fn record_middleware_latency(&self, _middleware: impl Into<String>, _duration_us: u64) {
-        }
+        pub fn record_middleware_latency(&self, _middleware: &'static str, _duration_us: u64) {}
 
-        pub fn record_queue_drop(&self, _queue: impl Into<String>, _reason: impl Into<String>) {}
+        pub fn record_queue_drop(&self, _queue: &'static str, _reason: &'static str) {}
 
-        pub fn record_listener_lag(&self, _listener: impl Into<String>, _skipped: u64) {}
+        pub fn record_listener_lag(&self, _listener: &'static str, _skipped: u64) {}
 
-        pub fn record_auto_recycle(&self, _protocol: impl Into<String>, _cause: impl Into<String>) {
-        }
+        pub fn record_ttl_expiration(&self, _protocol: &'static str, _reason: &'static str) {}
+    }
 
-        pub fn record_ttl_expiration(
-            &self,
-            _protocol: impl Into<String>,
-            _reason: impl Into<String>,
-        ) {
-        }
+    #[macro_export]
+    macro_rules! metric_queue_drop {
+        ($queue:expr, $reason:expr) => {};
+    }
+
+    #[macro_export]
+    macro_rules! metric_listener_lag {
+        ($listener:expr, $skipped:expr) => {};
     }
 }
 

@@ -3,52 +3,49 @@ use crossfire::{AsyncRx, AsyncRxTrait, mpsc, spsc};
 use tokio::sync::broadcast;
 use tracing::warn;
 
-use crate::{channel::error::RecvError, telemetry::metrics};
+use crate::{channel::error::RecvError, metric_listener_lag, metric_queue_drop};
+use std::sync::Arc;
 
 pub struct Receiver<T> {
     inner: T,
 
-    queue: String,
-    live_id: Option<String>,
+    queue: &'static str,
+    live_id: Option<Arc<str>>,
 }
 
 impl<T> Receiver<T> {
-    pub(super) fn new(
-        inner: T,
-        queue: impl Into<String>,
-        live_id: Option<impl Into<String>>,
-    ) -> Self {
+    pub(super) fn new(inner: T, queue: &'static str, live_id: Option<Arc<str>>) -> Self {
         Self {
             inner,
-            queue: queue.into(),
-            live_id: live_id.map(|id| id.into()),
+            queue,
+            live_id,
         }
     }
 
-    pub fn with_live_id(mut self, live_id: impl Into<String>) -> Self {
+    pub fn with_live_id(mut self, live_id: impl Into<Arc<str>>) -> Self {
         self.live_id = Some(live_id.into());
         self
     }
 }
 
 async fn recv_impl<T>(
-    name: impl Into<String>,
+    queue: &'static str,
+    live_id: Option<Arc<str>>,
     receiver: &mut impl AsyncRxTrait<T>,
 ) -> Result<T, RecvError>
 where
     T: Send + 'static,
 {
-    let name = name.into();
     match receiver.recv().await {
         Ok(res) => Ok(res),
         Err(e) => {
             warn!(
-                queue = name,
-                live_id = "N/A",
+                queue = queue,
+                live_id = %live_id.as_deref().unwrap_or("N/A"),
                 error = %e,
                 "Receiver stream closed"
             );
-            metrics::get_metrics().record_queue_drop(&name, "disconnected");
+            metric_queue_drop!(queue, "disconnected");
             Err(RecvError::Closed)
         }
     }
@@ -59,7 +56,7 @@ where
     T: Send + 'static,
 {
     pub async fn recv(&mut self) -> Result<T, RecvError> {
-        recv_impl(&self.queue, &mut self.inner).await
+        recv_impl(self.queue, self.live_id.clone(), &mut self.inner).await
     }
 
     pub async fn next(&mut self) -> Option<T> {
@@ -75,7 +72,7 @@ where
     T: Send + 'static,
 {
     pub async fn recv(&mut self) -> Result<T, RecvError> {
-        recv_impl(&self.queue, &mut self.inner).await
+        recv_impl(self.queue, self.live_id.clone(), &mut self.inner).await
     }
 
     pub async fn next(&mut self) -> Option<T> {
@@ -96,21 +93,21 @@ where
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!(
                     queue = self.queue,
-                    live_id = self.live_id.as_deref().unwrap_or("N/A"),
+                    live_id = %self.live_id.as_deref().unwrap_or("N/A"),
                     skipped = n,
                     "Receiver lagged and skipped {n} messages",
                 );
-                metrics::get_metrics().record_listener_lag(&self.queue, n);
+                metric_listener_lag!(self.queue, n);
                 Err(RecvError::Lagged(n))
             }
             Err(broadcast::error::RecvError::Closed) => {
                 warn!(
                     queue = self.queue,
-                    live_id = self.live_id.as_deref().unwrap_or("N/A"),
+                    live_id = %self.live_id.as_deref().unwrap_or("N/A"),
                     error = "Stream closed",
                     "Receiver stream closed"
                 );
-                metrics::get_metrics().record_queue_drop(&self.queue, "disconnected");
+                metric_queue_drop!(self.queue, "disconnected");
                 Err(RecvError::Closed)
             }
         }
@@ -134,7 +131,7 @@ where
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            queue: self.queue.clone(),
+            queue: self.queue,
             live_id: self.live_id.clone(),
         }
     }
