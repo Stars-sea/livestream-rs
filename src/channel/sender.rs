@@ -1,4 +1,4 @@
-use crossfire::{MTx, TrySendError, mpsc};
+use crossfire::{BlockingTxTrait, MTx, TrySendError, Tx, mpsc, spsc};
 use tokio::sync::broadcast;
 use tracing::warn;
 
@@ -34,34 +34,55 @@ impl<T> Sender<T> {
     }
 }
 
+fn send_impl<T>(
+    name: impl Into<String>,
+    sender: &impl BlockingTxTrait<T>,
+    item: T,
+) -> Result<(), SendError>
+where
+    T: Send + 'static,
+{
+    let name = name.into();
+    match sender.try_send(item) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_)) => {
+            warn!(
+                queue = name,
+                live_id = "N/A",
+                error = "channel full",
+                "Sender channel is full, dropping item"
+            );
+            metrics::get_metrics().record_queue_drop(&name, "full");
+            Err(SendError::Full)
+        }
+        Err(TrySendError::Disconnected(_)) => {
+            warn!(
+                queue = name,
+                live_id = "N/A",
+                error = "channel disconnected",
+                "Sender stream closed"
+            );
+            metrics::get_metrics().record_queue_drop(&name, "disconnected");
+            Err(SendError::Closed)
+        }
+    }
+}
+
 impl<T> Sender<MTx<mpsc::Array<T>>>
 where
     T: Send + 'static,
 {
     pub fn send(&self, item: T) -> Result<(), SendError> {
-        match self.inner.try_send(item) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => {
-                warn!(
-                    queue = self.queue,
-                    live_id = self.live_id.as_deref().unwrap_or("N/A"),
-                    error = "channel full",
-                    "Sender channel is full, dropping item"
-                );
-                metrics::get_metrics().record_queue_drop(&self.queue, "full");
-                Err(SendError::Full)
-            }
-            Err(TrySendError::Disconnected(_)) => {
-                warn!(
-                    queue = self.queue,
-                    live_id = self.live_id.as_deref().unwrap_or("N/A"),
-                    error = "channel disconnected",
-                    "Sender stream closed"
-                );
-                metrics::get_metrics().record_queue_drop(&self.queue, "disconnected");
-                Err(SendError::Closed)
-            }
-        }
+        send_impl(&self.queue, &self.inner, item)
+    }
+}
+
+impl<T> Sender<Tx<spsc::Array<T>>>
+where
+    T: Send + 'static,
+{
+    pub fn send(&self, item: T) -> Result<(), SendError> {
+        send_impl(&self.queue, &self.inner, item)
     }
 }
 

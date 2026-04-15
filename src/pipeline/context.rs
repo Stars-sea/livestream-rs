@@ -12,9 +12,13 @@ pub struct UnifiedPacketContext {
 }
 
 impl UnifiedPacketContext {
-    pub fn new(id: String, packet: UnifiedPacket, cancel_token: CancellationToken) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        packet: UnifiedPacket,
+        cancel_token: CancellationToken,
+    ) -> Self {
         Self {
-            id,
+            id: id.into(),
             packet,
             cancel_token,
         }

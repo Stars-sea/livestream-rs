@@ -14,7 +14,7 @@ pub struct HandlerLifecycle {
     live_id: String,
     protocol: Protocol,
 
-    initialized: Arc<AtomicBool>,
+    initialized: AtomicBool,
 }
 
 impl HandlerLifecycle {
@@ -22,7 +22,7 @@ impl HandlerLifecycle {
         Self {
             live_id,
             protocol,
-            initialized: Arc::new(AtomicBool::new(false)),
+            initialized: AtomicBool::new(false),
         }
     }
 
@@ -106,6 +106,10 @@ impl HandlerLifecycle {
 
 impl Drop for HandlerLifecycle {
     fn drop(&mut self) {
+        // TODO:
+        // This is a safety net to ensure we mark the session as disconnected if the lifecycle handler is dropped without an explicit disconnect.
+        // However, since this is a synchronous drop, we can't await the async disconnected() method.
+        // In a real implementation, we might want to have a synchronous way to mark the session as disconnected or ensure that all lifecycles are properly cleaned up before dropping.
         self.disconnected();
     }
 }

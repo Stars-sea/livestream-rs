@@ -32,6 +32,7 @@ impl Packet {
 
     /// Allocates a new packet.
     ///
+    /// Note: only allocates the AVPacket itself, not the data buffers.
     /// # Errors
     /// Returns an error if allocation fails.
     pub fn alloc() -> Result<Self> {

@@ -1,7 +1,6 @@
 use anyhow::Result;
 use dashmap::DashMap;
 use std::sync::Arc;
-use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
@@ -140,39 +139,36 @@ impl SrtServer {
             }
         });
 
-        let builder = SrtConnectionBuilder::new(
-            port,
-            live_id,
-            passphrase,
-            self.bus.clone(),
-            Handle::current(),
-        );
+        let builder = SrtConnectionBuilder::new(port, live_id, passphrase, self.bus.clone());
 
-        spawn_connection_handler(builder, lifecycle, cancel_token)
+        spawn_connection_handler(builder, lifecycle, cancel_token).await
     }
 }
 
-fn spawn_connection_handler(
+async fn spawn_connection_handler(
     builder: SrtConnectionBuilder,
     lifecycle: HandlerLifecycle,
     cancel_token: CancellationToken,
 ) -> Result<()> {
-    std::thread::spawn(move || {
-        let _cancel_guard = cancel_token.clone().drop_guard();
-        let stream_id = builder.stream_id().to_string();
+    let _cancel_guard = cancel_token.clone().drop_guard();
+    let stream_id = builder.stream_id().to_string();
 
-        let connection = match builder.build(cancel_token) {
-            Ok(c) => c,
-            Err(e) => {
-                error!(stream_id = %stream_id, "Failed to build SRT connection: {:?}", e);
-                return;
-            }
-        };
+    if let Err(e) = lifecycle.connecting().await {
+        error!(stream_id = %stream_id, "Failed to transition to connecting state: {:?}", e);
+        anyhow::bail!("Failed to transition to connecting state: {:?}", e);
+    }
 
-        if let Err(e) = connection.run(lifecycle) {
-            error!(stream_id = %stream_id, "Error in SRT connection handler: {:?}", e);
+    let connection = match tokio::task::spawn_blocking(move || builder.build(cancel_token)).await? {
+        Ok(connection) => connection,
+        Err(e) => {
+            error!(stream_id = %stream_id, "Failed to build SRT connection: {:?}", e);
+            anyhow::bail!("Failed to build SRT connection: {:?}", e);
         }
-    });
+    };
+
+    if let Err(e) = connection.run(lifecycle).await {
+        error!(stream_id = %stream_id, "Error in SRT connection handler: {:?}", e);
+    }
 
     Ok(())
 }
