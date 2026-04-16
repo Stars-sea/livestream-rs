@@ -157,6 +157,13 @@ impl RtmpServer {
         pending_lifecycle.insert(live_id.clone(), lifecycle);
 
         let ttl = self.precreate_ttl;
+        if ttl.is_zero() {
+            debug!(
+                "Precreate session TTL is set to 0, skipping TTL expiration for live_id {}",
+                live_id
+            );
+            return;
+        }
 
         tokio::spawn(async move {
             tokio::select! {

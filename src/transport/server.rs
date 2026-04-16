@@ -50,7 +50,7 @@ impl TransportServer {
 
     async fn rtmp_server(&mut self, control_channel: MpscRx<ControlMessage>) -> Result<RtmpServer> {
         let appname = self.rtmp_config.appname.clone();
-        let precreate_ttl = Duration::from_secs(self.rtmp_config.session_ttl_secs);
+        let precreate_ttl = Duration::from_secs(self.rtmp_config.ttl);
         let cancel_token = self.cancel_token.child_token();
         let rtmp_tag_channel = self
             .rtmp_tag_channel

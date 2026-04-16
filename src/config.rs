@@ -58,8 +58,8 @@ pub struct RtmpConfig {
     pub appname: String,
 
     /// TTL in seconds for precreated RTMP sessions that never get published.
-    #[serde(default = "default_rtmp_session_ttl_secs")]
-    pub session_ttl_secs: u64,
+    #[serde(default = "default_rtmp_ttl")]
+    pub ttl: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -136,7 +136,7 @@ fn default_rtmp_appname() -> String {
     "lives".to_string()
 }
 
-fn default_rtmp_session_ttl_secs() -> u64 {
+fn default_rtmp_ttl() -> u64 {
     30
 }
 
@@ -213,7 +213,7 @@ impl Default for RtmpConfig {
         Self {
             port: default_rtmp_port(),
             appname: default_rtmp_appname(),
-            session_ttl_secs: default_rtmp_session_ttl_secs(),
+            ttl: default_rtmp_ttl(),
         }
     }
 }
@@ -273,12 +273,11 @@ impl AppConfig {
         }
 
         const MAX_RTMP_SESSION_TTL_SECS: u64 = 86_400;
-        if self.rtmp.session_ttl_secs == 0 || self.rtmp.session_ttl_secs > MAX_RTMP_SESSION_TTL_SECS
-        {
+        if self.rtmp.ttl > MAX_RTMP_SESSION_TTL_SECS {
             anyhow::bail!(
-                "RTMP session TTL must be in 1..={} seconds, got {}",
+                "RTMP session TTL must be in 0..={} seconds, got {}",
                 MAX_RTMP_SESSION_TTL_SECS,
-                self.rtmp.session_ttl_secs
+                self.rtmp.ttl
             );
         }
 

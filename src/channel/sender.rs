@@ -87,6 +87,7 @@ where
     pub fn send(&self, item: T) -> Result<(), SendError> {
         match self.inner.send(item) {
             Ok(_) => Ok(()),
+            Err(_) if self.inner.is_empty() => Ok(()),
             Err(e) => {
                 warn!(
                     queue = self.queue,
