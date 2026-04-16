@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::{JoinError, JoinHandle};
@@ -6,11 +6,15 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+use crate::channel::{MpscRx, MpscTx};
+use crate::config::{AppConfig, MinioConfig, PersistenceConfig};
 use crate::infra::MinioClient;
+use crate::infra::media::packet::FlvTag;
 use crate::pipeline::handler::SegmentPersistenceHandler;
 use crate::pipeline::{PipeBus, UnifiedPipeFactory};
-use crate::transport::TransportServer;
+use crate::transport::abstraction::IngestPacket;
 use crate::transport::grpc::GrpcServer;
+use crate::transport::{TransportController, TransportServer};
 
 mod abstraction;
 mod channel;
@@ -35,29 +39,59 @@ async fn main() -> Result<()> {
     infra::media::init();
 
     let config = config::load_config();
-    let segment_duration = Duration::from_secs(config.persistence.duration.max(1) as u64);
-    let segment_cachedir = config.persistence.cachedir.trim().to_string();
-
-    let minio = config
-        .minio
-        .clone()
-        .context("MinIO configuration is missing")?;
-    let minio_client = MinioClient::create(minio).await?;
-    SegmentPersistenceHandler::spawn(minio_client);
-
     let cancel_token = CancellationToken::new();
     let (tx, rx) = channel::mpsc("rtmp_forward", None, config.queue.rtmpforward);
+
+    spawn_persistence_handler(config.minio.clone().expect("Minio config is required")).await?;
+
+    let packet_bus = build_pipe_bus(&config.persistence, &config.queue, tx);
+
+    let (controller, controller_task) =
+        build_transport_server(&config, packet_bus, rx, cancel_token.clone()).await?;
+
+    let grpc_task = spawn_grpc_server(&config, controller, cancel_token.child_token());
+
+    wait_for_tasks(controller_task, grpc_task, cancel_token).await;
+
+    if let Some(guard) = otel_guard {
+        guard.shutdown();
+    }
+
+    Ok(())
+}
+
+async fn spawn_persistence_handler(minio: MinioConfig) -> Result<()> {
+    let minio_client = MinioClient::create(minio).await?;
+    SegmentPersistenceHandler::spawn(minio_client);
+    Ok(())
+}
+
+fn build_pipe_bus(
+    persistence_config: &PersistenceConfig,
+    queue_config: &config::QueueConfig,
+    rtmp_tag_tx: MpscTx<IngestPacket<FlvTag>>,
+) -> PipeBus {
+    let segment_duration = Duration::from_secs(persistence_config.duration.max(1) as u64);
+    let segment_cachedir = persistence_config.cachedir.trim().to_string();
 
     let factory = Arc::new(UnifiedPipeFactory::new(
         segment_duration,
         segment_cachedir,
-        config.queue.flvrelay,
-        tx.clone(),
+        queue_config.flvrelay,
+        rtmp_tag_tx,
     ));
-    let packet_bus = PipeBus::new();
-    packet_bus.spawn_session_listener(factory);
+    let bus = PipeBus::new();
+    bus.spawn_session_listener(factory);
+    bus
+}
 
-    let transport_server = TransportServer::new(
+async fn build_transport_server(
+    config: &AppConfig,
+    packet_bus: PipeBus,
+    rx: MpscRx<IngestPacket<FlvTag>>,
+    cancel_token: CancellationToken,
+) -> Result<(Arc<TransportController>, JoinHandle<Result<()>>)> {
+    let server = TransportServer::new(
         config.rtmp.clone(),
         config.srt.clone(),
         config.queue.clone(),
@@ -66,15 +100,24 @@ async fn main() -> Result<()> {
         cancel_token.child_token(),
     );
 
-    let (controller, mut controller_task) = transport_server.spawn_task().await?;
-    let controller = Arc::new(controller);
+    let (controller, task) = server.spawn_task().await?;
+    Ok((Arc::new(controller), task))
+}
 
+fn spawn_grpc_server(
+    config: &config::AppConfig,
+    controller: Arc<TransportController>,
+    cancel_token: CancellationToken,
+) -> JoinHandle<Result<()>> {
     let grpc_server = GrpcServer::new(config.grpc.clone(), config.rtmp.clone(), controller.clone());
+    tokio::spawn(async move { grpc_server.serve(cancel_token).await })
+}
 
-    let grpc_cancel = cancel_token.child_token();
-
-    let mut grpc_task = tokio::spawn(async move { grpc_server.serve(grpc_cancel).await });
-
+async fn wait_for_tasks(
+    mut controller_task: JoinHandle<Result<()>>,
+    mut grpc_task: JoinHandle<Result<()>>,
+    cancel_token: CancellationToken,
+) {
     tokio::select! {
         transport_result = &mut controller_task => {
             log_server_task_result("transport", transport_result);
@@ -87,12 +130,6 @@ async fn main() -> Result<()> {
             await_server_task_with_timeout("transport", &mut controller_task).await;
         }
     }
-
-    if let Some(guard) = otel_guard {
-        guard.shutdown();
-    }
-
-    Ok(())
 }
 
 async fn await_server_task_with_timeout(server_name: &str, task: &mut JoinHandle<Result<()>>) {
