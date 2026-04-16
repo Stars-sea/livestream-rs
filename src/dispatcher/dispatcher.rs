@@ -16,7 +16,7 @@ impl EventDispatcher {
         Self { channel: tx }
     }
 
-    pub fn subscribe_stream(&self) -> BroadcastRx<SessionEvent> {
+    pub fn subscribe(&self) -> BroadcastRx<SessionEvent> {
         self.channel.subscribe()
     }
 
@@ -24,9 +24,9 @@ impl EventDispatcher {
     pub fn on_session_event<Fut, F>(&self, callback: F)
     where
         F: Fn(SessionEvent) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
     {
-        let mut events = self.subscribe_stream();
+        let mut events = self.subscribe();
         tokio::spawn(async move {
             while let Some(event) = events.next().await {
                 callback(event).await;

@@ -15,6 +15,7 @@ impl<P> IngestPacket<P> {
         &self.live_id
     }
 
+    #[allow(unused)]
     pub fn packet(&self) -> &P {
         &self.packet
     }
@@ -23,5 +24,3 @@ impl<P> IngestPacket<P> {
         self.packet
     }
 }
-
-pub trait IngestHandler {}

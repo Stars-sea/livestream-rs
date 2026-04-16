@@ -1,10 +1,8 @@
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 
 use anyhow::Result;
 use regex::Regex;
-use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tonic::codegen::tokio_stream;
 use tonic::transport::Server;
@@ -19,13 +17,11 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use super::api;
 use super::api::livestream_server::LivestreamServer;
 use crate::config::{GrpcConfig, RtmpConfig};
-use crate::dispatcher::Protocol;
+use crate::dispatcher::{self, Protocol};
 use crate::transport::registry::state::*;
 use crate::transport::{TransportController, registry};
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
-
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 pub struct GrpcServer {
     grpc_config: GrpcConfig,
@@ -287,12 +283,17 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         }
 
         let stream = async_stream::try_stream! {
-            while let Some(state) = registry::INSTANCE.get_state(&live_id).await {
-                yield api::WatchLivestreamResponse {
-                    stream: Self::session_state_to_proto(state),
-                };
+            let mut subscription = dispatcher::INSTANCE.subscribe();
+            while let Some(event) = subscription.next().await {
+                if event.id() != live_id {
+                    continue;
+                }
 
-                sleep(POLL_INTERVAL).await;
+                if let Some(state) = registry::INSTANCE.get_state(&live_id).await {
+                    yield api::WatchLivestreamResponse {
+                        stream: Self::session_state_to_proto(state),
+                    };
+                }
             }
         };
 

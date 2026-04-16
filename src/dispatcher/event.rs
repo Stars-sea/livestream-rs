@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -33,7 +34,18 @@ pub enum SessionEvent {
     },
 }
 
-impl std::fmt::Debug for SessionEvent {
+impl SessionEvent {
+    pub fn id(&self) -> &str {
+        match self {
+            SessionEvent::SessionStarted { live_id, .. } => live_id,
+            SessionEvent::SessionInit { live_id, .. } => live_id,
+            SessionEvent::SessionEnded { live_id, .. } => live_id,
+            SessionEvent::SegmentComplete { live_id, .. } => live_id,
+        }
+    }
+}
+
+impl Debug for SessionEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SessionEvent::SessionStarted { live_id, protocol } => f
