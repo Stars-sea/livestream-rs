@@ -66,8 +66,8 @@ Configuration source: `config.toml` + environment variables (env overrides file)
 - `queue.*` / `QUEUE_*`
 - `minio.uri/accesskey/secretkey/bucket` / `MINIO_*`
 
-`rtmp.session_ttl_secs` 默认值为 30 秒，允许范围为 1..=86400 秒。  
-`rtmp.session_ttl_secs` defaults to 30 seconds, with a valid range of 1..=86400 seconds.
+`rtmp.ttl` 默认值为 30 秒，允许范围为 0..=86400 秒。  
+`rtmp.ttl` defaults to 30 seconds, with a valid range of 0..=86400 seconds.
 
 最小必需项：`MINIO_*` 必填，否则启动失败。  
 Minimum required: `MINIO_*` must be provided, otherwise startup fails.
