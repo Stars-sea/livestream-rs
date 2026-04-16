@@ -1,7 +1,7 @@
 #[cfg(feature = "opentelemetry")]
 mod imp {
     use opentelemetry::{
-        KeyValue, global,
+        global,
         metrics::{Counter, Histogram, UpDownCounter},
     };
     use std::sync::OnceLock;
@@ -77,112 +77,132 @@ mod imp {
         })
     }
 
-    impl OTelMetrics {
-        pub fn pipeline_stream_started(&self) {
-            self.pipeline_active_streams.add(1, &[]);
-        }
+    #[macro_export]
+    macro_rules! metric_pipeline_stream_started {
+        () => {{
+            $crate::telemetry::metrics::get_metrics()
+                .pipeline_active_streams
+                .add(1, &[]);
+        }};
+    }
 
-        pub fn pipeline_stream_ended(&self) {
-            self.pipeline_active_streams.add(-1, &[]);
-        }
+    #[macro_export]
+    macro_rules! metric_pipeline_stream_ended {
+        () => {{
+            $crate::telemetry::metrics::get_metrics()
+                .pipeline_active_streams
+                .add(-1, &[]);
+        }};
+    }
 
-        pub fn record_pipeline_packet(&self, packet_kind: &'static str, bytes: u64) {
-            let labels = [KeyValue::new("packet.kind", packet_kind)];
-            self.pipeline_packets_total.add(1, &labels);
-            self.pipeline_bytes_total.add(bytes, &labels);
-        }
+    #[macro_export]
+    macro_rules! metric_pipeline_packet {
+        ($packet_kind:expr, $bytes:expr) => {{
+            let labels = [::opentelemetry::KeyValue::new("packet.kind", $packet_kind)];
+            let metrics = $crate::telemetry::metrics::get_metrics();
+            metrics.pipeline_packets_total.add(1, &labels);
+            metrics.pipeline_bytes_total.add(($bytes) as u64, &labels);
+        }};
+    }
 
-        pub fn record_pipeline_error(&self, stage: &'static str) {
-            self.pipeline_errors_total
-                .add(1, &[KeyValue::new("pipeline.stage", stage)]);
-        }
+    #[macro_export]
+    macro_rules! metric_pipeline_error {
+        ($stage:expr) => {{
+            $crate::telemetry::metrics::get_metrics()
+                .pipeline_errors_total
+                .add(
+                    1,
+                    &[::opentelemetry::KeyValue::new("pipeline.stage", $stage)],
+                );
+        }};
+    }
 
-        pub fn record_middleware_latency(&self, middleware: &'static str, duration_us: u64) {
-            self.pipeline_middleware_latency_us
-                .record(duration_us, &[KeyValue::new("middleware", middleware)]);
-        }
-
-        pub fn record_queue_drop(&self, queue: &'static str, reason: &'static str) {
-            self.transport_queue_drops_total.add(
-                1,
-                &[
-                    KeyValue::new("queue", queue),
-                    KeyValue::new("reason", reason),
-                ],
-            );
-        }
-
-        pub fn record_listener_lag(&self, listener: &'static str, skipped: u64) {
-            self.transport_listener_lag_total
-                .add(skipped.max(1), &[KeyValue::new("listener", listener)]);
-        }
-
-        pub fn record_ttl_expiration(&self, protocol: &'static str, reason: &'static str) {
-            self.transport_ttl_expirations_total.add(
-                1,
-                &[
-                    KeyValue::new("protocol", protocol),
-                    KeyValue::new("reason", reason),
-                ],
-            );
-        }
-
-        pub fn record_minio_upload_total(&self, bucket: &str, status: &'static str) {
-            self.storage_minio_uploads_total.add(
-                1,
-                &[
-                    KeyValue::new("storage.bucket.name", bucket.to_string()),
-                    KeyValue::new("upload.status", status),
-                ],
-            );
-        }
-
-        pub fn record_minio_upload_latency_ms(
-            &self,
-            bucket: &str,
-            status: &'static str,
-            duration_ms: u64,
-        ) {
-            self.storage_minio_upload_latency_ms.record(
-                duration_ms,
-                &[
-                    KeyValue::new("storage.bucket.name", bucket.to_string()),
-                    KeyValue::new("upload.status", status),
-                ],
-            );
-        }
+    #[macro_export]
+    macro_rules! metric_middleware_latency_us {
+        ($middleware:expr, $duration_us:expr) => {{
+            $crate::telemetry::metrics::get_metrics()
+                .pipeline_middleware_latency_us
+                .record(
+                    ($duration_us) as u64,
+                    &[::opentelemetry::KeyValue::new("middleware", $middleware)],
+                );
+        }};
     }
 
     #[macro_export]
     macro_rules! metric_queue_drop {
-        ($queue:expr, $reason:expr) => {
-            $crate::telemetry::metrics::get_metrics().record_queue_drop($queue, $reason)
-        };
+        ($queue:expr, $reason:expr) => {{
+            $crate::telemetry::metrics::get_metrics()
+                .transport_queue_drops_total
+                .add(
+                    1,
+                    &[
+                        ::opentelemetry::KeyValue::new("queue", $queue),
+                        ::opentelemetry::KeyValue::new("reason", $reason),
+                    ],
+                );
+        }};
     }
 
     #[macro_export]
     macro_rules! metric_listener_lag {
-        ($listener:expr, $skipped:expr) => {
-            $crate::telemetry::metrics::get_metrics().record_listener_lag($listener, $skipped)
-        };
+        ($listener:expr, $skipped:expr) => {{
+            $crate::telemetry::metrics::get_metrics()
+                .transport_listener_lag_total
+                .add(
+                    (($skipped) as u64).max(1),
+                    &[::opentelemetry::KeyValue::new("listener", $listener)],
+                );
+        }};
+    }
+
+    #[macro_export]
+    macro_rules! metric_ttl_expiration {
+        ($protocol:expr, $reason:expr) => {{
+            $crate::telemetry::metrics::get_metrics()
+                .transport_ttl_expirations_total
+                .add(
+                    1,
+                    &[
+                        ::opentelemetry::KeyValue::new("protocol", $protocol),
+                        ::opentelemetry::KeyValue::new("reason", $reason),
+                    ],
+                );
+        }};
     }
 
     #[macro_export]
     macro_rules! metric_minio_upload_total {
-        ($bucket:expr, $status:expr) => {
-            $crate::telemetry::metrics::get_metrics().record_minio_upload_total($bucket, $status)
-        };
+        ($bucket:expr, $status:expr) => {{
+            let bucket = $bucket;
+            let status = $status;
+            $crate::telemetry::metrics::get_metrics()
+                .storage_minio_uploads_total
+                .add(
+                    1,
+                    &[
+                        ::opentelemetry::KeyValue::new("storage.bucket.name", bucket.to_string()),
+                        ::opentelemetry::KeyValue::new("upload.status", status),
+                    ],
+                );
+        }};
     }
 
     #[macro_export]
     macro_rules! metric_minio_upload_latency_ms {
-        ($bucket:expr, $status:expr, $duration_ms:expr) => {
-            $crate::telemetry::metrics::get_metrics().record_minio_upload_latency_ms(
-                $bucket,
-                $status,
-                $duration_ms,
-            )
-        };
+        ($bucket:expr, $status:expr, $duration_ms:expr) => {{
+            let bucket = $bucket;
+            let status = $status;
+            $crate::telemetry::metrics::get_metrics()
+                .storage_minio_upload_latency_ms
+                .record(
+                    ($duration_ms) as u64,
+                    &[
+                        ::opentelemetry::KeyValue::new("storage.bucket.name", bucket.to_string()),
+                        ::opentelemetry::KeyValue::new("upload.status", status),
+                    ],
+                );
+        }};
     }
 }
 
@@ -195,32 +215,29 @@ mod imp {
         &METRICS
     }
 
-    impl OTelMetrics {
-        pub fn pipeline_stream_started(&self) {}
+    #[macro_export]
+    macro_rules! metric_pipeline_stream_started {
+        () => {};
+    }
 
-        pub fn pipeline_stream_ended(&self) {}
+    #[macro_export]
+    macro_rules! metric_pipeline_stream_ended {
+        () => {};
+    }
 
-        pub fn record_pipeline_packet(&self, _packet_kind: &'static str, _bytes: u64) {}
+    #[macro_export]
+    macro_rules! metric_pipeline_packet {
+        ($packet_kind:expr, $bytes:expr) => {};
+    }
 
-        pub fn record_pipeline_error(&self, _stage: &'static str) {}
+    #[macro_export]
+    macro_rules! metric_pipeline_error {
+        ($stage:expr) => {};
+    }
 
-        pub fn record_middleware_latency(&self, _middleware: &'static str, _duration_us: u64) {}
-
-        pub fn record_queue_drop(&self, _queue: &'static str, _reason: &'static str) {}
-
-        pub fn record_listener_lag(&self, _listener: &'static str, _skipped: u64) {}
-
-        pub fn record_ttl_expiration(&self, _protocol: &'static str, _reason: &'static str) {}
-
-        pub fn record_minio_upload_total(&self, _bucket: &str, _status: &'static str) {}
-
-        pub fn record_minio_upload_latency_ms(
-            &self,
-            _bucket: &str,
-            _status: &'static str,
-            _duration_ms: u64,
-        ) {
-        }
+    #[macro_export]
+    macro_rules! metric_middleware_latency_us {
+        ($middleware:expr, $duration_us:expr) => {};
     }
 
     #[macro_export]
@@ -231,6 +248,11 @@ mod imp {
     #[macro_export]
     macro_rules! metric_listener_lag {
         ($listener:expr, $skipped:expr) => {};
+    }
+
+    #[macro_export]
+    macro_rules! metric_ttl_expiration {
+        ($protocol:expr, $reason:expr) => {};
     }
 
     #[macro_export]

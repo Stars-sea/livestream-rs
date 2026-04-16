@@ -14,8 +14,8 @@ use super::connection::RtmpConnection;
 use crate::channel::MpscRx;
 use crate::dispatcher::Protocol;
 use crate::infra::media::packet::FlvTag;
+use crate::metric_ttl_expiration;
 use crate::pipeline::PipeBus;
-use crate::telemetry::metrics;
 use crate::transport::abstraction::IngestPacket;
 use crate::transport::controller::ControlMessage;
 use crate::transport::lifecycle::HandlerLifecycle;
@@ -176,7 +176,7 @@ impl RtmpServer {
                 return;
             }
 
-            metrics::get_metrics().record_ttl_expiration("rtmp", "precreate_pending_timeout");
+            metric_ttl_expiration!("rtmp", "precreate_pending_timeout");
 
             let Some((_, lifecycle)) = pending_lifecycle.remove(&live_id) else {
                 debug!(live_id = %live_id, "Pending lifecycle already removed for live_id, skipping TTL expiration");

@@ -7,15 +7,12 @@ use tokio_util::sync::CancellationToken;
 use tonic::codegen::tokio_stream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-use tracing::{Span, info, info_span, instrument, warn};
-
-#[cfg(feature = "opentelemetry")]
-use opentelemetry::propagation::Extractor;
-#[cfg(feature = "opentelemetry")]
-use tracing_opentelemetry::OpenTelemetrySpanExt;
+use tracing::{info, instrument, warn};
 
 use super::api;
 use super::api::livestream_server::LivestreamServer;
+#[cfg(feature = "opentelemetry")]
+use super::context_propagation::OtelContextPropagationService;
 use crate::config::{GrpcConfig, RtmpConfig};
 use crate::dispatcher::{self, Protocol};
 use crate::transport::registry::state::*;
@@ -27,9 +24,6 @@ pub struct GrpcServer {
     grpc_config: GrpcConfig,
     service: IngestGrpcService,
 }
-
-#[cfg(feature = "opentelemetry")]
-struct HeaderMapExtractor<'a>(&'a tonic::codegen::http::HeaderMap);
 
 impl GrpcServer {
     pub fn new(
@@ -54,45 +48,16 @@ impl GrpcServer {
 
         let service = LivestreamServer::new(self.service);
 
+        #[cfg(feature = "opentelemetry")]
+        let service = OtelContextPropagationService::new(service);
+
         Server::builder()
-            .trace_fn(server_trace_span)
             .add_service(service)
             .serve_with_shutdown(addr, shutdown.cancelled())
             .await?;
 
         Ok(())
     }
-}
-
-#[cfg(feature = "opentelemetry")]
-impl Extractor for HeaderMapExtractor<'_> {
-    fn get(&self, key: &str) -> Option<&str> {
-        self.0.get(key).and_then(|value| value.to_str().ok())
-    }
-
-    fn keys(&self) -> Vec<&str> {
-        self.0.keys().map(|key| key.as_str()).collect()
-    }
-}
-
-fn server_trace_span(request: &tonic::codegen::http::Request<()>) -> Span {
-    let span = info_span!(
-        "transport.grpc.request",
-        rpc.system = "grpc",
-        http.method = %request.method(),
-        http.route = %request.uri().path(),
-    );
-
-    #[cfg(feature = "opentelemetry")]
-    {
-        let ctx = opentelemetry::global::get_text_map_propagator(|prop| {
-            let extractor = HeaderMapExtractor(request.headers());
-            prop.extract(&extractor)
-        });
-        let _ = span.set_parent(ctx);
-    }
-
-    span
 }
 
 #[derive(Clone)]

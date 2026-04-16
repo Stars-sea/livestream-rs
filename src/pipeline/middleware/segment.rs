@@ -12,9 +12,9 @@ use crate::dispatcher::{self, SessionEvent};
 use crate::infra::media::context::HlsOutputContext;
 use crate::infra::media::packet::{FlvTag, FlvTagPacketizer, Packet, UnifiedPacket};
 use crate::infra::media::stream::StreamCollection;
+use crate::metric_pipeline_error;
 use crate::pipeline::UnifiedPacketContext;
 use crate::pipeline::normalize::normalize_component;
-use crate::telemetry::metrics;
 
 /// The ingest state tracks how the stream is being ingested,
 /// allowing for optimizations like lazy initialization of the packetizer for RTMP or direct forwarding for SRT.
@@ -228,7 +228,7 @@ impl MiddlewareTrait for SegmentMiddleware {
                     }
                 }
                 Err(e) => {
-                    metrics::get_metrics().record_pipeline_error("segment_flv_convert");
+                    metric_pipeline_error!("segment_flv_convert");
                     warn!(stream_id = %stream_id, error = %e, "Failed to convert FLV tag to packet with stream mapping");
                 }
             },

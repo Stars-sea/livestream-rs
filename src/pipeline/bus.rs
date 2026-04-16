@@ -10,8 +10,8 @@ use tracing::{error, warn};
 use super::{Pipe, UnifiedPacketContext, UnifiedPipeFactory};
 use crate::abstraction::{PipeContextTrait, PipeTrait};
 use crate::dispatcher::{self, SessionEvent};
+use crate::{metric_pipeline_stream_ended, metric_pipeline_stream_started};
 use crate::pipeline::PipeFactory;
-use crate::telemetry::metrics;
 
 enum StreamPipeState {
     Pending(Arc<Notify>),
@@ -180,11 +180,11 @@ impl PipeBus {
             SessionEvent::SessionInit { live_id, streams } => {
                 let pipe = factory.create(live_id.clone(), streams)?;
                 self.register_pipe(live_id, Arc::new(pipe));
-                metrics::get_metrics().pipeline_stream_started();
+                metric_pipeline_stream_started!();
             }
             SessionEvent::SessionEnded { live_id, .. } => {
                 if self.remove_pipe(&live_id).is_some() {
-                    metrics::get_metrics().pipeline_stream_ended();
+                    metric_pipeline_stream_ended!();
                 }
             }
             _ => {}

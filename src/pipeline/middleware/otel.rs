@@ -5,8 +5,8 @@ use tracing::warn;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait};
 use crate::infra::media::packet::UnifiedPacket;
+use crate::{metric_middleware_latency_us, metric_pipeline_packet};
 use crate::pipeline::UnifiedPacketContext;
-use crate::telemetry::metrics;
 
 pub struct OTelMiddleware {
     stream_id: String,
@@ -30,19 +30,18 @@ impl MiddlewareTrait for OTelMiddleware {
         }
 
         let started_at = Instant::now();
-        let metrics = metrics::get_metrics();
 
         let bytes = ctx.payload().size() as u64;
         match ctx.payload() {
             UnifiedPacket::AVPacket(_) => {
-                metrics.record_pipeline_packet("avpacket", bytes);
+                metric_pipeline_packet!("avpacket", bytes);
             }
             UnifiedPacket::FlvTag(_) => {
-                metrics.record_pipeline_packet("flv_tag", bytes);
+                metric_pipeline_packet!("flv_tag", bytes);
             }
         }
 
-        metrics.record_middleware_latency("otel_pipeline", started_at.elapsed().as_micros() as u64);
+        metric_middleware_latency_us!("otel_pipeline", started_at.elapsed().as_micros() as u64);
         Ok(ctx)
     }
 }
