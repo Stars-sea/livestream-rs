@@ -15,6 +15,8 @@ mod imp {
         pub transport_queue_drops_total: Counter<u64>,
         pub transport_listener_lag_total: Counter<u64>,
         pub transport_ttl_expirations_total: Counter<u64>,
+        pub storage_minio_uploads_total: Counter<u64>,
+        pub storage_minio_upload_latency_ms: Histogram<u64>,
     }
 
     pub fn get_metrics() -> &'static OTelMetrics {
@@ -60,6 +62,16 @@ mod imp {
                     .u64_counter("transport_ttl_expirations_total")
                     .with_description("Session cleanups triggered by precreate TTL expiration")
                     .with_unit("{session}")
+                    .build(),
+                storage_minio_uploads_total: meter
+                    .u64_counter("storage_minio_uploads_total")
+                    .with_description("Total MinIO upload attempts")
+                    .with_unit("{upload}")
+                    .build(),
+                storage_minio_upload_latency_ms: meter
+                    .u64_histogram("storage_minio_upload_latency_ms")
+                    .with_description("MinIO upload latency in milliseconds")
+                    .with_unit("ms")
                     .build(),
             }
         })
@@ -114,6 +126,31 @@ mod imp {
                 ],
             );
         }
+
+        pub fn record_minio_upload_total(&self, bucket: &str, status: &'static str) {
+            self.storage_minio_uploads_total.add(
+                1,
+                &[
+                    KeyValue::new("storage.bucket.name", bucket.to_string()),
+                    KeyValue::new("upload.status", status),
+                ],
+            );
+        }
+
+        pub fn record_minio_upload_latency_ms(
+            &self,
+            bucket: &str,
+            status: &'static str,
+            duration_ms: u64,
+        ) {
+            self.storage_minio_upload_latency_ms.record(
+                duration_ms,
+                &[
+                    KeyValue::new("storage.bucket.name", bucket.to_string()),
+                    KeyValue::new("upload.status", status),
+                ],
+            );
+        }
     }
 
     #[macro_export]
@@ -127,6 +164,24 @@ mod imp {
     macro_rules! metric_listener_lag {
         ($listener:expr, $skipped:expr) => {
             $crate::telemetry::metrics::get_metrics().record_listener_lag($listener, $skipped)
+        };
+    }
+
+    #[macro_export]
+    macro_rules! metric_minio_upload_total {
+        ($bucket:expr, $status:expr) => {
+            $crate::telemetry::metrics::get_metrics().record_minio_upload_total($bucket, $status)
+        };
+    }
+
+    #[macro_export]
+    macro_rules! metric_minio_upload_latency_ms {
+        ($bucket:expr, $status:expr, $duration_ms:expr) => {
+            $crate::telemetry::metrics::get_metrics().record_minio_upload_latency_ms(
+                $bucket,
+                $status,
+                $duration_ms,
+            )
         };
     }
 }
@@ -156,6 +211,16 @@ mod imp {
         pub fn record_listener_lag(&self, _listener: &'static str, _skipped: u64) {}
 
         pub fn record_ttl_expiration(&self, _protocol: &'static str, _reason: &'static str) {}
+
+        pub fn record_minio_upload_total(&self, _bucket: &str, _status: &'static str) {}
+
+        pub fn record_minio_upload_latency_ms(
+            &self,
+            _bucket: &str,
+            _status: &'static str,
+            _duration_ms: u64,
+        ) {
+        }
     }
 
     #[macro_export]
@@ -166,6 +231,16 @@ mod imp {
     #[macro_export]
     macro_rules! metric_listener_lag {
         ($listener:expr, $skipped:expr) => {};
+    }
+
+    #[macro_export]
+    macro_rules! metric_minio_upload_total {
+        ($bucket:expr, $status:expr) => {};
+    }
+
+    #[macro_export]
+    macro_rules! metric_minio_upload_latency_ms {
+        ($bucket:expr, $status:expr, $duration_ms:expr) => {};
     }
 }
 

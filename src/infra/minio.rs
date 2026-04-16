@@ -8,9 +8,10 @@ use minio::s3::http::BaseUrl;
 use minio::s3::types::S3Api;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{Instrument, debug, info_span};
+use std::time::Instant;
+use tracing::debug;
 
-use crate::config::MinioConfig;
+use crate::{config::MinioConfig, metric_minio_upload_latency_ms, metric_minio_upload_total};
 
 /// Client for interacting with MinIO or S3-compatible storage.
 #[derive(Debug, Clone)]
@@ -48,22 +49,28 @@ impl MinioClient {
     /// # Errors
     /// Returns an error if upload fails.
     pub async fn upload_file(&self, filename: &str, path: &Path) -> Result<()> {
-        let request_span = info_span!(
-            "minio.upload_file",
-            otel.kind = "client",
-            storage.bucket.name = %self.bucket,
-            object.key = %filename,
-            file.path = %path.display(),
-            server.address = %self.endpoint
-        );
+        let started = Instant::now();
 
-        self.client
+        let upload_result = self
+            .client
             .put_object_content(self.bucket.as_str(), filename, ObjectContent::from(path))
             .send()
-            .instrument(request_span)
-            .await?;
+            .await;
 
-        debug!(filename = %filename, path = %path.display(), "File uploaded");
+        let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        let status = if upload_result.is_ok() { "ok" } else { "error" };
+        metric_minio_upload_total!(self.bucket.as_str(), status);
+        metric_minio_upload_latency_ms!(self.bucket.as_str(), status, duration_ms);
+
+        upload_result?;
+
+        debug!(
+            filename = %filename,
+            path = %path.display(),
+            endpoint = %self.endpoint,
+            duration_ms = duration_ms,
+            "File uploaded"
+        );
         Ok(())
     }
 

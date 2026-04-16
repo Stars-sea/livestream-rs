@@ -287,11 +287,13 @@ impl api::livestream_server::Livestream for IngestGrpcService {
 
             let mut subscription = dispatcher::INSTANCE.subscribe(&live_id);
             while let Some(_) = subscription.next().await {
-                if let Some(state) = registry::INSTANCE.get_state(&live_id).await && state != previous_state {
-                    previous_state = state;
-                    yield api::WatchLivestreamResponse {
-                        stream: Self::session_state_to_proto(state),
-                    };
+                if let Some(state) = registry::INSTANCE.get_state(&live_id).await {
+                    if state != previous_state{
+                        previous_state = state;
+                        yield api::WatchLivestreamResponse {
+                            stream: Self::session_state_to_proto(state),
+                        }
+                    }
                 } else {
                     // If the stream state is missing, it means the stream has been cleaned up after disconnect.
                     // We can end the watch stream at this point.
