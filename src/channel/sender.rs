@@ -84,10 +84,10 @@ impl<T> Sender<broadcast::Sender<T>>
 where
     T: Clone + Send + 'static,
 {
-    pub fn send(&self, item: T) -> Result<(), SendError> {
+    pub fn send(&self, item: T) -> Result<usize, SendError> {
         match self.inner.send(item) {
-            Ok(_) => Ok(()),
-            Err(_) if self.inner.is_empty() => Ok(()),
+            Ok(n) => Ok(n),
+            Err(_) if self.inner.is_empty() => Ok(0),
             Err(e) => {
                 warn!(
                     queue = self.queue,

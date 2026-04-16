@@ -25,7 +25,7 @@ impl SegmentPersistenceHandler {
 
     fn spawn_upload_listener(minio_client: MinioClient) {
         tokio::spawn(async move {
-            let mut events = dispatcher::INSTANCE.subscribe();
+            let mut events = dispatcher::INSTANCE.subscribe_global();
 
             while let Some(event) = events.next().await {
                 if let SessionEvent::SegmentComplete { live_id, path } = event {

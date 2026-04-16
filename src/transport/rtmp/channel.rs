@@ -39,7 +39,8 @@ impl LiveChannel {
             }
         }
 
-        self.sender.send(tag.clone())
+        self.sender.send(tag.clone())?;
+        Ok(())
     }
 
     /// Subscribes to the channel and returns the real-time receiver along with

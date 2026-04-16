@@ -283,17 +283,30 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         }
 
         let stream = async_stream::try_stream! {
-            let mut subscription = dispatcher::INSTANCE.subscribe();
-            while let Some(event) = subscription.next().await {
-                if event.id() != live_id {
-                    continue;
-                }
+            let mut previous_state = SessionState::Pending;
 
-                if let Some(state) = registry::INSTANCE.get_state(&live_id).await {
+            let mut subscription = dispatcher::INSTANCE.subscribe(&live_id);
+            while let Some(_) = subscription.next().await {
+                if let Some(state) = registry::INSTANCE.get_state(&live_id).await && state != previous_state {
+                    previous_state = state;
                     yield api::WatchLivestreamResponse {
                         stream: Self::session_state_to_proto(state),
                     };
+                } else {
+                    // If the stream state is missing, it means the stream has been cleaned up after disconnect.
+                    // We can end the watch stream at this point.
+                    break;
                 }
+            }
+
+            if previous_state != SessionState::Disconnected {
+                warn!(
+                    live_id = %live_id,
+                    "Stream disappeared without disconnect event, treating as disconnected"
+                );
+                yield api::WatchLivestreamResponse {
+                    stream: Self::session_state_to_proto(SessionState::Disconnected),
+                };
             }
         };
 
