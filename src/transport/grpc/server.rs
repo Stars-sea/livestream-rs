@@ -287,7 +287,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
 
                 match tokio::time::timeout(WATCH_POLL_INTERVAL, subscription.next()).await {
                     Ok(Some(_)) => {}
-                    Ok(None) => break,
+                    Ok(None) => continue,
                     Err(_) => continue,
                 }
             }
