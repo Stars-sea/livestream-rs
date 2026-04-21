@@ -1,5 +1,6 @@
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use anyhow::Result;
 use regex::Regex;
@@ -19,6 +20,7 @@ use crate::transport::registry::state::*;
 use crate::transport::{TransportController, registry};
 
 static PASSPHRASE_REGEX: OnceLock<Regex> = OnceLock::new();
+const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub struct GrpcServer {
     grpc_config: GrpcConfig,
@@ -248,32 +250,46 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         }
 
         let stream = async_stream::try_stream! {
-            let mut previous_state = SessionState::Pending;
-
+            let mut previous_state: Option<SessionState> = None;
             let mut subscription = dispatcher::INSTANCE.subscribe(&live_id);
-            while let Some(_) = subscription.next().await {
-                if let Some(state) = registry::INSTANCE.get_state(&live_id).await {
-                    if state != previous_state{
-                        previous_state = state;
+
+            loop {
+                let current_state = registry::INSTANCE.get_state(&live_id).await;
+                match current_state {
+                    Some(state) if previous_state != Some(state) => {
+                        previous_state = Some(state);
                         yield api::WatchLivestreamResponse {
                             stream: Self::session_state_to_proto(state),
-                        }
-                    }
-                } else {
-                    // If the stream state is missing, it means the stream has been cleaned up after disconnect.
-                    // We can end the watch stream at this point.
-                    break;
-                }
-            }
+                        };
 
-            if previous_state != SessionState::Disconnected {
-                warn!(
-                    live_id = %live_id,
-                    "Stream disappeared without disconnect event, treating as disconnected"
-                );
-                yield api::WatchLivestreamResponse {
-                    stream: Self::session_state_to_proto(SessionState::Disconnected),
-                };
+                        if state == SessionState::Disconnected {
+                            break;
+                        }
+
+                        continue;
+                    }
+                    Some(SessionState::Disconnected) => break,
+                    None => {
+                        if previous_state != Some(SessionState::Disconnected) {
+                            warn!(
+                                live_id = %live_id,
+                                "Stream disappeared without disconnect event, treating as disconnected"
+                            );
+                            // previous_state = Some(SessionState::Disconnected);
+                            yield api::WatchLivestreamResponse {
+                                stream: Self::session_state_to_proto(SessionState::Disconnected),
+                            };
+                        }
+                        break;
+                    }
+                    Some(_) => {}
+                }
+
+                match tokio::time::timeout(WATCH_POLL_INTERVAL, subscription.next()).await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(_) => continue,
+                }
             }
         };
 
