@@ -47,6 +47,13 @@ impl<C: PipeContextTrait> Pipe<C> {
         }
         Ok(context)
     }
+
+    async fn close_impl(&self) -> Result<()> {
+        for middleware in self.middlewares.iter().rev() {
+            middleware.close().await?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -63,6 +70,10 @@ impl<C: PipeContextTrait> PipeTrait for Pipe<C> {
             Some(res) => res,
             None => anyhow::bail!("Context was cancelled"),
         }
+    }
+
+    async fn close(&self) -> Result<()> {
+        self.close_impl().await
     }
 }
 

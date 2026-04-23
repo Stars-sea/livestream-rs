@@ -7,4 +7,8 @@ pub trait MiddlewareTrait: Send + Sync {
     type Context: PipeContextTrait;
 
     async fn send(&self, context: Self::Context) -> Result<Self::Context>;
+
+    async fn close(&self) -> Result<()> {
+        Ok(())
+    }
 }

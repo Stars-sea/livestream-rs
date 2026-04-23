@@ -10,8 +10,8 @@ use tracing::{error, warn};
 use super::{Pipe, UnifiedPacketContext, UnifiedPipeFactory};
 use crate::abstraction::{PipeContextTrait, PipeTrait};
 use crate::dispatcher::{self, SessionEvent};
-use crate::{metric_pipeline_stream_ended, metric_pipeline_stream_started};
 use crate::pipeline::PipeFactory;
+use crate::{metric_pipeline_stream_ended, metric_pipeline_stream_started};
 
 enum StreamPipeState {
     Pending(Arc<Notify>),
@@ -57,9 +57,6 @@ impl PipeBus {
     }
 
     pub fn prepare_stream(&self, stream_id: &str) {
-        // Pre-allocate readiness signal for this stream.
-        // This avoids DashMap shard write-lock contention during the critical
-        // high-concurrency window when the first frames of a stream arrive.
         self.stream_states
             .entry(stream_id.to_string())
             .or_insert_with(|| StreamPipeState::Pending(Arc::new(Notify::new())));
@@ -80,7 +77,6 @@ impl PipeBus {
             }
         }
 
-        // Notify pending packets after state becomes Ready.
         if let Some(notify) = pending_notify {
             notify.notify_waiters();
         }
@@ -136,21 +132,17 @@ impl PipeBus {
         }
 
         let Some(notify) = self.pending_notify(stream_id) else {
-            // Re-check once to reduce the race window before fallback/drop.
             return self.ready_pipe(stream_id);
         };
 
-        // Re-check once to avoid waiting if register happened just before waiting.
         if let Some(pipe) = self.ready_pipe(stream_id) {
             return Some(pipe);
         }
 
-        // Wait up to 1 second for SessionInit to trigger pipeline creation.
         if timeout(Duration::from_millis(1000), notify.notified())
             .await
             .is_err()
         {
-            // Garbage-collect stale pending state only if it is still the same notify.
             self.remove_stale_pending(stream_id, &notify);
         }
 
@@ -164,14 +156,14 @@ impl PipeBus {
             let mut events = dispatcher::INSTANCE.subscribe_global();
 
             while let Some(event) = events.next().await {
-                if let Err(e) = bus.handle_session_event(event, factory.as_ref()) {
+                if let Err(e) = bus.handle_session_event(event, factory.as_ref()).await {
                     error!(error = %e, "Failed to handle session event in PipeBus listener");
                 }
             }
         });
     }
 
-    fn handle_session_event(
+    async fn handle_session_event(
         &self,
         event: SessionEvent,
         factory: &UnifiedPipeFactory,
@@ -183,6 +175,9 @@ impl PipeBus {
                 metric_pipeline_stream_started!();
             }
             SessionEvent::SessionEnded { live_id, .. } => {
+                if let Some(pipe) = self.ready_pipe(&live_id) {
+                    pipe.close().await?;
+                }
                 if self.remove_pipe(&live_id).is_some() {
                     metric_pipeline_stream_ended!();
                 }

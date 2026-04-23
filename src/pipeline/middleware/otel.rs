@@ -5,8 +5,8 @@ use tracing::warn;
 
 use crate::abstraction::{MiddlewareTrait, PipeContextTrait};
 use crate::infra::media::packet::UnifiedPacket;
-use crate::{metric_middleware_latency_us, metric_pipeline_packet};
 use crate::pipeline::UnifiedPacketContext;
+use crate::{metric_middleware_latency_us, metric_pipeline_packet};
 
 pub struct OTelMiddleware {
     stream_id: String,
