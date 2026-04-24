@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -17,15 +18,15 @@ use crate::infra::media::packet::FlvTag;
 use crate::pipeline::PipeBus;
 use crate::transport::abstraction::IngestPacket;
 use crate::transport::controller::ControlMessage;
+use crate::transport::flv::FlvEgressHub;
 
 pub struct TransportServer {
     rtmp_config: RtmpConfig,
     srt_config: SrtConfig,
     queue_config: QueueConfig,
-    rtmp_tag_channel: Option<MpscRx<IngestPacket<FlvTag>>>,
-
+    flv_tag_channel: Option<MpscRx<IngestPacket<FlvTag>>>,
+    flv_egress_hub: Arc<FlvEgressHub>,
     bus: PipeBus,
-
     cancel_token: CancellationToken,
 }
 
@@ -34,7 +35,8 @@ impl TransportServer {
         rtmp_config: RtmpConfig,
         srt_config: SrtConfig,
         queue_config: QueueConfig,
-        rtmp_tag_channel: MpscRx<IngestPacket<FlvTag>>,
+        flv_tag_channel: MpscRx<IngestPacket<FlvTag>>,
+        flv_egress_hub: Arc<FlvEgressHub>,
         bus: PipeBus,
         cancel_token: CancellationToken,
     ) -> Self {
@@ -42,7 +44,8 @@ impl TransportServer {
             rtmp_config,
             srt_config,
             queue_config,
-            rtmp_tag_channel: Some(rtmp_tag_channel),
+            flv_tag_channel: Some(flv_tag_channel),
+            flv_egress_hub,
             bus,
             cancel_token,
         }
@@ -52,18 +55,15 @@ impl TransportServer {
         let appname = self.rtmp_config.appname.clone();
         let precreate_ttl = Duration::from_secs(self.rtmp_config.ttl);
         let cancel_token = self.cancel_token.child_token();
-        let rtmp_tag_channel = self
-            .rtmp_tag_channel
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("RTMP forwarded tag receiver already taken"))?;
-
+        let flv_egress_hub = self.flv_egress_hub.clone();
         let addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.rtmp_config.port))?;
+
         let server = RtmpServer::create(
             addr,
             appname,
             precreate_ttl,
             control_channel,
-            rtmp_tag_channel,
+            flv_egress_hub,
             self.bus.clone(),
             cancel_token,
         )
@@ -98,9 +98,19 @@ impl TransportServer {
 
         let rtmp_server = self.rtmp_server(rtmp_rx).await?;
         let srt_server = self.srt_server(srt_rx).await?;
+        let flv_tag_channel = self
+            .flv_tag_channel
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("FLV egress receiver already taken"))?;
+        let flv_egress_hub = self.flv_egress_hub.clone();
+        let flv_cancel_token = self.cancel_token.child_token();
 
         let handle = tokio::spawn(async move {
-            tokio::try_join!(rtmp_server.run(), srt_server.run())?;
+            tokio::try_join!(
+                rtmp_server.run(),
+                srt_server.run(),
+                flv_egress_hub.run(flv_tag_channel, flv_cancel_token)
+            )?;
             Ok(())
         });
 

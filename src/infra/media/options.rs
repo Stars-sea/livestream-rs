@@ -82,7 +82,7 @@ impl StreamOptions for SrtInputStreamOptions {
 
         if let Some(passphrase) = &self.passphrase {
             dict_set_int(&mut dict, "enforced_encryption", 1);
-            dict_set(&mut dict, "passphrase", &passphrase);
+            dict_set(&mut dict, "passphrase", passphrase);
         }
 
         // Set UDP receive buf to 5MB to accommodate higher latency and prevent buffer underruns,

@@ -120,7 +120,7 @@ impl<C: Context> StreamCollection for C {
     /// Some(Stream) if the index is valid, None otherwise.
     fn stream(&self, index: usize) -> Option<Box<dyn StreamDescriptorTrait + '_>> {
         if index < self.stream_count() {
-            let ptr = unsafe { *(*self.ptr()).streams.offset(index as isize) };
+            let ptr = unsafe { *(*self.ptr()).streams.add(index) };
             Some(Box::new(ptr))
         } else {
             None
@@ -129,7 +129,7 @@ impl<C: Context> StreamCollection for C {
 
     fn time_base(&self, index: usize) -> Option<AVRational> {
         if index < self.stream_count() {
-            let ptr = unsafe { *(*self.ptr()).streams.offset(index as isize) };
+            let ptr = unsafe { *(*self.ptr()).streams.add(index) };
             Some(unsafe { (*ptr).time_base })
         } else {
             None

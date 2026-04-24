@@ -104,8 +104,8 @@ fn read_packet_loop(
         };
 
         let mut read_succeed = false;
-        let mut retry_exponential = Exponential::from_millis(10).map(jitter).take(5);
-        while let Some(duration) = retry_exponential.next() {
+        let retry_exponential = Exponential::from_millis(10).map(jitter).take(5);
+        for duration in retry_exponential {
             match packet.read(&input_ctx) {
                 PacketReadResult::Data => {
                     read_succeed = true;

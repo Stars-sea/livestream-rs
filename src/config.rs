@@ -6,109 +6,97 @@ use anyhow::{Context, Result};
 use config::{Config, Environment, File, FileFormat};
 use serde::Deserialize;
 
-/// Application settings loaded from configuration files and environment variables.
 #[derive(Clone, Debug, Deserialize)]
 pub struct AppConfig {
-    /// Srt Configuration
     #[serde(default)]
     pub srt: SrtConfig,
 
-    /// gRPC Configuration
     #[serde(default)]
     pub grpc: GrpcConfig,
 
-    /// RTMP Configuration
     #[serde(default)]
     pub rtmp: RtmpConfig,
 
-    /// Persistence configuration
+    #[serde(default)]
+    pub http_flv: HttpFlvConfig,
+
     #[serde(default)]
     pub persistence: PersistenceConfig,
 
-    /// Queue capacity configuration
     #[serde(default)]
     pub queue: QueueConfig,
 
-    /// Minio Configuration
     pub minio: Option<MinioConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct SrtConfig {
-    /// Port range for SRT listeners (format: "start-end", e.g., "4000-5000")
     #[serde(default = "default_srt_ports")]
     pub ports: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct GrpcConfig {
-    /// Port for gRPC server to listen on
     #[serde(default = "default_grpc_port")]
     pub port: u16,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RtmpConfig {
-    /// Port for RTMP server to listen on
     #[serde(default = "default_rtmp_port")]
     pub port: u16,
 
-    /// RTMP application name (e.g., "live" for rtmp://host/live/streamkey)
     #[serde(default = "default_rtmp_appname")]
     pub appname: String,
 
-    /// TTL in seconds for precreated RTMP sessions that never get published.
     #[serde(default = "default_rtmp_ttl")]
     pub ttl: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub struct HttpFlvConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default = "default_http_flv_port")]
+    pub port: u16,
+
+    #[serde(default)]
+    pub public_base_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct PersistenceConfig {
-    /// Segment duration in seconds for HLS/TS output
     #[serde(default = "default_persistence_duration")]
     pub duration: i32,
 
-    /// Optional parent cache directory for segment temp files.
-    /// Empty value means using system temp directory.
     #[serde(default = "default_persistence_cachedir")]
     pub cachedir: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct QueueConfig {
-    /// Capacity for RTMP forwarded tag queue from pipeline to transport
     #[serde(default = "default_rtmp_forward_queue_capacity")]
     pub rtmpforward: usize,
 
-    /// Capacity for internal FLV relay queue in FLV mux middleware
     #[serde(default = "default_flv_relay_queue_capacity")]
     pub flvrelay: usize,
 
-    /// Capacity for internal AVPacket relay queue in SRT connection handler
     #[serde(default = "default_packet_relay_queue_capacity")]
     pub packetrelay: usize,
 
-    /// Capacity for transport control queues (RTMP/SRT)
     #[serde(default = "default_control_queue_capacity")]
     pub control: usize,
 
-    /// Capacity for transport event queue
     #[serde(default = "default_event_queue_capacity")]
     pub event: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct MinioConfig {
-    /// Base URI for MinIO/S3 (e.g., "http://localhost:9000")
     pub uri: String,
-
-    /// Access key for MinIO/S3 authentication
     pub accesskey: String,
-
-    /// Secret key for MinIO/S3 authentication
     pub secretkey: String,
-
-    /// Bucket name to use for storing stream segments
     pub bucket: String,
 }
 
@@ -140,6 +128,10 @@ fn default_rtmp_ttl() -> u64 {
     30
 }
 
+fn default_http_flv_port() -> u16 {
+    8080
+}
+
 fn default_rtmp_forward_queue_capacity() -> usize {
     8192
 }
@@ -161,13 +153,6 @@ fn default_packet_relay_queue_capacity() -> usize {
 }
 
 impl SrtConfig {
-    /// Parses the SRT port range from the configuration.
-    ///
-    /// # Returns
-    /// A tuple of (start_port, end_port)
-    ///
-    /// # Errors
-    /// Returns an error if the port range format is invalid.
     pub fn srt_port_range(&self) -> Result<(u16, u16)> {
         let segments: Vec<&str> = self.ports.split('-').collect();
 
@@ -218,6 +203,16 @@ impl Default for RtmpConfig {
     }
 }
 
+impl Default for HttpFlvConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: default_http_flv_port(),
+            public_base_url: None,
+        }
+    }
+}
+
 impl Default for PersistenceConfig {
     fn default() -> Self {
         Self {
@@ -240,7 +235,6 @@ impl Default for QueueConfig {
 }
 
 impl AppConfig {
-    /// Loads settings from configuration files and environment variables.
     pub fn new() -> Result<Self> {
         let builder = Config::builder()
             .add_source(File::new("config.toml", FileFormat::Toml).required(false))
@@ -257,8 +251,16 @@ impl AppConfig {
         Ok(settings)
     }
 
-    /// Validates the configuration settings.
     pub fn validate(&self) -> Result<()> {
+        self.validate_srt()?;
+        self.validate_persistence()?;
+        self.validate_rtmp()?;
+        self.validate_queue()?;
+        self.validate_minio()?;
+        Ok(())
+    }
+
+    fn validate_srt(&self) -> Result<()> {
         let (start, end) = self.srt.srt_port_range()?;
         if start >= end {
             anyhow::bail!(
@@ -268,10 +270,23 @@ impl AppConfig {
             );
         }
 
+        Ok(())
+    }
+
+    fn validate_persistence(&self) -> Result<()> {
         if self.persistence.duration <= 0 {
             anyhow::bail!("Segment duration must be positive");
         }
 
+        let cache_dir = self.persistence.cachedir.trim();
+        if cache_dir == "." || cache_dir == ".." {
+            anyhow::bail!("Persistence cachedir cannot be '.' or '..'");
+        }
+
+        Ok(())
+    }
+
+    fn validate_rtmp(&self) -> Result<()> {
         const MAX_RTMP_SESSION_TTL_SECS: u64 = 86_400;
         if self.rtmp.ttl > MAX_RTMP_SESSION_TTL_SECS {
             anyhow::bail!(
@@ -281,19 +296,23 @@ impl AppConfig {
             );
         }
 
-        let cache_dir = self.persistence.cachedir.trim();
-        if cache_dir == "." || cache_dir == ".." {
-            anyhow::bail!("Persistence cachedir cannot be '.' or '..'");
-        }
+        Ok(())
+    }
 
+    fn validate_queue(&self) -> Result<()> {
         if self.queue.rtmpforward == 0
             || self.queue.flvrelay == 0
+            || self.queue.packetrelay == 0
             || self.queue.control == 0
             || self.queue.event == 0
         {
             anyhow::bail!("All queue capacities must be greater than 0");
         }
 
+        Ok(())
+    }
+
+    fn validate_minio(&self) -> Result<()> {
         if !cfg!(test) && self.minio.is_none() {
             anyhow::bail!(
                 "MinIO configuration is missing: please set minio.uri, minio.accesskey, minio.secretkey, and minio.bucket"
@@ -307,5 +326,5 @@ impl AppConfig {
 pub fn load_config() -> &'static AppConfig {
     static SETTINGS: OnceLock<AppConfig> = OnceLock::new();
 
-    &SETTINGS.get_or_init(|| AppConfig::new().expect("Failed to load application settings"))
+    SETTINGS.get_or_init(|| AppConfig::new().expect("Failed to load application settings"))
 }

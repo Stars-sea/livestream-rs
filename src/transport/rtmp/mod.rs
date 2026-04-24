@@ -1,4 +1,3 @@
-mod channel;
 mod connection;
 mod handler;
 mod server;

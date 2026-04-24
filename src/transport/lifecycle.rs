@@ -69,7 +69,7 @@ impl HandlerLifecycle {
 
         dispatcher::INSTANCE.send(SessionEvent::SessionInit {
             live_id: self.live_id.clone(),
-            streams: streams,
+            streams,
         });
     }
 
@@ -121,10 +121,6 @@ impl HandlerLifecycle {
 
 impl Drop for HandlerLifecycle {
     fn drop(&mut self) {
-        if !self.try_mark_disconnected() {
-            return;
-        }
-
         self.disconnect();
     }
 }

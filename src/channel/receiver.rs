@@ -51,37 +51,25 @@ where
     }
 }
 
-impl<T> Receiver<AsyncRx<mpsc::Array<T>>>
-where
-    T: Send + 'static,
-{
-    pub async fn recv(&mut self) -> Result<T, RecvError> {
-        recv_impl(self.queue, self.live_id.clone(), &mut self.inner).await
-    }
+macro_rules! impl_async_receiver {
+    ($inner:ty) => {
+        impl<T> Receiver<$inner>
+        where
+            T: Send + 'static,
+        {
+            pub async fn recv(&mut self) -> Result<T, RecvError> {
+                recv_impl(self.queue, self.live_id.clone(), &mut self.inner).await
+            }
 
-    pub async fn next(&mut self) -> Option<T> {
-        match self.recv().await {
-            Ok(item) => Some(item),
-            Err(_) => None,
+            pub async fn next(&mut self) -> Option<T> {
+                self.recv().await.ok()
+            }
         }
-    }
+    };
 }
 
-impl<T> Receiver<AsyncRx<spsc::Array<T>>>
-where
-    T: Send + 'static,
-{
-    pub async fn recv(&mut self) -> Result<T, RecvError> {
-        recv_impl(self.queue, self.live_id.clone(), &mut self.inner).await
-    }
-
-    pub async fn next(&mut self) -> Option<T> {
-        match self.recv().await {
-            Ok(item) => Some(item),
-            Err(_) => None,
-        }
-    }
-}
+impl_async_receiver!(AsyncRx<mpsc::Array<T>>);
+impl_async_receiver!(AsyncRx<spsc::Array<T>>);
 
 impl<T> Receiver<broadcast::Receiver<T>>
 where

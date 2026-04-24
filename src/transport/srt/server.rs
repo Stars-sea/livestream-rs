@@ -48,16 +48,15 @@ impl SrtServer {
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => {
-                    debug!("RTMP server cancellation requested, shutting down");
+                    debug!("SRT server cancellation requested, shutting down");
                     break;
                 }
 
                 msg = self.ctrl_channel.next() => {
-                    if let Some(msg) = msg {
-                        if let Err(e) = self.handle_control_message(msg).await {
+                    if let Some(msg) = msg
+                        && let Err(e) = self.handle_control_message(msg).await {
                             error!(error = %e, "Failed to handle SRT control message");
                         }
-                    }
                 }
             }
         }

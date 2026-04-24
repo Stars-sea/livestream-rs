@@ -1,3 +1,4 @@
+mod encode;
 mod mapping;
 mod packetizer;
 mod tag;
@@ -5,6 +6,7 @@ mod tag;
 use anyhow::Result;
 use bytes::Bytes;
 
+pub use encode::{encode_flv_header, encode_flv_tag};
 pub use packetizer::FlvTagPacketizer;
 pub use tag::FlvTag;
 

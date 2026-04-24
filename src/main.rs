@@ -13,7 +13,9 @@ use crate::infra::media::packet::FlvTag;
 use crate::pipeline::handler::SegmentPersistenceHandler;
 use crate::pipeline::{PipeBus, UnifiedPipeFactory};
 use crate::transport::abstraction::IngestPacket;
+use crate::transport::flv::FlvEgressHub;
 use crate::transport::grpc::GrpcServer;
+use crate::transport::http_flv::HttpFlvServer;
 use crate::transport::{TransportController, TransportServer};
 
 mod abstraction;
@@ -40,18 +42,26 @@ async fn main() -> Result<()> {
 
     let config = config::load_config();
     let cancel_token = CancellationToken::new();
-    let (tx, rx) = channel::mpsc("rtmp_forward", None, config.queue.rtmpforward);
+    let flv_egress_hub = Arc::new(FlvEgressHub::new());
+    let (tx, rx) = channel::mpsc("flv_egress", None, config.queue.rtmpforward);
 
     spawn_persistence_handler(config.minio.clone().expect("Minio config is required")).await?;
 
     let packet_bus = build_pipe_bus(&config.persistence, &config.queue, tx);
 
-    let (controller, controller_task) =
-        build_transport_server(&config, packet_bus, rx, cancel_token.clone()).await?;
+    let (controller, controller_task) = build_transport_server(
+        config,
+        packet_bus,
+        rx,
+        flv_egress_hub.clone(),
+        cancel_token.clone(),
+    )
+    .await?;
 
-    let grpc_task = spawn_grpc_server(&config, controller, cancel_token.child_token());
+    let grpc_task = spawn_grpc_server(config, controller, cancel_token.child_token());
+    let http_flv_task = spawn_http_flv_server(config, flv_egress_hub, cancel_token.child_token())?;
 
-    wait_for_tasks(controller_task, grpc_task, cancel_token).await;
+    wait_for_tasks(controller_task, grpc_task, http_flv_task, cancel_token).await;
 
     if let Some(guard) = otel_guard {
         guard.shutdown();
@@ -69,7 +79,7 @@ async fn spawn_persistence_handler(minio: MinioConfig) -> Result<()> {
 fn build_pipe_bus(
     persistence_config: &PersistenceConfig,
     queue_config: &config::QueueConfig,
-    rtmp_tag_tx: MpscTx<IngestPacket<FlvTag>>,
+    flv_tag_tx: MpscTx<IngestPacket<FlvTag>>,
 ) -> PipeBus {
     let segment_duration = Duration::from_secs(persistence_config.duration.max(1) as u64);
     let segment_cachedir = persistence_config.cachedir.trim().to_string();
@@ -78,7 +88,7 @@ fn build_pipe_bus(
         segment_duration,
         segment_cachedir,
         queue_config.flvrelay,
-        rtmp_tag_tx,
+        flv_tag_tx,
     ));
     let bus = PipeBus::new();
     bus.spawn_session_listener(factory);
@@ -89,6 +99,7 @@ async fn build_transport_server(
     config: &AppConfig,
     packet_bus: PipeBus,
     rx: MpscRx<IngestPacket<FlvTag>>,
+    flv_egress_hub: Arc<FlvEgressHub>,
     cancel_token: CancellationToken,
 ) -> Result<(Arc<TransportController>, JoinHandle<Result<()>>)> {
     let server = TransportServer::new(
@@ -96,6 +107,7 @@ async fn build_transport_server(
         config.srt.clone(),
         config.queue.clone(),
         rx,
+        flv_egress_hub,
         packet_bus,
         cancel_token.child_token(),
     );
@@ -109,25 +121,73 @@ fn spawn_grpc_server(
     controller: Arc<TransportController>,
     cancel_token: CancellationToken,
 ) -> JoinHandle<Result<()>> {
-    let grpc_server = GrpcServer::new(config.grpc.clone(), config.rtmp.clone(), controller.clone());
+    let grpc_server = GrpcServer::new(
+        config.grpc.clone(),
+        config.rtmp.clone(),
+        config.http_flv.clone(),
+        controller,
+    );
     tokio::spawn(async move { grpc_server.serve(cancel_token).await })
+}
+
+fn spawn_http_flv_server(
+    config: &config::AppConfig,
+    flv_egress_hub: Arc<FlvEgressHub>,
+    cancel_token: CancellationToken,
+) -> Result<Option<JoinHandle<Result<()>>>> {
+    if !config.http_flv.enabled {
+        return Ok(None);
+    }
+
+    let http_flv_config = config.http_flv.clone();
+    Ok(Some(tokio::spawn(async move {
+        let server = HttpFlvServer::create(http_flv_config, flv_egress_hub, cancel_token).await?;
+        server.run().await
+    })))
 }
 
 async fn wait_for_tasks(
     mut controller_task: JoinHandle<Result<()>>,
     mut grpc_task: JoinHandle<Result<()>>,
+    http_flv_task: Option<JoinHandle<Result<()>>>,
     cancel_token: CancellationToken,
 ) {
-    tokio::select! {
-        transport_result = &mut controller_task => {
-            log_server_task_result("transport", transport_result);
-            cancel_token.cancel();
-            await_server_task_with_timeout("gRPC", &mut grpc_task).await;
+    match http_flv_task {
+        Some(mut http_flv_task) => {
+            tokio::select! {
+                transport_result = &mut controller_task => {
+                    log_server_task_result("transport", transport_result);
+                    cancel_token.cancel();
+                    await_server_task_with_timeout("gRPC", &mut grpc_task).await;
+                    await_server_task_with_timeout("HTTP-FLV", &mut http_flv_task).await;
+                }
+                grpc_result = &mut grpc_task => {
+                    log_server_task_result("gRPC", grpc_result);
+                    cancel_token.cancel();
+                    await_server_task_with_timeout("transport", &mut controller_task).await;
+                    await_server_task_with_timeout("HTTP-FLV", &mut http_flv_task).await;
+                }
+                http_flv_result = &mut http_flv_task => {
+                    log_server_task_result("HTTP-FLV", http_flv_result);
+                    cancel_token.cancel();
+                    await_server_task_with_timeout("transport", &mut controller_task).await;
+                    await_server_task_with_timeout("gRPC", &mut grpc_task).await;
+                }
+            }
         }
-        grpc_result = &mut grpc_task => {
-            log_server_task_result("gRPC", grpc_result);
-            cancel_token.cancel();
-            await_server_task_with_timeout("transport", &mut controller_task).await;
+        None => {
+            tokio::select! {
+                transport_result = &mut controller_task => {
+                    log_server_task_result("transport", transport_result);
+                    cancel_token.cancel();
+                    await_server_task_with_timeout("gRPC", &mut grpc_task).await;
+                }
+                grpc_result = &mut grpc_task => {
+                    log_server_task_result("gRPC", grpc_result);
+                    cancel_token.cancel();
+                    await_server_task_with_timeout("transport", &mut controller_task).await;
+                }
+            }
         }
     }
 }

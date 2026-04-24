@@ -51,7 +51,7 @@ pub trait OutputContext: Context {
     fn alloc_output_ctx(format: &str, url: Option<&str>) -> Result<*mut AVFormatContext> {
         let mut ctx: *mut AVFormatContext = null_mut();
         let c_format = CString::new(format)?;
-        let c_filename = url.map(|u| CString::new(u)).transpose()?;
+        let c_filename = url.map(CString::new).transpose()?;
 
         let ret = unsafe {
             let filename = match &c_filename {
@@ -69,7 +69,7 @@ pub trait OutputContext: Context {
 
     fn open_io(_opaque: *mut c_void, path: Option<&str>, flags: c_int) -> Result<*mut AVIOContext> {
         let mut pb: *mut AVIOContext = null_mut();
-        let c_path = path.map(|p| CString::new(p)).transpose()?;
+        let c_path = path.map(CString::new).transpose()?;
 
         let ret = unsafe {
             let path = match &c_path {

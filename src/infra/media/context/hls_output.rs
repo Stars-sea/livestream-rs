@@ -20,9 +20,9 @@ pub struct HlsOutputContext {
 }
 
 impl HlsOutputContext {
-    pub fn create(path: &PathBuf, streams: &dyn StreamCollection) -> Result<Self> {
+    pub fn create(path: &Path, streams: &dyn StreamCollection) -> Result<Self> {
         // Alloc output AVFormatContext
-        let url = path.as_path().display().to_string();
+        let url = path.display().to_string();
         let output_ctx = Self::alloc_output_ctx("mpegts", Some(&url))?;
 
         // Copy parameters of streams
@@ -44,7 +44,7 @@ impl HlsOutputContext {
 
         Ok(Self {
             ctx: output_ctx,
-            path: path.clone(),
+            path: path.to_path_buf(),
             header_written: false,
         })
     }
@@ -80,10 +80,10 @@ impl Drop for HlsOutputContext {
             return;
         }
 
-        if self.header_written {
-            if let Err(e) = self.write_trailer() {
-                warn!(error = %e, path = %self.path.display(), "Failed to write HLS trailer during context drop");
-            }
+        if self.header_written
+            && let Err(e) = self.write_trailer()
+        {
+            warn!(error = %e, path = %self.path.display(), "Failed to write HLS trailer during context drop");
         }
         unsafe {
             avio_closep(&mut (*self.ctx).pb);

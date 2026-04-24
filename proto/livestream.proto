@@ -54,6 +54,8 @@ message StreamEndpoint {
   string rtmp_appname = 4;
   // SRT passphrase, present only when input_protocol is SRT.
   optional string passphrase = 5;
+  // HTTP-FLV playback URL when HTTP-FLV is enabled and a public base URL is configured.
+  optional string http_flv_url = 6;
 }
 
 // Structured ingest session descriptor.

@@ -1,5 +1,5 @@
+#[allow(clippy::module_inception)]
 mod registry;
 pub mod state;
 
-#[allow(unused_imports)]
-pub use registry::{ConnectionRegistry, INSTANCE};
+pub use registry::INSTANCE;
