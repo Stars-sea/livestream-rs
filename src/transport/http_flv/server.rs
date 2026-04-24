@@ -11,6 +11,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use bytes::Bytes;
+use rml_rtmp::sessions::StreamMetadata;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -20,6 +21,7 @@ use crate::config::HttpFlvConfig;
 use crate::infra::media::packet::{FlvTag, encode_flv_header, encode_flv_tag};
 use crate::transport::flv::FlvEgressHub;
 use crate::transport::registry;
+use crate::transport::registry::state::SessionState;
 
 const PATH_PREFIX: &str = "/lives";
 const ROUTE_PATH: &str = "/lives/{*path}";
@@ -83,11 +85,13 @@ async fn handle_http_flv(State(state): State<HttpFlvState>, Path(path): Path<Str
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    if registry::INSTANCE.get_session(live_id).is_none() {
-        return StatusCode::NOT_FOUND.into_response();
+    match registry::INSTANCE.get_state(live_id).await {
+        Some(SessionState::Connected) => stream_response(state, live_id.to_owned()).await,
+        Some(SessionState::Pending | SessionState::Connecting | SessionState::Disconnected) => {
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
     }
-
-    stream_response(state, live_id.to_owned()).await
 }
 
 fn parse_live_id(path: &str) -> Option<&str> {
@@ -213,17 +217,28 @@ fn build_flv_header(cached_tags: &[FlvTag]) -> Bytes {
         match tag {
             FlvTag::Audio { .. } => has_audio = true,
             FlvTag::Video { .. } => has_video = true,
-            FlvTag::ScriptData(_) => {}
+            FlvTag::ScriptData(metadata) => {
+                apply_metadata_tracks(metadata, &mut has_audio, &mut has_video);
+            }
         }
     }
 
     encode_flv_header(has_audio, has_video)
 }
 
+fn apply_metadata_tracks(metadata: &StreamMetadata, has_audio: &mut bool, has_video: &mut bool) {
+    *has_audio |= metadata.audio_codec_id.is_some();
+    *has_video |= metadata.video_codec_id.is_some();
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ROUTE_PATH, parse_live_id, playback_path, should_skip_while_waiting_keyframe};
+    use super::{
+        ROUTE_PATH, apply_metadata_tracks, build_flv_header, parse_live_id, playback_path,
+        should_skip_while_waiting_keyframe,
+    };
     use bytes::Bytes;
+    use rml_rtmp::sessions::StreamMetadata;
 
     use crate::infra::media::packet::FlvTag;
 
@@ -257,5 +272,31 @@ mod tests {
             &keyframe
         ));
         assert!(!waiting_keyframe);
+    }
+
+    #[test]
+    fn metadata_can_advertise_audio_and_video_tracks() {
+        let mut metadata = StreamMetadata::new();
+        let mut has_audio = false;
+        let mut has_video = false;
+        metadata.audio_codec_id = Some(10);
+        metadata.video_codec_id = Some(7);
+
+        apply_metadata_tracks(&metadata, &mut has_audio, &mut has_video);
+
+        assert!(has_audio);
+        assert!(has_video);
+    }
+
+    #[test]
+    fn flv_header_uses_script_data_when_sequence_headers_are_missing() {
+        let mut metadata = StreamMetadata::new();
+        metadata.audio_codec_id = Some(10);
+        metadata.video_codec_id = Some(7);
+
+        let header = build_flv_header(&[FlvTag::script_data(metadata)]);
+
+        assert_eq!(header[4] & 0b0000_0100, 0b0000_0100);
+        assert_eq!(header[4] & 0b0000_0001, 0b0000_0001);
     }
 }

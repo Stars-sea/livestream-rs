@@ -114,7 +114,6 @@ impl Packet {
         unsafe { (*self.packet).size }
     }
 
-    #[allow(unused)]
     pub fn pts(&self) -> Option<i64> {
         let pts = unsafe { (*self.packet).pts };
         if pts != AV_NOPTS_VALUE {
@@ -122,6 +121,20 @@ impl Packet {
         } else {
             None
         }
+    }
+
+    pub fn dts(&self) -> Option<i64> {
+        let dts = unsafe { (*self.packet).dts };
+        if dts != AV_NOPTS_VALUE {
+            Some(dts)
+        } else {
+            None
+        }
+    }
+
+    pub fn duration(&self) -> Option<i64> {
+        let duration = unsafe { (*self.packet).duration };
+        if duration > 0 { Some(duration) } else { None }
     }
 
     pub fn has_flag(&self, flag: i32) -> bool {
