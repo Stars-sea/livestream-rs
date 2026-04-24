@@ -217,7 +217,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         let descriptor = Self::await_precreate_ack(ack).await?;
 
         Ok(Response::new(api::StartLivestreamResponse {
-            stream: Some(self.descriptor_to_proto(descriptor)),
+            descriptor: Some(self.descriptor_to_proto(descriptor)),
         }))
     }
 
@@ -285,7 +285,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
             .ok_or_else(|| Status::not_found("stream not found"))?;
 
         Ok(Response::new(api::GetLivestreamInfoResponse {
-            stream: Some(self.descriptor_to_proto(descriptor)),
+            descriptor: Some(self.descriptor_to_proto(descriptor)),
         }))
     }
 
@@ -307,9 +307,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
 
             while let Some(state) = Self::wait_for_next_state(&live_id, previous_state, &mut subscription).await {
                 previous_state = Some(state);
-                yield api::WatchLivestreamResponse {
-                    stream: Self::session_state_to_proto(state),
-                };
+                yield Self::watch_response(state);
 
                 if state == SessionState::Disconnected {
                     break;
@@ -331,6 +329,12 @@ impl IngestGrpcService {
         }
     }
 
+    fn watch_response(state: SessionState) -> api::WatchLivestreamResponse {
+        api::WatchLivestreamResponse {
+            status: Self::session_state_to_proto(state),
+        }
+    }
+
     fn descriptor_to_proto(&self, descriptor: SessionDescriptor) -> api::StreamDescriptor {
         let input_protocol = match descriptor.protocol {
             Protocol::Srt => api::InputProtocol::Srt as i32,
@@ -340,16 +344,16 @@ impl IngestGrpcService {
         let status = Self::session_state_to_proto(descriptor.state);
 
         let rtmp_port = self.rtmp_config.port as u32;
-        let port = descriptor.endpoint.port.map(u32::from).unwrap_or(rtmp_port);
+        let ingest_port = descriptor.endpoint.port.map(u32::from).unwrap_or(rtmp_port);
 
         api::StreamDescriptor {
             live_id: descriptor.id.clone(),
             input_protocol,
             status,
             endpoint: Some(api::StreamEndpoint {
-                port,
+                ingest_port,
                 rtmp_port,
-                rtmp_appname: self.rtmp_config.appname.clone(),
+                rtmp_app_name: self.rtmp_config.appname.clone(),
                 passphrase: descriptor.endpoint.passphrase,
                 http_flv_url: self.http_flv_url(&descriptor.id),
             }),

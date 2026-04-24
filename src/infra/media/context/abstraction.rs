@@ -1,7 +1,7 @@
 //! Context trait and utilities for FFmpeg format contexts.
 
 use crate::infra::media::ffmpeg_error;
-use crate::infra::media::stream::StreamCollection;
+use crate::infra::media::stream::{StreamCollection, StreamDescriptorTrait};
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
@@ -28,20 +28,29 @@ pub trait Context: Drop {
 }
 
 pub trait OutputContext: Context {
+    fn copy_stream(
+        ctx_ptr: *mut AVFormatContext,
+        in_stream: &dyn StreamDescriptorTrait,
+    ) -> Result<*mut AVStream> {
+        let out_stream = unsafe { avformat_new_stream(ctx_ptr, null_mut()) };
+        if out_stream.is_null() {
+            anyhow::bail!("Failed to allocate output stream");
+        }
+
+        let ret = unsafe {
+            avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params_ptr())
+        };
+        if ret < 0 {
+            anyhow::bail!("Failed to copy streams parameters: {}", ffmpeg_error(ret));
+        }
+
+        Ok(out_stream)
+    }
+
     /// Copies stream parameters from an input context to this output context.
     fn copy_streams(ctx_ptr: *mut AVFormatContext, streams: &dyn StreamCollection) -> Result<()> {
         for in_stream in streams {
-            let out_stream = unsafe { avformat_new_stream(ctx_ptr, null_mut()) };
-            if out_stream.is_null() {
-                anyhow::bail!("Failed to allocate output stream");
-            }
-
-            let ret = unsafe {
-                avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params_ptr())
-            };
-            if ret < 0 {
-                anyhow::bail!("Failed to copy streams parameters: {}", ffmpeg_error(ret));
-            }
+            Self::copy_stream(ctx_ptr, in_stream.as_ref())?;
         }
 
         Ok(())

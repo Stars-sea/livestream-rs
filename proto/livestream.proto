@@ -46,12 +46,12 @@ message StartLivestreamRequest {
 
 // Endpoint information used by gateway-side URL composition.
 message StreamEndpoint {
-  // Port reported by ingest service for selected input protocol.
-  uint32 port = 2;
+  // Port reported by ingest service for the selected input protocol.
+  uint32 ingest_port = 2;
   // Unified RTMP pull/publish port.
   uint32 rtmp_port = 3;
   // Unified RTMP application name.
-  string rtmp_appname = 4;
+  string rtmp_app_name = 4;
   // SRT passphrase, present only when input_protocol is SRT.
   optional string passphrase = 5;
   // HTTP-FLV playback URL when HTTP-FLV is enabled and a public base URL is configured.
@@ -71,7 +71,7 @@ message StreamDescriptor {
 }
 
 message StartLivestreamResponse {
-  StreamDescriptor stream = 1;
+  StreamDescriptor descriptor = 1;
 }
 
 message StopLivestreamRequest {
@@ -94,7 +94,7 @@ message GetLivestreamInfoRequest {
 }
 
 message GetLivestreamInfoResponse {
-  StreamDescriptor stream = 1;
+  StreamDescriptor descriptor = 1;
 }
 
 message WatchLivestreamRequest {
@@ -102,5 +102,6 @@ message WatchLivestreamRequest {
 }
 
 message WatchLivestreamResponse {
-  SessionStatus stream = 1;
+  // Current lifecycle status for the watched stream.
+  SessionStatus status = 1;
 }

@@ -11,7 +11,6 @@ use std::ptr::null_mut;
 
 use super::{Context, OutputContext};
 use crate::channel::{MpscTx, SendError};
-use crate::infra::media::ffmpeg_error;
 use crate::infra::media::packet::FlvTag;
 use crate::infra::media::stream::StreamCollection;
 
@@ -109,18 +108,7 @@ impl Context for FlvOutputContext {
 impl OutputContext for FlvOutputContext {
     fn copy_streams(ctx_ptr: *mut AVFormatContext, streams: &dyn StreamCollection) -> Result<()> {
         for in_stream in streams {
-            let out_stream = unsafe { avformat_new_stream(ctx_ptr, null_mut()) };
-            if out_stream.is_null() {
-                anyhow::bail!("Failed to allocate output stream");
-            }
-
-            let ret = unsafe {
-                avcodec_parameters_copy((*out_stream).codecpar, in_stream.codec_params_ptr())
-            };
-
-            if ret < 0 {
-                anyhow::bail!("Failed to copy streams parameters: {}", ffmpeg_error(ret));
-            }
+            let out_stream = Self::copy_stream(ctx_ptr, in_stream.as_ref())?;
 
             unsafe {
                 (*(*out_stream).codecpar).codec_tag = 0;
@@ -166,39 +154,39 @@ struct FlvAvioOpaque {
 
 #[derive(Default)]
 struct FlvWriteState {
-    buffered: BytesMut,
-    header_consumed: bool,
+    pending_bytes: BytesMut,
+    flv_header_skipped: bool,
 }
 
-fn parse_ready_flv_tags(state: &mut FlvWriteState) -> Result<Vec<FlvTag>, c_int> {
+fn drain_complete_tags(state: &mut FlvWriteState) -> Result<Vec<FlvTag>, c_int> {
     let mut parsed_tags = Vec::new();
 
-    while state.buffered.len() >= FLV_MIN_TAG_BLOCK_LEN {
-        let tag_type = state.buffered[0];
+    while state.pending_bytes.len() >= FLV_MIN_TAG_BLOCK_LEN {
+        let tag_type = state.pending_bytes[0];
         if tag_type != 8 && tag_type != 9 && tag_type != 18 {
             warn!(
                 tag_type = tag_type,
                 "Unexpected FLV tag type in mux output buffer"
             );
-            state.buffered.clear();
+            state.pending_bytes.clear();
             return Err(AVERROR(EINVAL));
         }
 
-        let data_size = ((state.buffered[1] as usize) << 16)
-            | ((state.buffered[2] as usize) << 8)
-            | (state.buffered[3] as usize);
+        let data_size = ((state.pending_bytes[1] as usize) << 16)
+            | ((state.pending_bytes[2] as usize) << 8)
+            | (state.pending_bytes[3] as usize);
         let expected_len = FLV_TAG_HEADER_LEN + data_size + FLV_PREV_TAG_SIZE_LEN;
 
-        if state.buffered.len() < expected_len {
+        if state.pending_bytes.len() < expected_len {
             break;
         }
 
-        let tag_bytes = state.buffered.split_to(expected_len).freeze();
+        let tag_bytes = state.pending_bytes.split_to(expected_len).freeze();
         let tag = match FlvTag::try_from(tag_bytes) {
             Ok(tag) => tag,
             Err(e) => {
                 warn!(error = %e, "Failed to parse FLV tag from mux output buffer");
-                state.buffered.clear();
+                state.pending_bytes.clear();
                 return Err(AVERROR(EINVAL));
             }
         };
@@ -223,29 +211,31 @@ extern "C" fn write_packet(opaque: *mut c_void, buf: *const u8, buf_size: c_int)
     let parse_result = {
         let mut state = opaque_ref.write_state.lock();
 
-        state.buffered.extend_from_slice(data_slice);
+        state.pending_bytes.extend_from_slice(data_slice);
 
-        if state.buffered.len() > FLV_MAX_BUFFERED_BYTES {
+        if state.pending_bytes.len() > FLV_MAX_BUFFERED_BYTES {
             warn!(
-                size = state.buffered.len(),
+                size = state.pending_bytes.len(),
                 "FLV mux output buffer exceeded safety limit"
             );
-            state.buffered.clear();
+            state.pending_bytes.clear();
             return AVERROR(EINVAL);
         }
 
-        if !state.header_consumed {
-            if state.buffered.len() < FLV_HEADER_AND_PREV_TAG_SIZE_LEN {
+        if !state.flv_header_skipped {
+            if state.pending_bytes.len() < FLV_HEADER_AND_PREV_TAG_SIZE_LEN {
                 Ok(Vec::new())
             } else {
-                if state.buffered.starts_with(b"FLV") {
-                    state.buffered.advance(FLV_HEADER_AND_PREV_TAG_SIZE_LEN);
+                if state.pending_bytes.starts_with(b"FLV") {
+                    state
+                        .pending_bytes
+                        .advance(FLV_HEADER_AND_PREV_TAG_SIZE_LEN);
                 }
-                state.header_consumed = true;
-                parse_ready_flv_tags(&mut state)
+                state.flv_header_skipped = true;
+                drain_complete_tags(&mut state)
             }
         } else {
-            parse_ready_flv_tags(&mut state)
+            drain_complete_tags(&mut state)
         }
     };
 
