@@ -347,6 +347,7 @@ impl IngestGrpcService {
         let rtmp_port = self.rtmp_config.port as u32;
         let ingest_port = descriptor.endpoint.port.map(u32::from).unwrap_or(rtmp_port);
         let passphrase = descriptor.endpoint.passphrase;
+        let http_flv_port = self.http_flv_port();
         let http_flv_path = self.http_flv_path(&live_id);
 
         api::StreamDescriptor {
@@ -355,7 +356,7 @@ impl IngestGrpcService {
             status,
             endpoints: Some(api::StreamEndpoints {
                 ingest: Some(self.ingest_endpoints(&live_id, protocol, ingest_port, passphrase)),
-                playback: Some(self.playback_endpoints(&live_id, rtmp_port, http_flv_path)),
+                playback: Some(self.playback_endpoints(&live_id, rtmp_port, http_flv_port, http_flv_path)),
             }),
         }
     }
@@ -392,6 +393,7 @@ impl IngestGrpcService {
         &self,
         live_id: &str,
         rtmp_port: u32,
+        http_flv_port: Option<u32>,
         http_flv_path: Option<String>,
     ) -> api::PlaybackEndpoints {
         api::PlaybackEndpoints {
@@ -400,8 +402,14 @@ impl IngestGrpcService {
                 app_name: self.rtmp_config.appname.clone(),
                 stream_name: live_id.to_owned(),
             }),
-            http_flv: http_flv_path.map(|path| api::HttpFlvPlaybackEndpoint { path }),
+            http_flv: http_flv_path.zip(http_flv_port).map(|(path, port)| api::HttpFlvPlaybackEndpoint { port, path }),
         }
+    }
+
+    fn http_flv_port(&self) -> Option<u32> {
+        self.http_flv_config
+            .enabled
+            .then_some(self.http_flv_config.port as u32)
     }
 
     fn http_flv_path(&self, live_id: &str) -> Option<String> {

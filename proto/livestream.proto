@@ -87,9 +87,10 @@ message RtmpPlaybackEndpoint {
 }
 
 // HTTP-FLV playback URI components, for example:
-// http://{hostname}{path}
+// http://{hostname}:{port}{path}
 message HttpFlvPlaybackEndpoint {
-  string path = 1;
+  uint32 port = 1;
+  string path = 2;
 }
 
 // Structured ingest session descriptor.
