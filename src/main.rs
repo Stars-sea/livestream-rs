@@ -8,7 +8,7 @@ use tracing::{error, info, warn};
 
 use crate::channel::{MpscRx, MpscTx};
 use crate::config::{AppConfig, MinioConfig, PersistenceConfig};
-use crate::infra::MinioClient;
+use crate::infra::PersistenceClient;
 use crate::infra::media::packet::FlvTag;
 use crate::pipeline::handler::SegmentPersistenceHandler;
 use crate::pipeline::{PipeBus, UnifiedPipeFactory};
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
 }
 
 async fn spawn_persistence_handler(minio: MinioConfig) -> Result<()> {
-    let minio_client = MinioClient::create(minio).await?;
+    let minio_client = PersistenceClient::create(minio).await?;
     SegmentPersistenceHandler::spawn(minio_client);
     Ok(())
 }

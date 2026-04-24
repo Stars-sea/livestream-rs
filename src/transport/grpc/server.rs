@@ -356,7 +356,12 @@ impl IngestGrpcService {
             status,
             endpoints: Some(api::StreamEndpoints {
                 ingest: Some(self.ingest_endpoints(&live_id, protocol, ingest_port, passphrase)),
-                playback: Some(self.playback_endpoints(&live_id, rtmp_port, http_flv_port, http_flv_path)),
+                playback: Some(self.playback_endpoints(
+                    &live_id,
+                    rtmp_port,
+                    http_flv_port,
+                    http_flv_path,
+                )),
             }),
         }
     }
@@ -370,7 +375,7 @@ impl IngestGrpcService {
     ) -> api::IngestEndpoints {
         let (rtmp, srt) = match protocol {
             Protocol::Rtmp => (
-                Some(api::RtmpIngestEndpoint {
+                Some(api::RtmpEndpoint {
                     port: self.rtmp_config.port as u32,
                     app_name: self.rtmp_config.appname.clone(),
                     stream_key: live_id.to_owned(),
@@ -381,6 +386,7 @@ impl IngestGrpcService {
                 None,
                 Some(api::SrtIngestEndpoint {
                     port: ingest_port,
+                    live_id: live_id.to_owned(),
                     passphrase,
                 }),
             ),
@@ -397,12 +403,14 @@ impl IngestGrpcService {
         http_flv_path: Option<String>,
     ) -> api::PlaybackEndpoints {
         api::PlaybackEndpoints {
-            rtmp: Some(api::RtmpPlaybackEndpoint {
+            rtmp: Some(api::RtmpEndpoint {
                 port: rtmp_port,
                 app_name: self.rtmp_config.appname.clone(),
-                stream_name: live_id.to_owned(),
+                stream_key: live_id.to_owned(),
             }),
-            http_flv: http_flv_path.zip(http_flv_port).map(|(path, port)| api::HttpFlvPlaybackEndpoint { port, path }),
+            http_flv: http_flv_path
+                .zip(http_flv_port)
+                .map(|(path, port)| api::HttpFlvPlaybackEndpoint { port, path }),
         }
     }
 
@@ -413,9 +421,6 @@ impl IngestGrpcService {
     }
 
     fn http_flv_path(&self, live_id: &str) -> Option<String> {
-        self.http_flv_config
-            .enabled
-            .then(|| playback_path(live_id))
+        self.http_flv_config.enabled.then(|| playback_path(live_id))
     }
 }
-

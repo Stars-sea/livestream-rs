@@ -1,11 +1,11 @@
 //! MinIO/S3 client for uploading stream segments.
 
 use anyhow::Result;
-use minio::s3::Client;
 use minio::s3::builders::ObjectContent;
 use minio::s3::creds::StaticProvider;
 use minio::s3::http::BaseUrl;
 use minio::s3::types::S3Api;
+use minio::s3::{MinioClient, MinioClientBuilder};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,25 +15,35 @@ use crate::{config::MinioConfig, metric_minio_upload_latency_ms, metric_minio_up
 
 /// Client for interacting with MinIO or S3-compatible storage.
 #[derive(Debug, Clone)]
-pub struct MinioClient {
+pub struct PersistenceClient {
     bucket: String,
     endpoint: String,
 
-    client: Arc<Client>,
+    client: Arc<MinioClient>,
 }
 
-impl MinioClient {
+impl PersistenceClient {
     pub async fn create(config: MinioConfig) -> Result<Self> {
         let base_url = config.uri.parse::<BaseUrl>()?;
         let static_provider = StaticProvider::new(&config.accesskey, &config.secretkey, None);
 
-        let client = Client::new(base_url, Some(Box::new(static_provider)), None, None)?;
+        let client = MinioClientBuilder::new(base_url)
+            .provider(Some(static_provider))
+            .build()?;
 
-        let exists_resp = client.bucket_exists(config.bucket.as_str()).send().await;
-        if exists_resp.is_err() || !exists_resp?.exists {
-            client.create_bucket(config.bucket.as_str()).send().await?;
+        let exists_resp = client
+            .bucket_exists(config.bucket.as_str())?
+            .build()
+            .send()
+            .await;
+        if exists_resp.is_err() || !exists_resp?.exists() {
+            client
+                .create_bucket(config.bucket.as_str())?
+                .build()
+                .send()
+                .await?;
         }
-        Ok(MinioClient {
+        Ok(Self {
             bucket: config.bucket.clone(),
             endpoint: config.uri.clone(),
             client: client.into(),
@@ -53,7 +63,8 @@ impl MinioClient {
 
         let upload_result = self
             .client
-            .put_object_content(self.bucket.as_str(), filename, ObjectContent::from(path))
+            .put_object_content(self.bucket.as_str(), filename, ObjectContent::from(path))?
+            .build()
             .send()
             .await;
 

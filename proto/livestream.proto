@@ -54,19 +54,19 @@ message StreamEndpoints {
 
 // Ingest-side endpoints.
 message IngestEndpoints {
-  optional RtmpIngestEndpoint rtmp = 1;
+  optional RtmpEndpoint rtmp = 1;
   optional SrtIngestEndpoint srt = 2;
 }
 
 // Playback-side endpoints.
 message PlaybackEndpoints {
-  optional RtmpPlaybackEndpoint rtmp = 1;
+  optional RtmpEndpoint rtmp = 1;
   optional HttpFlvPlaybackEndpoint http_flv = 2;
 }
 
-// RTMP ingest URI components, for example:
+// RTMP URI components, for example:
 // rtmp://{hostname}:{port}/{app_name}/{stream_key}
-message RtmpIngestEndpoint {
+message RtmpEndpoint {
   uint32 port = 1;
   string app_name = 2;
   string stream_key = 3;
@@ -75,15 +75,8 @@ message RtmpIngestEndpoint {
 // SRT ingest URI components.
 message SrtIngestEndpoint {
   uint32 port = 1;
-  optional string passphrase = 2;
-}
-
-// RTMP playback URI components, for example:
-// rtmp://{hostname}:{port}/{app_name}/{stream_name}
-message RtmpPlaybackEndpoint {
-  uint32 port = 1;
-  string app_name = 2;
-  string stream_name = 3;
+  string live_id = 2;
+  optional string passphrase = 3;
 }
 
 // HTTP-FLV playback URI components, for example:

@@ -7,7 +7,7 @@ use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use crate::dispatcher::{self, SessionEvent};
-use crate::infra::MinioClient;
+use crate::infra::PersistenceClient;
 use crate::pipeline::normalize::normalize_component;
 
 pub struct SegmentPersistenceHandler;
@@ -15,7 +15,7 @@ pub struct SegmentPersistenceHandler;
 static PERSISTENCE_HANDLER_STARTED: OnceLock<()> = OnceLock::new();
 
 impl SegmentPersistenceHandler {
-    pub fn spawn(minio_client: MinioClient) {
+    pub fn spawn(minio_client: PersistenceClient) {
         if PERSISTENCE_HANDLER_STARTED.set(()).is_err() {
             return;
         }
@@ -23,7 +23,7 @@ impl SegmentPersistenceHandler {
         Self::spawn_upload_listener(minio_client);
     }
 
-    fn spawn_upload_listener(minio_client: MinioClient) {
+    fn spawn_upload_listener(minio_client: PersistenceClient) {
         tokio::spawn(async move {
             let mut events = dispatcher::INSTANCE.subscribe_global();
 
@@ -53,7 +53,7 @@ impl SegmentPersistenceHandler {
     }
 
     async fn upload_with_retry(
-        minio_client: &MinioClient,
+        minio_client: &PersistenceClient,
         object_key: &str,
         file_path: &Path,
     ) -> Result<()> {
@@ -82,7 +82,7 @@ impl SegmentPersistenceHandler {
     }
 
     async fn upload_and_remove(
-        minio_client: &MinioClient,
+        minio_client: &PersistenceClient,
         stream_id: &str,
         segment_path: PathBuf,
     ) -> Result<()> {
@@ -110,7 +110,7 @@ impl SegmentPersistenceHandler {
     }
 
     async fn upload_playlist(
-        minio_client: &MinioClient,
+        minio_client: &PersistenceClient,
         stream_id: &str,
         playlist_path: PathBuf,
         is_final: bool,

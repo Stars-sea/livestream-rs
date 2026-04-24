@@ -1,6 +1,6 @@
 pub mod media;
-mod minio;
+mod persistence;
 mod port_allocator;
 
-pub use minio::MinioClient;
+pub use persistence::PersistenceClient;
 pub use port_allocator::PortAllocator;
