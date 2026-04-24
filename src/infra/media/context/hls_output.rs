@@ -21,18 +21,15 @@ pub struct HlsOutputContext {
 
 impl HlsOutputContext {
     pub fn create(path: &Path, streams: &dyn StreamCollection) -> Result<Self> {
-        // Alloc output AVFormatContext
         let url = path.display().to_string();
         let output_ctx = Self::alloc_output_ctx("mpegts", Some(&url))?;
 
-        // Copy parameters of streams
         if let Err(e) = Self::copy_streams(output_ctx, streams) {
             unsafe { avformat_free_context(output_ctx) };
             return Err(e);
         }
 
         if unsafe { (*output_ctx).pb.is_null() } {
-            // Open file
             match Self::open_io(null_mut(), Some(&url), AVIO_FLAG_WRITE) {
                 Ok(pb) => unsafe { (*output_ctx).pb = pb },
                 Err(e) => {
@@ -67,8 +64,8 @@ impl HlsOutputContext {
         Self::create(&path, streams)
     }
 
-    pub fn path(&self) -> &PathBuf {
-        &self.path
+    pub fn path(&self) -> &Path {
+        self.path.as_path()
     }
 }
 

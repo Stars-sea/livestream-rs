@@ -5,8 +5,8 @@ use dashmap::DashMap;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use super::channel::LiveChannel;
-use crate::channel::{MpscRx, RecvError};
+use super::channel::FlvLiveChannel;
+use crate::channel::{BroadcastRx, MpscRx, RecvError};
 use crate::dispatcher::{self, SessionEvent};
 use crate::infra::media::packet::FlvTag;
 use crate::transport::abstraction::IngestPacket;
@@ -14,7 +14,7 @@ use crate::transport::registry;
 use crate::transport::registry::state::SessionState;
 
 pub struct FlvEgressHub {
-    channels: DashMap<String, Arc<LiveChannel>>,
+    channels: DashMap<String, Arc<FlvLiveChannel>>,
 }
 
 impl FlvEgressHub {
@@ -24,10 +24,7 @@ impl FlvEgressHub {
         }
     }
 
-    pub async fn subscribe(
-        &self,
-        live_id: &str,
-    ) -> (crate::channel::BroadcastRx<FlvTag>, Vec<FlvTag>) {
+    pub async fn subscribe(&self, live_id: &str) -> (BroadcastRx<FlvTag>, Vec<FlvTag>) {
         let channel = self.channel(live_id);
         channel.subscribe().await
     }
@@ -88,10 +85,10 @@ impl FlvEgressHub {
         }
     }
 
-    fn channel(&self, live_id: &str) -> Arc<LiveChannel> {
+    fn channel(&self, live_id: &str) -> Arc<FlvLiveChannel> {
         self.channels
             .entry(live_id.to_string())
-            .or_insert_with(|| Arc::new(LiveChannel::new(live_id)))
+            .or_insert_with(|| Arc::new(FlvLiveChannel::new(live_id)))
             .clone()
     }
 }

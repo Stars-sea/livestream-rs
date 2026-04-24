@@ -48,7 +48,7 @@ impl HlsSegmenter {
     }
 
     fn complete_active_segment(&mut self) -> Option<CompletedSegment> {
-        let path = self.hls_ctx.as_ref()?.path().clone();
+        let path = self.hls_ctx.as_ref()?.path().to_path_buf();
         let duration = self.segment_started_at.elapsed();
         self.hls_ctx.take();
         Some(CompletedSegment { path, duration })
