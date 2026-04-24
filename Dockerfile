@@ -1,14 +1,11 @@
-FROM rust:slim AS planner
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
 WORKDIR /app
 
-RUN cargo install cargo-chef
-
-FROM planner AS cacher
-WORKDIR /app
+FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM rust:slim AS builder
+FROM chef AS builder
 
 ARG USE_MIRROR=true
 
@@ -42,8 +39,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-RUN cargo install cargo-chef
-COPY --from=cacher /app/recipe.json recipe.json
+COPY --from=planner /app/recipe.json recipe.json
 
 # Build dependencies - this is the caching layer!
 RUN cargo chef cook --release --recipe-path recipe.json
