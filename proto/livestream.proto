@@ -44,18 +44,52 @@ message StartLivestreamRequest {
   InputProtocol input_protocol = 3;
 }
 
-// Endpoint information used by gateway-side URL composition.
-message StreamEndpoint {
-  // Port reported by ingest service for the selected input protocol.
-  uint32 ingest_port = 2;
-  // Unified RTMP pull/publish port.
-  uint32 rtmp_port = 3;
-  // Unified RTMP application name.
-  string rtmp_app_name = 4;
-  // SRT passphrase, present only when input_protocol is SRT.
-  optional string passphrase = 5;
-  // HTTP-FLV playback URL when HTTP-FLV is enabled and a public base URL is configured.
-  optional string http_flv_url = 6;
+// All transport endpoints related to a stream.
+message StreamEndpoints {
+  // Endpoints used by publishers to send media into the service.
+  IngestEndpoints ingest = 1;
+  // Endpoints used by viewers or downstream services to consume media.
+  PlaybackEndpoints playback = 2;
+}
+
+// Ingest-side endpoints.
+message IngestEndpoints {
+  optional RtmpIngestEndpoint rtmp = 1;
+  optional SrtIngestEndpoint srt = 2;
+}
+
+// Playback-side endpoints.
+message PlaybackEndpoints {
+  optional RtmpPlaybackEndpoint rtmp = 1;
+  optional HttpFlvPlaybackEndpoint http_flv = 2;
+}
+
+// RTMP ingest URI components, for example:
+// rtmp://{hostname}:{port}/{app_name}/{stream_key}
+message RtmpIngestEndpoint {
+  uint32 port = 1;
+  string app_name = 2;
+  string stream_key = 3;
+}
+
+// SRT ingest URI components.
+message SrtIngestEndpoint {
+  uint32 port = 1;
+  optional string passphrase = 2;
+}
+
+// RTMP playback URI components, for example:
+// rtmp://{hostname}:{port}/{app_name}/{stream_name}
+message RtmpPlaybackEndpoint {
+  uint32 port = 1;
+  string app_name = 2;
+  string stream_name = 3;
+}
+
+// HTTP-FLV playback URI components, for example:
+// http://{hostname}{path}
+message HttpFlvPlaybackEndpoint {
+  string path = 1;
 }
 
 // Structured ingest session descriptor.
@@ -66,8 +100,8 @@ message StreamDescriptor {
   InputProtocol input_protocol = 2;
   // Current lifecycle status of stream session.
   SessionStatus status = 3;
-  // Endpoint information for ingest/pull URL composition.
-  StreamEndpoint endpoint = 4;
+  // Transport endpoints for ingest and playback.
+  StreamEndpoints endpoints = 4;
 }
 
 message StartLivestreamResponse {

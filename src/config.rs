@@ -60,9 +60,6 @@ pub struct HttpFlvConfig {
 
     #[serde(default = "default_http_flv_port")]
     pub port: u16,
-
-    #[serde(default)]
-    pub public_base_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -208,7 +205,6 @@ impl Default for HttpFlvConfig {
         Self {
             enabled: false,
             port: default_http_flv_port(),
-            public_base_url: None,
         }
     }
 }

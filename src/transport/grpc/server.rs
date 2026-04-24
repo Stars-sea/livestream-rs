@@ -342,36 +342,72 @@ impl IngestGrpcService {
         };
 
         let status = Self::session_state_to_proto(descriptor.state);
-
+        let protocol = descriptor.protocol;
+        let live_id = descriptor.id;
         let rtmp_port = self.rtmp_config.port as u32;
         let ingest_port = descriptor.endpoint.port.map(u32::from).unwrap_or(rtmp_port);
+        let passphrase = descriptor.endpoint.passphrase;
+        let http_flv_path = self.http_flv_path(&live_id);
 
         api::StreamDescriptor {
-            live_id: descriptor.id.clone(),
+            live_id: live_id.clone(),
             input_protocol,
             status,
-            endpoint: Some(api::StreamEndpoint {
-                ingest_port,
-                rtmp_port,
-                rtmp_app_name: self.rtmp_config.appname.clone(),
-                passphrase: descriptor.endpoint.passphrase,
-                http_flv_url: self.http_flv_url(&descriptor.id),
+            endpoints: Some(api::StreamEndpoints {
+                ingest: Some(self.ingest_endpoints(&live_id, protocol, ingest_port, passphrase)),
+                playback: Some(self.playback_endpoints(&live_id, rtmp_port, http_flv_path)),
             }),
         }
     }
 
-    fn http_flv_url(&self, live_id: &str) -> Option<String> {
-        if !self.http_flv_config.enabled {
-            return None;
+    fn ingest_endpoints(
+        &self,
+        live_id: &str,
+        protocol: Protocol,
+        ingest_port: u32,
+        passphrase: Option<String>,
+    ) -> api::IngestEndpoints {
+        let (rtmp, srt) = match protocol {
+            Protocol::Rtmp => (
+                Some(api::RtmpIngestEndpoint {
+                    port: self.rtmp_config.port as u32,
+                    app_name: self.rtmp_config.appname.clone(),
+                    stream_key: live_id.to_owned(),
+                }),
+                None,
+            ),
+            Protocol::Srt => (
+                None,
+                Some(api::SrtIngestEndpoint {
+                    port: ingest_port,
+                    passphrase,
+                }),
+            ),
+        };
+
+        api::IngestEndpoints { rtmp, srt }
+    }
+
+    fn playback_endpoints(
+        &self,
+        live_id: &str,
+        rtmp_port: u32,
+        http_flv_path: Option<String>,
+    ) -> api::PlaybackEndpoints {
+        api::PlaybackEndpoints {
+            rtmp: Some(api::RtmpPlaybackEndpoint {
+                port: rtmp_port,
+                app_name: self.rtmp_config.appname.clone(),
+                stream_name: live_id.to_owned(),
+            }),
+            http_flv: http_flv_path.map(|path| api::HttpFlvPlaybackEndpoint { path }),
         }
+    }
 
-        let base = self
-            .http_flv_config
-            .public_base_url
-            .as_ref()?
-            .trim_end_matches('/');
-        let path = playback_path(live_id);
-
-        Some(format!("{base}{path}"))
+    fn http_flv_path(&self, live_id: &str) -> Option<String> {
+        self.http_flv_config
+            .enabled
+            .then(|| playback_path(live_id))
     }
 }
+
