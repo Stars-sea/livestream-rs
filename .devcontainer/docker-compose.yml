@@ -4,25 +4,30 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      MINIO_URI: http://minio-service:9000
-      MINIO_ACCESSKEY: admin
-      MINIO_SECRETKEY: 123456MinIO
-      MINIO_BUCKET: videos
+      SRT__PORTS: 4000-4100
 
-      SRT_PORTS: 4000-4100
+      PERSISTENCE__DURATION: 10
+      PERSISTENCE__CACHE_DIR:
 
-      PERSISTENCE_DURATION: 10
-      PERSISTENCE_CACHEDIR: ""
+      GRPC__PORT: 50051
 
-      GRPC_PORT: 50051
+      RTMP__PORT: 1935
+      RTMP__APP_NAME: lives
+      RTMP__SESSION_TTL_SECS: 30
 
-      RTMP_PORT: 1935
-      RTMP_APPNAME: lives
+      HTTP_FLV__ENABLED: true
+      HTTP_FLV__PORT: 8080
 
-      QUEUE_RTMPFORWARD: 8192
-      QUEUE_FLVRELAY: 2048
-      QUEUE_CONTROL: 1024
-      QUEUE_EVENT: 4096
+      QUEUE__RTMP_FORWARD: 8192
+      QUEUE__FLV_RELAY: 2048
+      QUEUE__PACKET_RELAY: 2048
+      QUEUE__CONTROL: 1024
+      QUEUE__EVENT: 4096
+
+      MINIO__URI: http://localhost:9000
+      MINIO__ACCESS_KEY: minioadmin
+      MINIO__SECRET_KEY: miniokey
+      MINIO__BUCKET: videos
 
       RUST_LOG: info
     ports:

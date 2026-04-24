@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use ffmpeg_sys_next::{AVRational, AV_NOPTS_VALUE};
+use ffmpeg_sys_next::{AV_NOPTS_VALUE, AVRational};
 
 use crate::infra::media::context::HlsOutputContext;
 use crate::infra::media::packet::Packet;
@@ -34,7 +34,10 @@ impl SegmentTimeline {
         let ended_at = packet_end_time(packet, streams)?.unwrap_or(started_at);
 
         self.started_at.get_or_insert(started_at);
-        self.ended_at = Some(self.ended_at.map_or(ended_at, |current| current.max(ended_at)));
+        self.ended_at = Some(
+            self.ended_at
+                .map_or(ended_at, |current| current.max(ended_at)),
+        );
         Ok(())
     }
 
@@ -131,7 +134,11 @@ impl HlsSegmenter {
 }
 
 fn packet_start_time(packet: &Packet, streams: &dyn StreamCollection) -> Result<Option<Duration>> {
-    packet_timestamp_to_duration(packet.stream_idx(), packet.pts().or_else(|| packet.dts()), streams)
+    packet_timestamp_to_duration(
+        packet.stream_idx(),
+        packet.pts().or_else(|| packet.dts()),
+        streams,
+    )
 }
 
 fn packet_end_time(packet: &Packet, streams: &dyn StreamCollection) -> Result<Option<Duration>> {
@@ -143,7 +150,8 @@ fn packet_end_time(packet: &Packet, streams: &dyn StreamCollection) -> Result<Op
         return Ok(Some(start));
     };
 
-    let Some(delta) = packet_duration_to_duration(packet_duration, packet.stream_idx(), streams)? else {
+    let Some(delta) = packet_duration_to_duration(packet_duration, packet.stream_idx(), streams)?
+    else {
         return Ok(Some(start));
     };
 
@@ -240,7 +248,12 @@ mod tests {
         assert_eq!(timeline.elapsed(), None);
     }
 
-    fn make_packet(timestamp: u32, time_base: AVRational, is_keyframe: bool, stream_idx: usize) -> Packet {
+    fn make_packet(
+        timestamp: u32,
+        time_base: AVRational,
+        is_keyframe: bool,
+        stream_idx: usize,
+    ) -> Packet {
         let mut packet = Packet::alloc().unwrap();
 
         unsafe {

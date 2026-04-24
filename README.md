@@ -27,13 +27,15 @@ cargo build --release
 ### 运行示例 / Run Example
 
 ```bash
-export SRT_PORTS=4000-4100
-export PERSISTENCE_DURATION=10
-export PERSISTENCE_CACHEDIR=
-export GRPC_PORT=50051
-export RTMP_PORT=1935
-export RTMP_APPNAME=lives
-export RTMP_SESSION_TTL_SECS=30
+export SRT__PORTS=4000-4100
+export PERSISTENCE__DURATION=10
+export PERSISTENCE__CACHE_DIR=
+export GRPC__PORT=50051
+export RTMP__PORT=1935
+export RTMP__APP_NAME=lives
+export RTMP__SESSION_TTL_SECS=30
+export HTTP_FLV__ENABLED=true
+export HTTP_FLV__PORT=8080
 export MINIO_URI=http://localhost:9000
 export MINIO_ACCESSKEY=minioadmin
 export MINIO_SECRETKEY=miniokey
@@ -42,6 +44,9 @@ export RUST_LOG=info
 
 ./target/release/livestream-rs
 ```
+
+HTTP-FLV 播放地址示例：`http://127.0.0.1:8080/lives/<live_id>.flv`  
+Example HTTP-FLV playback URL: `http://127.0.0.1:8080/lives/<live_id>.flv`
 
 ### Docker 构建 / Docker Build
 
@@ -54,20 +59,23 @@ docker build -t livestream-rs .
 配置来源：`config.toml` + 环境变量（环境变量覆盖文件）。  
 Configuration source: `config.toml` + environment variables (env overrides file).
 
+环境变量使用 `__` 表示嵌套层级，例如 `RTMP__APP_NAME` 对应 `rtmp.app_name`。MinIO 同时兼容原有的 `MINIO_URI`、`MINIO_ACCESSKEY`、`MINIO_SECRETKEY`、`MINIO_BUCKET`。  
+Environment variables use `__` to express nesting, for example `RTMP__APP_NAME` maps to `rtmp.app_name`. MinIO also keeps compatibility with the legacy `MINIO_URI`, `MINIO_ACCESSKEY`, `MINIO_SECRETKEY`, and `MINIO_BUCKET` names.
+
 关键配置项 / Key settings:
 
-- `srt.ports` / `SRT_PORTS`
-- `persistence.duration` / `PERSISTENCE_DURATION`
-- `persistence.cachedir` / `PERSISTENCE_CACHEDIR`
-- `grpc.port` / `GRPC_PORT`
-- `rtmp.port` / `RTMP_PORT`
-- `rtmp.appname` / `RTMP_APPNAME`
-- `rtmp.session_ttl_secs` / `RTMP_SESSION_TTL_SECS`
-- `queue.*` / `QUEUE_*`
-- `minio.uri/accesskey/secretkey/bucket` / `MINIO_*`
+- `srt.ports` / `SRT__PORTS`
+- `persistence.duration` / `PERSISTENCE__DURATION`
+- `persistence.cache_dir` / `PERSISTENCE__CACHE_DIR`
+- `grpc.port` / `GRPC__PORT`
+- `rtmp.port` / `RTMP__PORT`
+- `rtmp.app_name` / `RTMP__APP_NAME`
+- `rtmp.session_ttl_secs` / `RTMP__SESSION_TTL_SECS`
+- `queue.*` / `QUEUE__*`
+- `minio.uri/access_key/secret_key/bucket` / legacy `MINIO_*`
 
-`rtmp.ttl` 默认值为 30 秒，允许范围为 0..=86400 秒。  
-`rtmp.ttl` defaults to 30 seconds, with a valid range of 0..=86400 seconds.
+`rtmp.session_ttl_secs` 默认值为 30 秒，允许范围为 0..=86400 秒。  
+`rtmp.session_ttl_secs` defaults to 30 seconds, with a valid range of 0..=86400 seconds.
 
 最小必需项：`MINIO_*` 必填，否则启动失败。  
 Minimum required: `MINIO_*` must be provided, otherwise startup fails.

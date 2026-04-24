@@ -52,16 +52,16 @@ impl TransportServer {
     }
 
     async fn rtmp_server(&mut self, control_channel: MpscRx<ControlMessage>) -> Result<RtmpServer> {
-        let appname = self.rtmp_config.appname.clone();
-        let precreate_ttl = Duration::from_secs(self.rtmp_config.ttl);
+        let app_name = self.rtmp_config.app_name.clone();
+        let session_ttl = Duration::from_secs(self.rtmp_config.session_ttl_secs);
         let cancel_token = self.cancel_token.child_token();
         let flv_egress_hub = self.flv_egress_hub.clone();
         let addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.rtmp_config.port))?;
 
         let server = RtmpServer::create(
             addr,
-            appname,
-            precreate_ttl,
+            app_name,
+            session_ttl,
             control_channel,
             flv_egress_hub,
             self.bus.clone(),
@@ -85,7 +85,7 @@ impl TransportServer {
         let server = SrtServer::new(
             control_channel,
             self.bus.clone(),
-            self.queue_config.packetrelay,
+            self.queue_config.packet_relay,
             port_allocator,
             cancel_token,
         );

@@ -25,7 +25,7 @@ pub struct PersistenceClient {
 impl PersistenceClient {
     pub async fn create(config: MinioConfig) -> Result<Self> {
         let base_url = config.uri.parse::<BaseUrl>()?;
-        let static_provider = StaticProvider::new(&config.accesskey, &config.secretkey, None);
+        let static_provider = StaticProvider::new(&config.access_key, &config.secret_key, None);
 
         let client = MinioClientBuilder::new(base_url)
             .provider(Some(static_provider))

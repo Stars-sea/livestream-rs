@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::channel::{MpscRx, MpscTx};
-use crate::config::{AppConfig, MinioConfig, PersistenceConfig};
+use crate::config::{AppConfig, MinioConfig, PersistenceConfig, QueueConfig};
 use crate::infra::PersistenceClient;
 use crate::infra::media::packet::FlvTag;
 use crate::pipeline::handler::SegmentPersistenceHandler;
@@ -43,11 +43,18 @@ async fn main() -> Result<()> {
     let config = config::load_config();
     let cancel_token = CancellationToken::new();
     let flv_egress_hub = Arc::new(FlvEgressHub::new());
-    let (tx, rx) = channel::mpsc("flv_egress", None, config.queue.rtmpforward);
+    let (tx, rx) = channel::mpsc("flv_egress", None, config.queue.rtmp_forward);
 
-    spawn_persistence_handler(config.minio.clone().expect("Minio config is required")).await?;
+    spawn_persistence_handler(
+        config
+            .storage
+            .minio
+            .clone()
+            .expect("Minio config is required"),
+    )
+    .await?;
 
-    let packet_bus = build_pipe_bus(&config.persistence, &config.queue, tx);
+    let packet_bus = build_pipe_bus(&config.storage.persistence, &config.queue, tx);
 
     let (controller, controller_task) = build_transport_server(
         config,
@@ -78,16 +85,16 @@ async fn spawn_persistence_handler(minio: MinioConfig) -> Result<()> {
 
 fn build_pipe_bus(
     persistence_config: &PersistenceConfig,
-    queue_config: &config::QueueConfig,
+    queue_config: &QueueConfig,
     flv_tag_tx: MpscTx<IngestPacket<FlvTag>>,
 ) -> PipeBus {
     let segment_duration = Duration::from_secs(persistence_config.duration.max(1) as u64);
-    let segment_cachedir = persistence_config.cachedir.trim().to_string();
+    let segment_cache_dir = persistence_config.cache_dir.trim().to_string();
 
     let factory = Arc::new(UnifiedPipeFactory::new(
         segment_duration,
-        segment_cachedir,
-        queue_config.flvrelay,
+        segment_cache_dir,
+        queue_config.flv_relay,
         flv_tag_tx,
     ));
     let bus = PipeBus::new();
@@ -103,8 +110,8 @@ async fn build_transport_server(
     cancel_token: CancellationToken,
 ) -> Result<(Arc<TransportController>, JoinHandle<Result<()>>)> {
     let server = TransportServer::new(
-        config.rtmp.clone(),
-        config.srt.clone(),
+        config.transport.rtmp.clone(),
+        config.transport.srt.clone(),
         config.queue.clone(),
         rx,
         flv_egress_hub,
@@ -122,9 +129,9 @@ fn spawn_grpc_server(
     cancel_token: CancellationToken,
 ) -> JoinHandle<Result<()>> {
     let grpc_server = GrpcServer::new(
-        config.grpc.clone(),
-        config.rtmp.clone(),
-        config.http_flv.clone(),
+        config.services.grpc.clone(),
+        config.transport.rtmp.clone(),
+        config.services.http_flv.clone(),
         controller,
     );
     tokio::spawn(async move { grpc_server.serve(cancel_token).await })
@@ -135,11 +142,11 @@ fn spawn_http_flv_server(
     flv_egress_hub: Arc<FlvEgressHub>,
     cancel_token: CancellationToken,
 ) -> Result<Option<JoinHandle<Result<()>>>> {
-    if !config.http_flv.enabled {
+    if !config.services.http_flv.enabled {
         return Ok(None);
     }
 
-    let http_flv_config = config.http_flv.clone();
+    let http_flv_config = config.services.http_flv.clone();
     Ok(Some(tokio::spawn(async move {
         let server = HttpFlvServer::create(http_flv_config, flv_egress_hub, cancel_token).await?;
         server.run().await

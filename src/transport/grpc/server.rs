@@ -377,7 +377,7 @@ impl IngestGrpcService {
             Protocol::Rtmp => (
                 Some(api::RtmpEndpoint {
                     port: self.rtmp_config.port as u32,
-                    app_name: self.rtmp_config.appname.clone(),
+                    app_name: self.rtmp_config.app_name.clone(),
                     stream_key: live_id.to_owned(),
                 }),
                 None,
@@ -405,7 +405,7 @@ impl IngestGrpcService {
         api::PlaybackEndpoints {
             rtmp: Some(api::RtmpEndpoint {
                 port: rtmp_port,
-                app_name: self.rtmp_config.appname.clone(),
+                app_name: self.rtmp_config.app_name.clone(),
                 stream_key: live_id.to_owned(),
             }),
             http_flv: http_flv_path
