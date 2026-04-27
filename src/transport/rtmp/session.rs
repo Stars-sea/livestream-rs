@@ -167,7 +167,7 @@ impl SessionGuard {
                 stream_id,
                 payload,
                 to_timestamp(timestamp),
-                is_keyframe,
+                !is_keyframe,
             )?,
             FlvTag::ScriptData(metadata) => self.session.send_metadata(stream_id, &metadata)?,
         };
