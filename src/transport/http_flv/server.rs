@@ -57,7 +57,7 @@ impl HttpFlvServer {
             cancel_token: cancel_token.clone(),
         };
         let router = Router::new()
-            .route(route_path, get(handle_http_flv))
+            .route(route_path, get(handle_http_flv).options(handle_cors_preflight))
             .with_state(state);
 
         info!(address = %addr, route = %route_path, "HTTP-FLV server will listen");
@@ -182,13 +182,34 @@ fn encode_tag(live_id: &str, tag: FlvTag, phase: &'static str) -> Option<Bytes> 
 fn flv_response(body: Body) -> Response {
     let mut response = Response::new(body);
     *response.status_mut() = StatusCode::OK;
-    response.headers_mut().insert(
+    let headers = response.headers_mut();
+    headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("video/x-flv"),
     );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
     response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+}
+
+async fn handle_cors_preflight() -> Response {
+    let mut response = Response::new(Body::empty());
+    let headers = response.headers_mut();
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("*"),
+    );
     response
 }
 
