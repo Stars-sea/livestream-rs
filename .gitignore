@@ -10,6 +10,7 @@ Cargo.lock
 *.swp
 *.swo
 *~
+.obsidian/
 
 # OS files
 .DS_Store
