@@ -1,0 +1,12 @@
+[package]
+name = "livestream-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["sync", "macros", "rt"] }
+tokio-util.workspace = true
+crossfire = { workspace = true, features = ["tokio"] }
+serde.workspace = true
+config.workspace = true
+anyhow.workspace = true

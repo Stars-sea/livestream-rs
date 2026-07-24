@@ -1,0 +1,24 @@
+[package]
+name = "livestream-telemetry"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+livestream-core = { path = "../livestream-core" }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+opentelemetry = { version = "0.32", optional = true, features = ["trace", "metrics", "logs"] }
+opentelemetry_sdk = { version = "0.32", optional = true, features = ["trace", "metrics", "logs"] }
+opentelemetry-otlp = { version = "0.32", optional = true, features = ["grpc-tonic", "trace", "metrics", "logs", "internal-logs"] }
+opentelemetry-appender-tracing = { version = "0.32", optional = true }
+tracing-opentelemetry = { version = "0.33", optional = true }
+
+[features]
+default = ["opentelemetry"]
+opentelemetry = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-appender-tracing",
+    "dep:tracing-opentelemetry",
+]

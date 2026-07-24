@@ -3,7 +3,7 @@ target/
 .idea/
 
 # Rust build artifacts
-Cargo.lock
+# (Cargo.lock is tracked — this is a binary project)
 
 # IDE files
 .vscode/

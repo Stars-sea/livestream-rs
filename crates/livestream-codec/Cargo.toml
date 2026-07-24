@@ -1,0 +1,8 @@
+[package]
+name = "livestream-codec"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+livestream-core = { path = "../livestream-core" }
+bytes.workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "livestream-pipeline"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+livestream-core = { path = "../livestream-core" }
+livestream-codec = { path = "../livestream-codec" }
+livestream-media = { path = "../livestream-media" }
+livestream-telemetry = { path = "../livestream-telemetry" }
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+parking_lot.workspace = true
+tempfile.workspace = true

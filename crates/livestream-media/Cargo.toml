@@ -1,0 +1,10 @@
+[package]
+name = "livestream-media"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+livestream-core = { path = "../livestream-core" }
+livestream-codec = { path = "../livestream-codec" }
+ffmpeg-sys-next = { workspace = true, features = ["avformat", "avcodec", "swscale"] }
+bytes.workspace = true

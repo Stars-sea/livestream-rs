@@ -1,0 +1,23 @@
+[package]
+name = "livestream-transport"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+livestream-core = { path = "../livestream-core" }
+livestream-codec = { path = "../livestream-codec" }
+livestream-media = { path = "../livestream-media" }
+livestream-pipeline = { path = "../livestream-pipeline" }
+livestream-telemetry = { path = "../livestream-telemetry" }
+rml_rtmp.workspace = true
+tonic.workspace = true
+prost.workspace = true
+axum.workspace = true
+rtsp-types.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tokio-util.workspace = true
+dashmap.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true

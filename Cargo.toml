@@ -1,47 +1,61 @@
-[package]
-name = "livestream-rs"
-version = "0.3.1"
-edition = "2024"
-
-[features]
-default = ["opentelemetry"]
-opentelemetry = [
-	"dep:opentelemetry",
-	"dep:opentelemetry_sdk",
-	"dep:opentelemetry-otlp",
-	"dep:opentelemetry-appender-tracing",
-	"dep:tracing-opentelemetry",
+[workspace]
+members = [
+    "crates/livestream-core",
+    "crates/livestream-codec",
+    "crates/livestream-transport",
+    "crates/livestream-media",
+    "crates/livestream-pipeline",
+    "crates/livestream-telemetry",
 ]
+resolver = "3"
+
+[workspace.package]
+version = "0.4.0"
+edition = "2024"
+license = "GPL-3.0"
+
+[workspace.dependencies]
+# core
+tokio = { version = "1", default-features = false }
+tokio-util = "0.7"
+crossfire = "3"
+serde = { version = "1", features = ["derive"] }
+config = "0.15"
+anyhow = "1"
+
+# codec / media
+bytes = "1"
+ffmpeg-sys-next = { version = "8", default-features = false }
+
+# pipeline
+tracing = "0.1"
+parking_lot = "0.12"
+tempfile = "3"
+
+# transport
+rml_rtmp = "0.8"
+tonic = "0.14"
+prost = "0.14"
+axum = "0.8"
+dashmap = "6"
+tonic-prost-build = "0.14"
+rtsp-types = "0.1"
+tracing-subscriber = "0.3"
+
+[package]
+name = "livestream"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
-anyhow = "1.0.104"
-ffmpeg-sys-next = { version = "8.1.0", default-features = false, features = ["avcodec", "avformat"] }
-minio = "0.4.0"
-prost = "0.14.4"
-tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread"] }
-tonic = "0.14.6"
-tonic-prost = "0.14.6"
-regex = "1.13.1"
-rml_rtmp = "0.8.0"
-bytes = "1.12.1"
-tempfile = "3.27.0"
-config = "0.15.25"
-serde = { version = "1.0.229", features = ["derive"] }
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "registry"] }
-tracing-opentelemetry = { version = "0.33.0", optional = true }
-opentelemetry = { version = "0.32.0", features = ["trace", "metrics", "logs"], optional = true }
-opentelemetry_sdk = { version = "0.32.1", features = ["trace", "metrics", "logs"], optional = true }
-opentelemetry-otlp = { version = "0.32.0", features = ["grpc-tonic", "trace", "metrics", "logs", "internal-logs"], optional = true }
-opentelemetry-appender-tracing = { version = "0.32.0", optional = true }
-retry = "2.2.0"
-dashmap = "6.2.1"
-tokio-util = { version = "0.7.19", features = ["full"] }
-crossfire = { version = "3.1.19", features = ["tokio"] }
-async-trait = "0.1.91"
-async-stream = "0.3.6"
-axum = "0.8.9"
-parking_lot = "0.12.5"
+livestream-core = { path = "crates/livestream-core" }
+livestream-codec = { path = "crates/livestream-codec" }
+livestream-transport = { path = "crates/livestream-transport" }
+livestream-media = { path = "crates/livestream-media" }
+livestream-pipeline = { path = "crates/livestream-pipeline" }
+livestream-telemetry = { path = "crates/livestream-telemetry" }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+anyhow.workspace = true
 
 [build-dependencies]
-tonic-prost-build = "0.14.6"
+tonic-prost-build.workspace = true
