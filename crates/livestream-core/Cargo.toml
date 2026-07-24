@@ -10,3 +10,6 @@ crossfire = { workspace = true, features = ["tokio"] }
 serde.workspace = true
 config.workspace = true
 anyhow.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+async-trait.workspace = true

@@ -7,6 +7,7 @@ edition.workspace = true
 livestream-core = { path = "../livestream-core" }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow.workspace = true
 opentelemetry = { version = "0.32", optional = true, features = ["trace", "metrics", "logs"] }
 opentelemetry_sdk = { version = "0.32", optional = true, features = ["trace", "metrics", "logs"] }
 opentelemetry-otlp = { version = "0.32", optional = true, features = ["grpc-tonic", "trace", "metrics", "logs", "internal-logs"] }

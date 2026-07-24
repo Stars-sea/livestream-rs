@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 livestream-core = { path = "../livestream-core" }
 bytes.workspace = true
+serde = { workspace = true, features = ["derive"] }

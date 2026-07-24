@@ -22,6 +22,7 @@ crossfire = "3"
 serde = { version = "1", features = ["derive"] }
 config = "0.15"
 anyhow = "1"
+async-trait = "0.1"
 
 # codec / media
 bytes = "1"
