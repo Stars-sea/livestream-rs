@@ -998,10 +998,13 @@ dependencies = [
 name = "livestream-media"
 version = "0.4.0"
 dependencies = [
+ "anyhow",
  "bytes",
  "ffmpeg-sys-next",
  "livestream-codec",
  "livestream-core",
+ "rml_rtmp",
+ "tracing",
 ]
 
 [[package]]

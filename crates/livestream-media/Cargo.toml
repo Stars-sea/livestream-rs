@@ -8,3 +8,6 @@ livestream-core = { path = "../livestream-core" }
 livestream-codec = { path = "../livestream-codec" }
 ffmpeg-sys-next = { workspace = true, features = ["avformat", "avcodec", "swscale"] }
 bytes.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+rml_rtmp.workspace = true
