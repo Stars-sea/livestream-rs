@@ -121,3 +121,34 @@ fn is_video_keyframe(payload: &Bytes) -> bool {
     }
     false
 }
+
+// ── MediaPacket impl (needed by pipeline Sink trait) ──
+
+use livestream_core::types::{CodecParams, MediaPacket};
+use std::time::Duration;
+
+impl MediaPacket for FlvTag {
+    fn codec_params(&self) -> &[CodecParams] {
+        &[]
+    }
+
+    fn is_keyframe(&self) -> bool {
+        match self {
+            Self::Video { is_keyframe, .. } => *is_keyframe,
+            _ => false,
+        }
+    }
+
+    fn byte_size(&self) -> usize {
+        self.payload_size()
+    }
+
+    fn timestamp(&self) -> Option<Duration> {
+        match self {
+            Self::Audio { timestamp, .. } | Self::Video { timestamp, .. } => {
+                Some(Duration::from_millis(*timestamp as u64))
+            }
+            Self::ScriptData(_) => None,
+        }
+    }
+}

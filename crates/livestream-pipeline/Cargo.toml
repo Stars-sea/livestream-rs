@@ -7,8 +7,12 @@ edition.workspace = true
 livestream-core = { path = "../livestream-core" }
 livestream-codec = { path = "../livestream-codec" }
 livestream-media = { path = "../livestream-media" }
-livestream-telemetry = { path = "../livestream-telemetry" }
+livestream-telemetry = { path = "../livestream-telemetry", default-features = false }
 tokio = { workspace = true, features = ["full"] }
+tokio-util.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 tempfile.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true

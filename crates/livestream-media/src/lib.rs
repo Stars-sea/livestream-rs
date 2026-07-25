@@ -25,6 +25,9 @@ use std::ffi::{CStr, c_int};
 use ffmpeg_sys_next::*;
 use tracing::{Level, debug, error, info, trace, warn};
 
+/// Re-export ffmpeg-sys-next for downstream crates that need FFmpeg types.
+pub use ffmpeg_sys_next;
+
 pub mod bsf;
 pub mod codec;
 pub mod context;

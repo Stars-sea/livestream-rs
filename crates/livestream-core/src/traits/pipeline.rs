@@ -41,8 +41,8 @@ impl PipelineHandle {
         }
     }
 
-    #[allow(dead_code)] // used by Pipeline impl in Phase 4
-    pub(crate) fn set_state(&self, state: PipelineState) {
+    /// Set the pipeline state. Called by the Pipeline implementation.
+    pub fn set_state(&self, state: PipelineState) {
         self.state.store(state as u8, Ordering::Release);
     }
 
