@@ -1044,7 +1044,11 @@ dependencies = [
 name = "livestream-transport"
 version = "0.4.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "axum",
+ "base64",
+ "bytes",
  "dashmap",
  "livestream-codec",
  "livestream-core",
@@ -1052,7 +1056,6 @@ dependencies = [
  "livestream-pipeline",
  "livestream-telemetry",
  "prost",
- "rml_rtmp",
  "rtsp-types",
  "tokio",
  "tokio-util",

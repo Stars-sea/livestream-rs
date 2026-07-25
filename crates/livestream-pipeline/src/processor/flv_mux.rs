@@ -3,8 +3,6 @@
 //! No FFmpeg dependency. Lazy: `should_process()` checks output demand,
 //! skipping work when no FLV subscribers are connected.
 
-use std::sync::atomic::AtomicBool;
-
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 use livestream_codec::EncodedPacket;
@@ -23,14 +21,12 @@ impl PutU24 for BytesMut {
 use livestream_core::{
     pad::{PadReceiver, PadSender},
     traits::{Node, Processor},
-    types::{Codec, CodecParams, MediaPacket},
+    types::{Codec, CodecParams},
 };
 use livestream_media::flv::FlvTag;
 
 pub struct FlvMux {
     stream_id: String,
-    video_seq_sent: AtomicBool,
-    audio_seq_sent: AtomicBool,
     input: PadReceiver<EncodedPacket>,
     outputs: Vec<PadSender<FlvTag>>,
 }
@@ -43,8 +39,6 @@ impl FlvMux {
     ) -> Self {
         Self {
             stream_id: stream_id.into(),
-            video_seq_sent: AtomicBool::new(false),
-            audio_seq_sent: AtomicBool::new(false),
             input,
             outputs,
         }

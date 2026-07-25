@@ -8,7 +8,7 @@ use livestream_codec::EncodedPacket;
 use livestream_core::{
     pad::{PadReceiver, PadSender},
     traits::{Node, Processor},
-    types::{CodecParams, MediaPacket},
+    types::CodecParams,
 };
 
 /// Observability probe.  Records per-packet metrics and passes data through

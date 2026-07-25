@@ -15,7 +15,7 @@ use livestream_codec::{EncodedPacket, SegmentConfig, TsSegment};
 use livestream_core::{
     pad::{PadReceiver, PadSender},
     traits::{Node, Processor},
-    types::{CodecParams, MediaPacket},
+    types::CodecParams,
 };
 use livestream_media::ffmpeg_sys_next::AVRational;
 use livestream_media::{

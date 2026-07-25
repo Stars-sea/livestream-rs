@@ -18,15 +18,16 @@ use crate::engine::PipelineImpl;
 
 // ── Erased nodes ──
 
+#[allow(dead_code)]
 enum ErasedNodeKind {
     Source(Arc<dyn Any + Send + Sync>),
     Processor(Arc<dyn Any + Send + Sync>),
     Sink(Arc<dyn Any + Send + Sync>),
 }
 
+#[allow(dead_code)]
 struct ErasedNode {
     name: String,
-    #[allow(dead_code)]
     output_type_id: TypeId,
     kind: ErasedNodeKind,
 }

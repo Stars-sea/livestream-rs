@@ -39,6 +39,23 @@ impl Packet {
         Ok(Self { packet: pkt })
     }
 
+    /// Take ownership of an existing `AVPacket` (moves it into the RAII wrapper).
+    ///
+    /// The caller must NOT call `av_packet_unref()` — Drop will handle cleanup.
+    pub(crate) fn from_raw(av_pkt: AVPacket) -> Self {
+        // SAFETY: av_packet_alloc allocates a new AVPacket on the heap.
+        let ptr = unsafe { av_packet_alloc() };
+        if ptr.is_null() {
+            // Catastrophic — unrecoverable OOM.
+            std::process::abort();
+        }
+        // SAFETY: ptr is a freshly allocated AVPacket; move av_pkt's contents.
+        unsafe {
+            std::ptr::write(ptr, av_pkt);
+        }
+        Self { packet: ptr }
+    }
+
     // ── Pointer access ──
 
     /// Returns an immutable pointer to the underlying `AVPacket`.

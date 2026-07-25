@@ -37,6 +37,7 @@ pub mod encoder;
 pub mod flv;
 pub mod frame;
 pub mod packet;
+pub mod rtp;
 pub mod scaler;
 pub mod stream;
 

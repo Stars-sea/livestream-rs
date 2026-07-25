@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use livestream_codec::{EncodedPacket, SegmentConfig};
-use livestream_core::{traits::Source, types::MediaPacket};
+use livestream_core::traits::Source;
 use livestream_media::stream::StaticStreamCollection;
 use tokio_util::sync::CancellationToken;
 

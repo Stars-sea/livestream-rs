@@ -1,6 +1,6 @@
 //! MinIoSink — uploads TS segments to MinIO/S3-compatible storage.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -13,7 +13,7 @@ use livestream_core::{
 
 #[async_trait::async_trait]
 pub trait ObjectUploader: Send + Sync {
-    async fn upload_file(&self, object_key: &str, file_path: &PathBuf) -> Result<()>;
+    async fn upload_file(&self, object_key: &str, file_path: &Path) -> Result<()>;
 }
 
 pub struct MinIoSink {
@@ -81,16 +81,17 @@ impl Sink for MinIoSink {
 mod tests {
     use super::*;
     use livestream_core::pad::PadSender;
-    use std::sync::Mutex as StdMutex;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
     use std::time::Duration;
 
     struct MockUploader {
-        uploaded: StdMutex<Vec<String>>,
+        uploaded: Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
     impl ObjectUploader for MockUploader {
-        async fn upload_file(&self, key: &str, _path: &PathBuf) -> Result<()> {
+        async fn upload_file(&self, key: &str, _path: &Path) -> Result<()> {
             self.uploaded.lock().unwrap().push(key.to_string());
             Ok(())
         }
@@ -99,7 +100,7 @@ mod tests {
     #[tokio::test]
     async fn minio_sink_uploads_segment() {
         let mock = Arc::new(MockUploader {
-            uploaded: StdMutex::new(vec![]),
+            uploaded: Mutex::new(vec![]),
         });
         let cfg = SegmentConfig {
             duration_secs: 2,

@@ -9,15 +9,18 @@ livestream-codec = { path = "../livestream-codec" }
 livestream-media = { path = "../livestream-media" }
 livestream-pipeline = { path = "../livestream-pipeline" }
 livestream-telemetry = { path = "../livestream-telemetry" }
-rml_rtmp.workspace = true
 tonic.workspace = true
 prost.workspace = true
 axum.workspace = true
 rtsp-types.workspace = true
+base64.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-util.workspace = true
 dashmap.workspace = true
 tracing.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
 
 [build-dependencies]
 tonic-prost-build.workspace = true
