@@ -12,6 +12,7 @@ pub struct Scaler {
     ctx: *mut SwsContext,
     src_w: i32,
     src_h: i32,
+    // Fields retained for Transcode processor (Phase 4.1).
     #[allow(dead_code)]
     src_fmt: AVPixelFormat,
     dst_w: i32,

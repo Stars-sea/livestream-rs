@@ -124,7 +124,11 @@ fn parse_fmtp_config(fmtp: &str, codec: &Codec) -> Option<bytes::Bytes> {
                 .filter_map(decode_base64_part)
                 .flatten()
                 .collect();
-            if buf.is_empty() { None } else { Some(bytes::Bytes::from(buf)) }
+            if buf.is_empty() {
+                None
+            } else {
+                Some(bytes::Bytes::from(buf))
+            }
         }
         Codec::Aac => {
             let config = extract_param(fmtp, "config")?;

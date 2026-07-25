@@ -24,9 +24,6 @@ pub struct AppConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct TransportConfig {
     #[serde(default)]
-    pub srt: SrtConfig,
-
-    #[serde(default)]
     pub rtmp: RtmpConfig,
 }
 
@@ -45,12 +42,6 @@ pub struct StorageConfig {
     pub persistence: PersistenceConfig,
 
     pub minio: Option<MinioConfig>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct SrtConfig {
-    #[serde(default = "default_srt_ports")]
-    pub ports: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -120,10 +111,6 @@ pub struct MinioConfig {
 
 fn default_grpc_port() -> u16 {
     50051
-}
-
-fn default_srt_ports() -> String {
-    "4000-4100".to_string()
 }
 
 fn default_persistence_duration() -> i32 {
@@ -203,7 +190,6 @@ impl AppConfig {
 
 impl TransportConfig {
     fn validate(&self) -> Result<()> {
-        self.srt.validate()?;
         self.rtmp.validate()?;
         Ok(())
     }
@@ -223,50 +209,15 @@ impl StorageConfig {
     }
 }
 
-impl SrtConfig {
-    pub fn srt_port_range(&self) -> Result<(u16, u16)> {
-        let segments: Vec<&str> = self.ports.split('-').collect();
-
-        if segments.len() != 2 {
-            anyhow::bail!(
-                "Invalid SRT port range format '{}': expected 'start-end'",
-                self.ports
-            );
-        }
-
-        let start = segments[0]
-            .trim()
-            .parse::<u16>()
-            .with_context(|| format!("Invalid start port number: '{}'", segments[0]))?;
-
-        let end = segments[1]
-            .trim()
-            .parse::<u16>()
-            .with_context(|| format!("Invalid end port number: '{}'", segments[1]))?;
-
-        Ok((start, end))
-    }
-
-    fn validate(&self) -> Result<()> {
-        let (start, end) = self.srt_port_range()?;
-        if start >= end {
-            anyhow::bail!(
-                "Invalid SRT port range: start port {} must be less than end port {}",
-                start,
-                end
-            );
-        }
-
-        Ok(())
-    }
-}
-
 impl RtmpConfig {
     fn validate(&self) -> Result<()> {
+        const MIN_RTMP_SESSION_TTL_SECS: u64 = 1;
         const MAX_RTMP_SESSION_TTL_SECS: u64 = 86_400;
-        if self.session_ttl_secs > MAX_RTMP_SESSION_TTL_SECS {
+        if !(MIN_RTMP_SESSION_TTL_SECS..=MAX_RTMP_SESSION_TTL_SECS).contains(&self.session_ttl_secs)
+        {
             anyhow::bail!(
-                "RTMP session TTL must be in 0..={} seconds, got {}",
+                "RTMP session TTL must be in {}..={} seconds, got {}",
+                MIN_RTMP_SESSION_TTL_SECS,
                 MAX_RTMP_SESSION_TTL_SECS,
                 self.session_ttl_secs
             );
@@ -303,14 +254,6 @@ impl QueueConfig {
         }
 
         Ok(())
-    }
-}
-
-impl Default for SrtConfig {
-    fn default() -> Self {
-        Self {
-            ports: default_srt_ports(),
-        }
     }
 }
 

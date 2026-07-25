@@ -68,7 +68,6 @@ pub fn ffmpeg_error(code: c_int) -> String {
 // ── FFmpeg logging ──
 
 /// Sets the FFmpeg logging level based on Rust log levels.
-#[allow(unused)]
 pub fn set_log_level(level: Level) {
     let c_level = match level {
         Level::ERROR => AV_LOG_ERROR,
@@ -84,7 +83,6 @@ pub fn set_log_level(level: Level) {
 }
 
 /// Disables all FFmpeg logging.
-#[allow(unused)]
 pub fn set_log_quiet() {
     // SAFETY: av_log_set_level is safe to call at any time.
     unsafe {

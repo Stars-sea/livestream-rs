@@ -17,7 +17,6 @@ pub struct Transcode {
 }
 
 impl Transcode {
-    #[allow(unused)]
     pub fn new(input: PadReceiver<EncodedPacket>, outputs: Vec<PadSender<EncodedPacket>>) -> Self {
         Self {
             _input: input,

@@ -10,9 +10,10 @@ use tokio::task::JoinHandle;
 use crate::graph::PipelineGraph;
 
 /// Concrete `Pipeline` implementation.  Created by `PipelineGraph::build()`.
+// Fields populated in Phase 4.1 when the engine spawns processor/sink tasks.
+#[allow(dead_code)]
 pub struct PipelineImpl {
     handle: PipelineHandle,
-    #[allow(dead_code)]
     tasks: Vec<JoinHandle<()>>,
 }
 

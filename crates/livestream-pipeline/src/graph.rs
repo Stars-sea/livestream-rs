@@ -25,6 +25,7 @@ enum ErasedNodeKind {
     Sink(Arc<dyn Any + Send + Sync>),
 }
 
+// Fields consumed when PipelineGraph::build() instantiates the pipeline engine.
 #[allow(dead_code)]
 struct ErasedNode {
     name: String,
@@ -43,7 +44,6 @@ struct Edge {
 /// edges connect them by index.
 pub struct PipelineGraph {
     nodes: Vec<ErasedNode>,
-    #[allow(dead_code)]
     edges: Vec<Edge>,
     tail: usize,
 }
@@ -97,7 +97,6 @@ impl PipelineGraph {
         });
     }
 
-    #[allow(dead_code)]
     fn validate(&self) -> Result<()> {
         // TODO: implement full validation in Phase 4.1
         Ok(())
@@ -225,4 +224,3 @@ impl<T: MediaPacket> BranchBuilder<'_, T> {
 }
 
 // ── Tests ──
-

@@ -9,23 +9,11 @@ use crate::channel::error::SendError;
 /// MPSC channel receiver backed by crossfire.
 pub struct MpscReceiver<T: 'static> {
     inner: AsyncRx<mpsc::Array<T>>,
-    #[allow(dead_code)]
-    queue: &'static str,
-    #[allow(dead_code)]
-    live_id: Option<Arc<str>>,
 }
 
 impl<T> MpscReceiver<T> {
-    pub(super) fn new(
-        inner: AsyncRx<mpsc::Array<T>>,
-        queue: &'static str,
-        live_id: Option<Arc<str>>,
-    ) -> Self {
-        Self {
-            inner,
-            queue,
-            live_id,
-        }
+    pub(super) fn new(inner: AsyncRx<mpsc::Array<T>>) -> Self {
+        Self { inner }
     }
 
     /// Receive the next item (async). Returns None if all senders dropped.
@@ -49,9 +37,7 @@ impl<T> MpscReceiver<T> {
 /// Broadcast channel sender (tokio::sync::broadcast).
 pub struct BroadcastSender<T> {
     inner: broadcast::Sender<T>,
-    #[allow(dead_code)]
     queue: &'static str,
-    #[allow(dead_code)]
     live_id: Option<Arc<str>>,
 }
 

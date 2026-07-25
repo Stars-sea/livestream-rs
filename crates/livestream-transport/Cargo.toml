@@ -10,6 +10,7 @@ livestream-media = { path = "../livestream-media" }
 livestream-pipeline = { path = "../livestream-pipeline" }
 livestream-telemetry = { path = "../livestream-telemetry" }
 tonic.workspace = true
+tonic-prost.workspace = true
 prost.workspace = true
 axum.workspace = true
 rtsp-types.workspace = true
@@ -21,6 +22,15 @@ tracing.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
+rml_rtmp.workspace = true
+crossfire.workspace = true
+serde.workspace = true
+config.workspace = true
+async-stream = "0.3"
+regex = "1"
+
+[features]
+opentelemetry = []
 
 [build-dependencies]
 tonic-prost-build.workspace = true

@@ -32,7 +32,7 @@ pub fn mpsc<T: Send + 'static>(
     let live_id: Option<Arc<str>> = live_id.map(|s| s.into());
 
     let tx = MpscTx::new(tx, queue, live_id.clone());
-    let rx = MpscRx::new(rx, queue, live_id);
+    let rx = MpscRx::new(rx);
     (tx, rx)
 }
 

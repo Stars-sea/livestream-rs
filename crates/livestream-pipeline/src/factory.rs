@@ -15,7 +15,6 @@ use crate::broadcast::FlvBroadcast;
 use crate::sink::minio::ObjectUploader;
 
 /// Build a standard pipeline for a live stream (DEFERRED).
-#[allow(unused_variables)]
 pub fn build_pipeline(
     live_id: &str,
     source: Arc<dyn Source<Output = EncodedPacket>>,

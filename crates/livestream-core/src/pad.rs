@@ -230,7 +230,8 @@ enum PadReceiverBackend<T: 'static> {
 /// Receiver side of a Pad. Owned by the downstream node.
 pub struct PadReceiver<T: 'static> {
     inner: PadReceiverBackend<T>,
-    #[allow(dead_code)] // used by Pipeline engine in Phase 4
+    // Needed for pipeline engine lazy-processing (Phase 4.1).
+    #[allow(dead_code)]
     demand: DemandSignal,
 }
 

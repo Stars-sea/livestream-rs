@@ -116,7 +116,10 @@ impl RtspSession {
         Ok(Some(
             Response::builder(Version::V1_0, StatusCode::Ok)
                 .typed_header(&CSeq::from(cseq))
-                .header(TRANSPORT, format!("RTP/AVP/TCP;interleaved={}-{}", ch, ch + 1))
+                .header(
+                    TRANSPORT,
+                    format!("RTP/AVP/TCP;interleaved={}-{}", ch, ch + 1),
+                )
                 .empty(),
         ))
     }
