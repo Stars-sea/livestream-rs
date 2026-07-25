@@ -91,14 +91,11 @@ impl<'a, S: StreamCollection + ?Sized> Iterator for StreamCollectionIter<'a, S> 
     type Item = Box<dyn StreamDescriptorTrait + 'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.index < self.streams.stream_count() {
-            let idx = self.index;
-            self.index += 1;
-            if let Some(stream) = self.streams.stream(idx) {
-                return Some(stream);
-            }
-        }
-        None
+        let stream = (self.index..self.streams.stream_count()).find_map(|i| {
+            self.index = i + 1;
+            self.streams.stream(i)
+        })?;
+        Some(stream)
     }
 }
 

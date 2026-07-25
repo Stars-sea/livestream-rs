@@ -20,15 +20,13 @@ impl FlvStreamMapping {
         let mut video: Option<(usize, AVRational)> = None;
 
         for stream in streams {
-            let codec_params = stream.codec_params_ptr();
-            match codec_params.codec_type() {
-                AVMediaType::AVMEDIA_TYPE_AUDIO if audio.is_none() => {
-                    audio = Some((stream.index(), stream.time_base()));
-                }
-                AVMediaType::AVMEDIA_TYPE_VIDEO if video.is_none() => {
-                    video = Some((stream.index(), stream.time_base()));
-                }
-                _ => {}
+            let cp = stream.codec_params_ptr();
+            let ct = cp.codec_type();
+            if ct == AVMediaType::AVMEDIA_TYPE_AUDIO && audio.is_none() {
+                audio = Some((stream.index(), stream.time_base()));
+            }
+            if ct == AVMediaType::AVMEDIA_TYPE_VIDEO && video.is_none() {
+                video = Some((stream.index(), stream.time_base()));
             }
         }
 

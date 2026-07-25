@@ -57,36 +57,36 @@ impl FlvTag {
     /// Whether this tag is a codec sequence header.
     pub fn is_sequence_header(&self) -> bool {
         match self {
-            Self::Audio { payload, .. } => {
-                if payload.is_empty() {
-                    return false;
-                }
-                let sound_format = payload[0] >> 4;
-                payload.len() >= 2
-                    && sound_format == FLV_AUDIO_CODEC_AAC
-                    && payload[1] == FLV_PACKET_TYPE_SEQ_HEADER
-            }
-            Self::Video { payload, .. } => {
-                if payload.is_empty() {
-                    return false;
-                }
-                let first_byte = payload[0];
-                let is_ex_header = (first_byte & 0x80) != 0;
-
-                if is_ex_header {
-                    // Enhanced RTMP (v1 or v2)
-                    let packet_type = first_byte & 0x0f;
-                    packet_type == FLV_PACKET_TYPE_SEQ_HEADER
-                } else {
-                    // Standard FLV
-                    let codec_id = first_byte & 0x0f;
-                    payload.len() >= 2
-                        && (codec_id == FLV_VIDEO_CODEC_AVC || codec_id == FLV_VIDEO_CODEC_HEVC)
-                        && payload[1] == FLV_PACKET_TYPE_SEQ_HEADER
-                }
-            }
+            Self::Audio { payload, .. } => is_audio_seq_header(payload),
+            Self::Video { payload, .. } => is_video_seq_header(payload),
             Self::ScriptData(_) => true,
         }
+    }
+}
+
+fn is_audio_seq_header(payload: &[u8]) -> bool {
+    if payload.is_empty() {
+        return false;
+    }
+    let sound_format = payload[0] >> 4;
+    payload.len() >= 2
+        && sound_format == FLV_AUDIO_CODEC_AAC
+        && payload[1] == FLV_PACKET_TYPE_SEQ_HEADER
+}
+
+fn is_video_seq_header(payload: &[u8]) -> bool {
+    if payload.is_empty() {
+        return false;
+    }
+    let first_byte = payload[0];
+    let is_ex_header = (first_byte & 0x80) != 0;
+    if is_ex_header {
+        (first_byte & 0x0f) == FLV_PACKET_TYPE_SEQ_HEADER
+    } else {
+        let codec_id = first_byte & 0x0f;
+        payload.len() >= 2
+            && (codec_id == FLV_VIDEO_CODEC_AVC || codec_id == FLV_VIDEO_CODEC_HEVC)
+            && payload[1] == FLV_PACKET_TYPE_SEQ_HEADER
     }
 }
 

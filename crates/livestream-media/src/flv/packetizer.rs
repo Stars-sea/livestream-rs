@@ -96,9 +96,9 @@ impl FlvTagPacketizer {
                 Ok(Vec::new())
             }
             1 => {
-                let (video_stream_idx, video_time_base) = mapping.video.ok_or_else(|| {
-                    anyhow::anyhow!("Video stream not found in stream collection")
-                })?;
+                let (video_stream_idx, video_time_base) = mapping
+                    .video
+                    .ok_or_else(|| anyhow::anyhow!("Video stream not found in stream collection"))?;
                 let packet = make_packet(
                     avc_payload,
                     timestamp,
@@ -107,9 +107,10 @@ impl FlvTagPacketizer {
                     video_stream_idx,
                 )?;
 
-                let bsf = self.h264_bsf.as_mut().ok_or_else(|| {
-                    anyhow::anyhow!("AVC sequence header missing before video frame")
-                })?;
+                let bsf = self
+                    .h264_bsf
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("AVC sequence header missing before video frame"))?;
                 bsf.filter(packet)
             }
             2 => Ok(Vec::new()), // AVC end-of-sequence

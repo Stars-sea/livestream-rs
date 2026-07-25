@@ -114,17 +114,14 @@ impl<T> BroadcastReceiver<T> {
         T: Clone,
     {
         loop {
+            use broadcast::error::RecvError;
             match self.inner.recv().await {
                 Ok(item) => return Some(item),
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!(
-                        skipped = n,
-                        "Broadcast receiver lagged, skipped {n} messages"
-                    );
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    return None;
-                }
+                Err(RecvError::Lagged(n)) => warn!(
+                    skipped = n,
+                    "Broadcast receiver lagged, skipped {n} messages"
+                ),
+                Err(RecvError::Closed) => return None,
             }
         }
     }

@@ -35,20 +35,20 @@ impl FlvLiveChannel {
 
     /// Broadcast a tag to all subscribers. Caches sequence headers for late joiners.
     pub fn broadcast(&self, tag: &FlvTag) -> Result<usize, broadcast::error::SendError<FlvTag>> {
-        if tag.is_sequence_header() {
-            match tag {
-                FlvTag::Video { .. } => {
-                    *self.video_seq.lock().unwrap() = Some(tag.clone());
-                }
-                FlvTag::Audio { .. } => {
-                    *self.audio_seq.lock().unwrap() = Some(tag.clone());
-                }
-                FlvTag::ScriptData(_) => {
-                    *self.metadata.lock().unwrap() = Some(tag.clone());
-                }
-            }
-        }
+        self.cache_seq_header(tag);
         self.sender.send(tag.clone())
+    }
+
+    fn cache_seq_header(&self, tag: &FlvTag) {
+        if !tag.is_sequence_header() {
+            return;
+        }
+        let slot = match tag {
+            FlvTag::Video { .. } => &self.video_seq,
+            FlvTag::Audio { .. } => &self.audio_seq,
+            FlvTag::ScriptData(_) => &self.metadata,
+        };
+        *slot.lock().unwrap() = Some(tag.clone());
     }
 
     /// Subscribe to this channel. Returns the receiver and any cached

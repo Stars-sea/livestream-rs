@@ -32,19 +32,18 @@ pub fn build_pipeline(
         // Build StaticStreamCollection from codec params
         let video_tb = livestream_media::ffmpeg_sys_next::AVRational { num: 1, den: 90000 };
         let audio_tb = livestream_media::ffmpeg_sys_next::AVRational { num: 1, den: 44100 };
-        let mut owned: Vec<(
-            usize,
-            livestream_media::ffmpeg_sys_next::AVRational,
-            livestream_media::codec::OwnedCodecParams,
-        )> = Vec::new();
-        for (i, p) in params.iter().enumerate() {
-            let tb = if p.is_video() { video_tb } else { audio_tb };
-            owned.push((
-                i,
-                tb,
-                livestream_media::codec::OwnedCodecParams::from_codec_params(p)?,
-            ));
-        }
+        let owned: Vec<_> = params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let tb = if p.is_video() { video_tb } else { audio_tb };
+                Ok((
+                    i,
+                    tb,
+                    livestream_media::codec::OwnedCodecParams::from_codec_params(p)?,
+                ))
+            })
+            .collect::<Result<_>>()?;
         StaticStreamCollection::from_owned_params(owned)
     };
 

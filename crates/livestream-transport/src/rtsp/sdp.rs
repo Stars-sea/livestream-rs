@@ -109,32 +109,26 @@ fn parse_rtpmap(rtpmap: &str) -> Result<(Codec, u32)> {
     Ok((codec, clock_rate))
 }
 
+fn decode_base64_part(part: &str) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD
+        .decode(part.trim())
+        .ok()
+}
+
 fn parse_fmtp_config(fmtp: &str, codec: &Codec) -> Option<bytes::Bytes> {
     match codec {
         Codec::H264 => {
-            if let Some(sets) = extract_param(fmtp, "sprop-parameter-sets") {
-                let buf: Vec<u8> = sets
-                    .split(',')
-                    .filter_map(|p| {
-                        base64::engine::general_purpose::STANDARD
-                            .decode(p.trim())
-                            .ok()
-                    })
-                    .flatten()
-                    .collect();
-                if !buf.is_empty() {
-                    return Some(bytes::Bytes::from(buf));
-                }
-            }
-            None
+            let sets = extract_param(fmtp, "sprop-parameter-sets")?;
+            let buf: Vec<u8> = sets
+                .split(',')
+                .filter_map(decode_base64_part)
+                .flatten()
+                .collect();
+            if buf.is_empty() { None } else { Some(bytes::Bytes::from(buf)) }
         }
         Codec::Aac => {
-            if let Some(config) = extract_param(fmtp, "config")
-                && let Ok(asc) = hex_decode(config)
-            {
-                return Some(bytes::Bytes::from(asc));
-            }
-            None
+            let config = extract_param(fmtp, "config")?;
+            hex_decode(config).ok().map(bytes::Bytes::from)
         }
         _ => None,
     }

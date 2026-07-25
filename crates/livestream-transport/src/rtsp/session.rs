@@ -59,66 +59,77 @@ impl RtspSession {
             .unwrap_or(0);
 
         match request.method() {
-            Method::Announce => {
-                if self.state != State::WaitAnnounce {
-                    return Ok(Some(error_response(
-                        StatusCode::MethodNotValidInThisState,
-                        cseq,
-                    )));
-                }
-                let body = String::from_utf8_lossy(request.body());
-                let parsed = sdp::parse_sdp(&body)?;
-                self.parsed_sdp = Some(parsed);
-                self.state = State::WaitSetup;
-                info!("RTSP ANNOUNCE received, SDP parsed");
-                Ok(Some(ok_response(cseq)))
-            }
+            Method::Announce => self.handle_announce(request, cseq),
             Method::Options => Ok(Some(ok_response(cseq))),
-            Method::Setup => {
-                if self.state != State::WaitSetup && self.state != State::WaitRecord {
-                    return Ok(Some(error_response(
-                        StatusCode::MethodNotValidInThisState,
-                        cseq,
-                    )));
-                }
-                let is_video = request
-                    .request_uri()
-                    .map(|u| u.path().contains("track1") || !u.path().contains("track2"))
-                    .unwrap_or(true);
-
-                let (ch, _rtcp_ch) = if is_video {
-                    (self.video_channel, self.video_channel + 1)
-                } else {
-                    (self.audio_channel, self.audio_channel + 1)
-                };
-                self.state = State::WaitRecord;
-
-                Ok(Some(
-                    Response::builder(Version::V1_0, StatusCode::Ok)
-                        .typed_header(&CSeq::from(cseq))
-                        .header(
-                            TRANSPORT,
-                            format!("RTP/AVP/TCP;interleaved={}-{}", ch, ch + 1),
-                        )
-                        .empty(),
-                ))
-            }
-            Method::Record => {
-                if self.state != State::WaitRecord {
-                    return Ok(Some(error_response(
-                        StatusCode::MethodNotValidInThisState,
-                        cseq,
-                    )));
-                }
-                self.state = State::Recording;
-                Ok(Some(ok_response(cseq)))
-            }
+            Method::Setup => self.handle_setup(request, cseq),
+            Method::Record => self.handle_record(cseq),
             Method::Teardown => {
                 self.state = State::Teardown;
                 Ok(Some(ok_response(cseq)))
             }
             _ => Ok(Some(error_response(StatusCode::MethodNotAllowed, cseq))),
         }
+    }
+
+    fn handle_announce(
+        &mut self,
+        request: &Request<Vec<u8>>,
+        cseq: u32,
+    ) -> Result<Option<Response<Empty>>> {
+        if self.state != State::WaitAnnounce {
+            return Ok(Some(error_response(
+                StatusCode::MethodNotValidInThisState,
+                cseq,
+            )));
+        }
+        let body = String::from_utf8_lossy(request.body());
+        let parsed = sdp::parse_sdp(&body)?;
+        self.parsed_sdp = Some(parsed);
+        self.state = State::WaitSetup;
+        info!("RTSP ANNOUNCE received, SDP parsed");
+        Ok(Some(ok_response(cseq)))
+    }
+
+    fn handle_setup(
+        &mut self,
+        request: &Request<Vec<u8>>,
+        cseq: u32,
+    ) -> Result<Option<Response<Empty>>> {
+        if self.state != State::WaitSetup && self.state != State::WaitRecord {
+            return Ok(Some(error_response(
+                StatusCode::MethodNotValidInThisState,
+                cseq,
+            )));
+        }
+        let is_video = request
+            .request_uri()
+            .map(|u| u.path().contains("track1") || !u.path().contains("track2"))
+            .unwrap_or(true);
+
+        let (ch, _rtcp_ch) = if is_video {
+            (self.video_channel, self.video_channel + 1)
+        } else {
+            (self.audio_channel, self.audio_channel + 1)
+        };
+        self.state = State::WaitRecord;
+
+        Ok(Some(
+            Response::builder(Version::V1_0, StatusCode::Ok)
+                .typed_header(&CSeq::from(cseq))
+                .header(TRANSPORT, format!("RTP/AVP/TCP;interleaved={}-{}", ch, ch + 1))
+                .empty(),
+        ))
+    }
+
+    fn handle_record(&mut self, cseq: u32) -> Result<Option<Response<Empty>>> {
+        if self.state != State::WaitRecord {
+            return Ok(Some(error_response(
+                StatusCode::MethodNotValidInThisState,
+                cseq,
+            )));
+        }
+        self.state = State::Recording;
+        Ok(Some(ok_response(cseq)))
     }
 
     pub fn is_teardown(&self) -> bool {
