@@ -1321,6 +1321,7 @@ name = "livestream"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "config",
  "livestream-codec",
  "livestream-core",
@@ -1329,7 +1330,6 @@ dependencies = [
  "livestream-telemetry",
  "livestream-transport",
  "minio",
- "regex",
  "serde",
  "tokio",
  "tokio-util",

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::Result;
 use rml_rtmp::sessions::ServerSessionEvent;
 use tokio_util::sync::CancellationToken;
@@ -8,14 +6,13 @@ use tracing::{debug, warn};
 use crate::lifecycle::HandlerLifecycle;
 use crate::rtmp::handler::HandlerTrait;
 use crate::rtmp::session::SessionGuard;
-use livestream_media::flv::FlvTag;
-use livestream_pipeline::broadcast::FlvBroadcast;
+use crate::source::rtmp::RtmpRawFrame;
 
 pub struct PublishHandler {
     session: SessionGuard,
 
     stream_key: String,
-    flv_broadcast: Arc<dyn FlvBroadcast>,
+    source_tx: tokio::sync::mpsc::Sender<RtmpRawFrame>,
 
     lifecycle: HandlerLifecycle,
     cancel_token: CancellationToken,
@@ -25,14 +22,14 @@ impl PublishHandler {
     pub(super) fn new(
         session: SessionGuard,
         stream_key: String,
-        flv_broadcast: Arc<dyn FlvBroadcast>,
+        source_tx: tokio::sync::mpsc::Sender<RtmpRawFrame>,
         lifecycle: HandlerLifecycle,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             session,
             stream_key,
-            flv_broadcast,
+            source_tx,
             lifecycle,
             cancel_token,
         }
@@ -42,29 +39,25 @@ impl PublishHandler {
         debug!("Publish finished for stream key: {}", self.stream_key);
 
         self.lifecycle.disconnect();
-
         self.cancel_token.cancel();
         Ok(())
     }
 
-    async fn send_publish_tag(&self, tag: FlvTag) -> Result<()> {
+    async fn send_to_source(&self, frame: RtmpRawFrame) -> Result<()> {
+        // Drop the frame if lifecycle connect fails.
+        // connect() is idempotent — only the first call dispatches SessionStarted.
         if let Err(e) = self.lifecycle.connect().await {
             warn!(stream_key = %self.stream_key, error = %e, "Failed to emit RTMP connected state on publish tag");
             return Err(anyhow::anyhow!(
-                "Cannot broadcast: lifecycle connect failed: {}",
+                "Cannot send to source: lifecycle connect failed: {}",
                 e
             ));
         }
 
-        // NOTE: lifecycle.init() is skipped in Phase 6 because:
-        // 1. StreamMetadata does not implement the new StreamCollection trait
-        // 2. The pipeline engine is a stub (PipeBus has been removed)
-        // Full pipeline integration will be added in a future phase.
-
-        self.flv_broadcast
-            .broadcast(&self.stream_key, tag)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to broadcast RTMP tag: {}", e))
+        // Send the raw frame to the source for pipeline processing.
+        self.source_tx.send(frame).await.map_err(|_| {
+            anyhow::anyhow!("RtmpSource receiver closed for stream {}", self.stream_key)
+        })
     }
 }
 
@@ -86,18 +79,30 @@ impl HandlerTrait for PublishHandler {
             ServerSessionEvent::AudioDataReceived {
                 data, timestamp, ..
             } => {
-                let flv_tag = FlvTag::audio(timestamp.value, data);
-                self.send_publish_tag(flv_tag).await?;
+                let frame = RtmpRawFrame {
+                    data,
+                    timestamp: timestamp.value,
+                    is_video: false,
+                    is_audio: true,
+                    is_script_data: false,
+                };
+                self.send_to_source(frame).await?;
             }
             ServerSessionEvent::VideoDataReceived {
                 data, timestamp, ..
             } => {
-                let flv_tag = FlvTag::video(timestamp.value, data);
-                self.send_publish_tag(flv_tag).await?;
+                let frame = RtmpRawFrame {
+                    data,
+                    timestamp: timestamp.value,
+                    is_video: true,
+                    is_audio: false,
+                    is_script_data: false,
+                };
+                self.send_to_source(frame).await?;
             }
-            ServerSessionEvent::StreamMetadataChanged { metadata, .. } => {
-                let flv_tag = FlvTag::script_data(metadata);
-                self.send_publish_tag(flv_tag).await?;
+            ServerSessionEvent::StreamMetadataChanged { .. } => {
+                // Metadata is informational; pipeline processors derive codec
+                // info from sequence headers in-band.
             }
 
             _ => {

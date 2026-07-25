@@ -10,15 +10,13 @@ use tracing::{error, info, warn};
 
 use crate::flv::hub::FlvEgressHub;
 use crate::source::rtsp::{RawRtpFrame, RtspSource};
+use crate::task::{run_processor, run_sink};
 
 use super::rtp::RtpInterleavedReader;
 use super::session::{self, RtspSession};
 
 use livestream_codec::{EncodedPacket, RtpPacket};
-use livestream_core::{
-    pad::PadSender,
-    traits::{Processor, Sink, Source},
-};
+use livestream_core::{pad::PadSender, traits::Source};
 use livestream_media::flv::FlvTag;
 use livestream_pipeline::broadcast::FlvBroadcast;
 use livestream_pipeline::processor::{FlvMux, RtpDemuxProcessor};
@@ -356,57 +354,4 @@ async fn handle_connection(stream: TcpStream, live_id: &str, hub: Arc<FlvEgressH
 
     cleanup_pipeline(tasks, cancel, hub, live_id).await;
     Ok(())
-}
-
-// ── Processor / Sink task loops ──
-
-async fn run_processor<P>(processor: Arc<P>, cancel: CancellationToken)
-where
-    P: Processor + 'static,
-    P::Output: Clone,
-{
-    tracing::debug!(processor = %processor.name(), "Processor loop started");
-    loop {
-        tokio::select! {
-            pkt = processor.input().recv() => {
-                let pkt = match pkt { Some(p) => p, None => break };
-                if !processor.should_process() { continue; }
-
-                match processor.process(pkt).await {
-                    Ok(results) => {
-                        for item in results {
-                            for out_pad in processor.outputs() {
-                                if out_pad.send(item.clone()).is_err() { break; }
-                            }
-                        }
-                    }
-                    Err(e) => tracing::warn!(processor=%processor.name(), error=%e, "drop"),
-                }
-            }
-            _ = cancel.cancelled() => break,
-        }
-    }
-    if let Err(e) = processor.close().await {
-        tracing::warn!(processor = %processor.name(), error = %e, "close error");
-    }
-    tracing::debug!(processor = %processor.name(), "Processor loop ended");
-}
-
-async fn run_sink<Si>(sink: Arc<Si>, cancel: CancellationToken)
-where
-    Si: Sink + 'static,
-{
-    tracing::debug!(sink = %sink.name(), "Sink loop started");
-    loop {
-        tokio::select! {
-            item = sink.input().recv() => {
-                let item = match item { Some(i) => i, None => break };
-                if let Err(e) = sink.consume(item).await {
-                    tracing::warn!(sink=%sink.name(), error=%e, "drop");
-                }
-            }
-            _ = cancel.cancelled() => break,
-        }
-    }
-    tracing::debug!(sink = %sink.name(), "Sink loop ended");
 }

@@ -23,7 +23,7 @@ service Livestream {
 }
 
 enum InputProtocol {
-  INPUT_PROTOCOL_SRT = 0;
+  INPUT_PROTOCOL_UNSPECIFIED = 0;
   INPUT_PROTOCOL_RTMP = 1;
 }
 

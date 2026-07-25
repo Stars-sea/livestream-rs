@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::Result;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -7,8 +5,8 @@ use tokio_util::sync::CancellationToken;
 use super::{Handler, PlayHandler, PublishHandler};
 use crate::lifecycle::HandlerLifecycle;
 use crate::rtmp::session::SessionGuard;
+use crate::source::rtmp::RtmpRawFrame;
 use livestream_media::flv::FlvTag;
-use livestream_pipeline::broadcast::FlvBroadcast;
 
 pub enum HandlerBuilder {
     Play {
@@ -22,7 +20,7 @@ pub enum HandlerBuilder {
     Publish {
         session: Option<SessionGuard>,
         stream_key: String,
-        flv_broadcast: Option<Arc<dyn FlvBroadcast>>,
+        source_tx: Option<tokio::sync::mpsc::Sender<RtmpRawFrame>>,
         lifecycle: Option<HandlerLifecycle>,
         cancel_token: Option<CancellationToken>,
     },
@@ -44,7 +42,7 @@ impl HandlerBuilder {
         HandlerBuilder::Publish {
             session: None,
             stream_key,
-            flv_broadcast: None,
+            source_tx: None,
             lifecycle: None,
             cancel_token: None,
         }
@@ -57,8 +55,6 @@ impl HandlerBuilder {
         }
     }
 
-    /// App name is validated at the SessionGuard level; this is a no-op
-    /// retained for API compatibility.
     pub fn with_appname(self, _appname: String) -> Self {
         self
     }
@@ -85,9 +81,9 @@ impl HandlerBuilder {
         self
     }
 
-    pub fn with_flv_broadcast(mut self, broadcast: Arc<dyn FlvBroadcast>) -> Self {
-        if let HandlerBuilder::Publish { flv_broadcast, .. } = &mut self {
-            *flv_broadcast = Some(broadcast);
+    pub fn with_source_tx(mut self, tx: tokio::sync::mpsc::Sender<RtmpRawFrame>) -> Self {
+        if let HandlerBuilder::Publish { source_tx, .. } = &mut self {
+            *source_tx = Some(tx);
         }
         self
     }
@@ -138,7 +134,7 @@ impl HandlerBuilder {
             HandlerBuilder::Publish {
                 session,
                 stream_key,
-                flv_broadcast,
+                source_tx,
                 lifecycle,
                 cancel_token,
                 ..
@@ -146,8 +142,8 @@ impl HandlerBuilder {
                 let session = session.ok_or_else(|| {
                     anyhow::anyhow!("Session is required to build PublishHandler")
                 })?;
-                let flv_broadcast = flv_broadcast.ok_or_else(|| {
-                    anyhow::anyhow!("FLV broadcast is required to build PublishHandler")
+                let source_tx = source_tx.ok_or_else(|| {
+                    anyhow::anyhow!("Source sender is required to build PublishHandler")
                 })?;
                 let cancel_token = cancel_token.ok_or_else(|| {
                     anyhow::anyhow!("Cancellation token is required to build PublishHandler")
@@ -158,7 +154,7 @@ impl HandlerBuilder {
                 Ok(Handler::Publish(PublishHandler::new(
                     session,
                     stream_key,
-                    flv_broadcast,
+                    source_tx,
                     lifecycle,
                     cancel_token,
                 )))

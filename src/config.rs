@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use config::{Config, Environment, File, FileFormat};
+use livestream_codec::SegmentConfig;
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -39,7 +40,7 @@ pub struct ServiceConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct StorageConfig {
     #[serde(default)]
-    pub persistence: PersistenceConfig,
+    pub segment: SegmentConfig,
 
     pub minio: Option<MinioConfig>,
 }
@@ -69,15 +70,6 @@ pub struct HttpFlvConfig {
 
     #[serde(default = "default_http_flv_port")]
     pub port: u16,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct PersistenceConfig {
-    #[serde(default = "default_persistence_duration")]
-    pub duration: i32,
-
-    #[serde(default = "default_persistence_cache_dir")]
-    pub cache_dir: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -111,14 +103,6 @@ pub struct MinioConfig {
 
 fn default_grpc_port() -> u16 {
     50051
-}
-
-fn default_persistence_duration() -> i32 {
-    10
-}
-
-fn default_persistence_cache_dir() -> String {
-    "".to_string()
 }
 
 fn default_rtmp_port() -> u16 {
@@ -188,23 +172,27 @@ impl AppConfig {
     }
 }
 
-impl TransportConfig {
-    fn validate(&self) -> Result<()> {
-        self.rtmp.validate()?;
-        Ok(())
-    }
-}
-
 impl StorageConfig {
     fn validate(&self) -> Result<()> {
-        self.persistence.validate()?;
-
+        if self.segment.duration_secs == 0 {
+            anyhow::bail!("segment.duration_secs must be greater than 0");
+        }
+        let cache_dir = self.segment.cache_dir.trim();
+        if cache_dir == "." || cache_dir == ".." {
+            anyhow::bail!("segment.cache_dir cannot be '.' or '..'");
+        }
         if !cfg!(test) && self.minio.is_none() {
             anyhow::bail!(
                 "MinIO configuration is missing: please set minio.uri, minio.access_key, minio.secret_key, and minio.bucket"
             );
         }
+        Ok(())
+    }
+}
 
+impl TransportConfig {
+    fn validate(&self) -> Result<()> {
+        self.rtmp.validate()?;
         Ok(())
     }
 }
@@ -221,21 +209,6 @@ impl RtmpConfig {
                 MAX_RTMP_SESSION_TTL_SECS,
                 self.session_ttl_secs
             );
-        }
-
-        Ok(())
-    }
-}
-
-impl PersistenceConfig {
-    fn validate(&self) -> Result<()> {
-        if self.duration <= 0 {
-            anyhow::bail!("Segment duration must be positive");
-        }
-
-        let cache_dir = self.cache_dir.trim();
-        if cache_dir == "." || cache_dir == ".." {
-            anyhow::bail!("Persistence cache_dir cannot be '.' or '..'");
         }
 
         Ok(())
@@ -280,15 +253,6 @@ impl Default for HttpFlvConfig {
         Self {
             enabled: false,
             port: default_http_flv_port(),
-        }
-    }
-}
-
-impl Default for PersistenceConfig {
-    fn default() -> Self {
-        Self {
-            duration: default_persistence_duration(),
-            cache_dir: default_persistence_cache_dir(),
         }
     }
 }

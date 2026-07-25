@@ -1,5 +1,4 @@
 use std::fmt::Debug;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use livestream_core::types::Protocol;
@@ -21,17 +20,6 @@ pub enum SessionEvent {
         live_id: String,
         protocol: Protocol,
     },
-
-    SegmentComplete {
-        live_id: String,
-        path: PathBuf,
-    },
-
-    PlaylistUpdated {
-        live_id: String,
-        path: PathBuf,
-        is_final: bool,
-    },
 }
 
 impl SessionEvent {
@@ -40,8 +28,6 @@ impl SessionEvent {
             SessionEvent::SessionStarted { live_id, .. } => live_id,
             SessionEvent::SessionInit { live_id, .. } => live_id,
             SessionEvent::SessionEnded { live_id, .. } => live_id,
-            SessionEvent::SegmentComplete { live_id, .. } => live_id,
-            SessionEvent::PlaylistUpdated { live_id, .. } => live_id,
         }
     }
 }
@@ -63,21 +49,6 @@ impl Debug for SessionEvent {
                 .debug_struct("SessionEnded")
                 .field("live_id", live_id)
                 .field("protocol", protocol)
-                .finish(),
-            SessionEvent::SegmentComplete { live_id, path } => f
-                .debug_struct("SegmentComplete")
-                .field("live_id", live_id)
-                .field("path", path)
-                .finish(),
-            SessionEvent::PlaylistUpdated {
-                live_id,
-                path,
-                is_final,
-            } => f
-                .debug_struct("PlaylistUpdated")
-                .field("live_id", live_id)
-                .field("path", path)
-                .field("is_final", is_final)
                 .finish(),
         }
     }

@@ -206,8 +206,10 @@ impl api::livestream_server::Livestream for IngestGrpcService {
                 .control
                 .precreate_rtmp_session(live_id.clone())
                 .map_err(|e| Status::internal(e.to_string()))?,
-            api::InputProtocol::Srt => {
-                return Err(Status::unimplemented("SRT protocol is no longer supported"));
+            api::InputProtocol::Unspecified => {
+                return Err(Status::invalid_argument(
+                    "input_protocol must be specified (RTMP=1)",
+                ));
             }
         };
 

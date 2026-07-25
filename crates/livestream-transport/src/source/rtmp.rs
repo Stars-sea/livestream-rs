@@ -1,0 +1,281 @@
+//! RtmpSource — Source implementation for RTMP ingest.
+
+use anyhow::Result;
+use bytes::Bytes;
+use livestream_codec::EncodedPacket;
+use livestream_core::{
+    channel::SendError,
+    pad::PadSender,
+    traits::{Node, Source},
+    types::{CodecParams, Protocol},
+};
+use tokio_util::sync::CancellationToken;
+
+pub struct RtmpSource {
+    stream_id: String,
+    codec_params: Vec<CodecParams>,
+    output_sender: PadSender<EncodedPacket>,
+    frame_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<RtmpRawFrame>>>,
+    cancel: CancellationToken,
+}
+
+#[derive(Debug)]
+pub struct RtmpRawFrame {
+    pub data: Bytes,
+    pub timestamp: u32,
+    pub is_video: bool,
+    pub is_audio: bool,
+    pub is_script_data: bool,
+}
+
+impl RtmpSource {
+    pub fn new(
+        stream_id: &str,
+        codec_params: Vec<CodecParams>,
+        output_sender: PadSender<EncodedPacket>,
+        cancel: CancellationToken,
+    ) -> (Self, tokio::sync::mpsc::Sender<RtmpRawFrame>) {
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(256);
+        let source = Self {
+            stream_id: stream_id.into(),
+            codec_params,
+            output_sender,
+            frame_rx: std::sync::Mutex::new(Some(frame_rx)),
+            cancel,
+        };
+        (source, frame_tx)
+    }
+}
+
+impl Node for RtmpSource {
+    fn name(&self) -> &str {
+        "rtmp-source"
+    }
+}
+
+#[async_trait::async_trait]
+impl Source for RtmpSource {
+    type Output = EncodedPacket;
+
+    fn protocol(&self) -> Protocol {
+        Protocol::Rtmp
+    }
+
+    fn codec_params(&self) -> &[CodecParams] {
+        &self.codec_params
+    }
+
+    fn output(&self) -> &PadSender<Self::Output> {
+        &self.output_sender
+    }
+
+    async fn start(&self) -> Result<()> {
+        let mut rx = self
+            .frame_rx
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("RtmpSource already started"))?;
+
+        tracing::info!(stream = %self.stream_id, "RtmpSource started");
+
+        loop {
+            tokio::select! {
+                frame = rx.recv() => {
+                    let frame = match frame {
+                        Some(f) => f,
+                        None => {
+                            tracing::info!(stream = %self.stream_id, "Frame sender closed");
+                            break;
+                        }
+                    };
+
+                    let Some(pkt) = convert_frame(frame) else {
+                        continue;
+                    };
+
+                    // Retry on backpressure — transient channel-full should not
+                    // kill the source. Only break if the receiver is gone.
+                    loop {
+                        match self.output_sender.send(pkt.clone()) {
+                            Ok(()) => break,
+                            Err(SendError::Closed) => {
+                                tracing::debug!(stream = %self.stream_id, "Output receiver closed");
+                                self.cancel.cancel();
+                                return Ok(());
+                            }
+                            Err(SendError::Full) => {
+                                // Channel full — yield and retry.
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                    }
+                }
+                _ = self.cancel.cancelled() => {
+                    tracing::info!(stream = %self.stream_id, "RtmpSource cancelled");
+                    break;
+                }
+            }
+        }
+
+        self.cancel.cancel();
+        tracing::info!(stream = %self.stream_id, "RtmpSource stopped");
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
+        self.cancel.cancel();
+        Ok(())
+    }
+}
+
+/// Convert a raw RTMP frame into an EncodedPacket.
+fn convert_frame(frame: RtmpRawFrame) -> Option<EncodedPacket> {
+    if frame.is_script_data || frame.data.is_empty() {
+        return None;
+    }
+
+    let pts_ms = frame.timestamp as i64;
+
+    if frame.is_video && frame.data.len() >= 2 {
+        let first_byte = frame.data[0];
+        let frame_type = (first_byte >> 4) & 0x0F; // 1=keyframe, 2=inter, 3=disposable
+        let codec_id = first_byte & 0x0F; // 7=H264, 12=H265
+        let avc_packet_type = frame.data[1];
+
+        let codec = match codec_id {
+            7 => livestream_codec::Codec::H264,
+            12 => livestream_codec::Codec::H265,
+            _ => {
+                tracing::warn!(codec_id, "Unsupported FLV video codec");
+                return None;
+            }
+        };
+
+        let is_keyframe = frame_type == 1;
+        let is_seq_header = avc_packet_type == 0;
+
+        // Parse Composition Time offset for non-keyframe H.264/H.265.
+        // FLV tag body bytes 2-4 = 24-bit signed big-endian CTS in milliseconds.
+        let cts_ms = if frame.data.len() >= 5 {
+            let cts_raw = ((frame.data[2] as i32) << 16)
+                | ((frame.data[3] as i32) << 8)
+                | (frame.data[4] as i32);
+            // Sign-extend 24-bit to 32-bit
+            if cts_raw & 0x800000 != 0 {
+                cts_raw | !0xFFFFFF
+            } else {
+                cts_raw
+            }
+        } else {
+            0
+        };
+
+        let dts_ms = pts_ms - cts_ms as i64;
+
+        Some(EncodedPacket {
+            codec,
+            stream_index: 0,
+            data: frame.data,
+            pts_ms: Some(pts_ms),
+            dts_ms: Some(dts_ms),
+            is_keyframe,
+            is_sequence_header: is_seq_header,
+            is_script_data: false,
+            extradata: None,
+        })
+    } else if frame.is_audio {
+        Some(EncodedPacket::new_audio(frame.data, pts_ms, 0))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use livestream_codec::MediaPacket;
+
+    #[test]
+    fn source_protocol_is_rtmp() {
+        let (tx, _rx) = PadSender::<EncodedPacket>::new_channel(4);
+        let (src, _frame_tx) = RtmpSource::new("test", vec![], tx, CancellationToken::new());
+        assert_eq!(src.protocol(), Protocol::Rtmp);
+        assert_eq!(src.name(), "rtmp-source");
+    }
+
+    #[test]
+    fn start_consumes_frame_rx() {
+        let (tx, _rx) = PadSender::<EncodedPacket>::new_channel(4);
+        let cancel = CancellationToken::new();
+        let (src, _frame_tx) = RtmpSource::new("test", vec![], tx, cancel.clone());
+
+        cancel.cancel();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(src.start());
+        assert!(result.is_ok());
+
+        let result = rt.block_on(src.start());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn script_data_frames_are_skipped() {
+        let frame = RtmpRawFrame {
+            data: Bytes::from_static(b"onMetaData..."),
+            timestamp: 0,
+            is_video: false,
+            is_audio: false,
+            is_script_data: true,
+        };
+        assert!(convert_frame(frame).is_none());
+    }
+
+    #[test]
+    fn empty_frames_are_skipped() {
+        let frame = RtmpRawFrame {
+            data: Bytes::new(),
+            timestamp: 0,
+            is_video: true,
+            is_audio: false,
+            is_script_data: false,
+        };
+        assert!(convert_frame(frame).is_none());
+    }
+
+    #[test]
+    fn video_keyframe_conversion() {
+        // 0x17: frame_type=1 (keyframe), codec_id=7 (H264), avc_packet_type=0 (seq header)
+        let frame = RtmpRawFrame {
+            data: Bytes::from_static(&[0x17, 0x00, 0x00, 0x00, 0x00]),
+            timestamp: 100,
+            is_video: true,
+            is_audio: false,
+            is_script_data: false,
+        };
+        let pkt = convert_frame(frame).unwrap();
+        assert!(pkt.is_keyframe());
+        assert!(pkt.is_sequence_header);
+        assert_eq!(pkt.timestamp(), Some(std::time::Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn video_inter_frame_with_cts() {
+        // 0x27: frame_type=2 (inter), codec_id=7 (H264), avc_packet_type=1 (NALU)
+        // CTS = 0x000021 = 33ms
+        let frame = RtmpRawFrame {
+            data: Bytes::from_static(&[0x27, 0x01, 0x00, 0x00, 0x21]),
+            timestamp: 1000,
+            is_video: true,
+            is_audio: false,
+            is_script_data: false,
+        };
+        let pkt = convert_frame(frame).unwrap();
+        assert!(!pkt.is_keyframe());
+        assert!(!pkt.is_sequence_header);
+        assert_eq!(pkt.pts_ms, Some(1000));
+        // Non-keyframe: timeline starts at 0 + cts, PTS = DTS + CTS
+        // This frame: PTS=1000, CTS=33, so DTS=967
+        assert_eq!(pkt.dts_ms, Some(967));
+    }
+}

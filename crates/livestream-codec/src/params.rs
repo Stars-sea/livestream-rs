@@ -23,3 +23,15 @@ pub struct SegmentConfig {
     /// Prevents disk exhaustion when MinIO is unreachable.
     pub max_staged_segments: usize,
 }
+
+impl Default for SegmentConfig {
+    fn default() -> Self {
+        Self {
+            duration_secs: 10,
+            cache_dir: String::new(),
+            playlist_size: 5,
+            minio_prefix: "hls".into(),
+            max_staged_segments: 100,
+        }
+    }
+}

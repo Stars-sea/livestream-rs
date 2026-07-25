@@ -1,3 +1,2 @@
+// Preserved for future HLS pipeline integration (MinIoSink / ObjectUploader).
 mod persistence;
-
-pub use persistence::PersistenceClient;

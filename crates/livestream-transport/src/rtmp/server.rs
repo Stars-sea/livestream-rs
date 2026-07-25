@@ -16,9 +16,17 @@ use crate::lifecycle::HandlerLifecycle;
 use crate::registry;
 use crate::registry::state::SessionEndpoint;
 use crate::rtmp::handler::HandlerBuilder;
+use crate::source::rtmp::RtmpSource;
+use crate::task::{run_processor, run_sink};
+use livestream_codec::EncodedPacket;
 use livestream_core::channel::MpscRx;
+use livestream_core::pad::PadSender;
+use livestream_core::traits::{Node, Source};
 use livestream_core::types::Protocol;
+use livestream_media::flv::FlvTag;
 use livestream_pipeline::broadcast::FlvBroadcast;
+use livestream_pipeline::processor::{FlvMux, OTelProbe, SeqCacheProbe};
+use livestream_pipeline::sink::FlvSink;
 
 pub struct RtmpServer {
     listener: TcpListener,
@@ -229,20 +237,43 @@ async fn spawn_connection_handler(
         return;
     };
 
-    let _cancel_guard = match &builder {
-        HandlerBuilder::Play { .. } => None,
-        HandlerBuilder::Publish { .. } => Some(cancel_token.clone().drop_guard()),
-    };
+    // For publish, the registry token is cancelled when we exit so the
+    // session lifecycle cleanup fires. We track this explicitly rather
+    // than via DropGuard so we can control cancel-vs-drain ordering.
+    let publish_token = is_publish.then(|| cancel_token.clone());
 
     let builder = if is_publish {
         let Some((_, lifecycle)) = pending_lifecycle.remove(&stream_key) else {
             warn!(stream_key = %stream_key, "No pending lifecycle found, exiting...");
             return;
         };
+
+        // Build the pipeline: source → otel → seq_cache → flv_mux → flv_sink → hub.
+        let pipeline_cancel = cancel_token.child_token();
+        let (src_tx, src_rx) = PadSender::<EncodedPacket>::new_channel(512);
+        let (otel_tx, otel_rx) = PadSender::<EncodedPacket>::new_channel(256);
+        let (seq_main_tx, seq_main_rx) = PadSender::<EncodedPacket>::new_channel(256);
+        let (flv_tx, flv_rx) = PadSender::<FlvTag>::new_channel(256);
+
+        let otel = Arc::new(OTelProbe::new(&stream_key, src_rx, vec![otel_tx]));
+        let seq_cache = Arc::new(SeqCacheProbe::new(otel_rx, vec![seq_main_tx]));
+        let flv_demand = flv_tx.demand().new_handle();
+        let flv_mux = Arc::new(FlvMux::new(&stream_key, seq_main_rx, vec![flv_tx]));
         let broadcast: Arc<dyn FlvBroadcast> = flv_egress_hub.clone();
-        builder
-            .with_lifecycle(lifecycle)
-            .with_flv_broadcast(broadcast)
+        let flv_sink = Arc::new(FlvSink::new(&stream_key, broadcast, flv_rx, flv_demand));
+
+        let (rtmp_source, frame_tx) =
+            RtmpSource::new(&stream_key, vec![], src_tx, pipeline_cancel.clone());
+        let source = Arc::new(rtmp_source);
+
+        // Spawn processor/sink tasks.
+        tokio::spawn(run_processor(otel, pipeline_cancel.clone()));
+        tokio::spawn(run_processor(seq_cache, pipeline_cancel.clone()));
+        tokio::spawn(run_processor(flv_mux, pipeline_cancel.clone()));
+        tokio::spawn(run_sink(flv_sink, pipeline_cancel.clone()));
+        spawn_source_task(source.clone());
+
+        builder.with_lifecycle(lifecycle).with_source_tx(frame_tx)
     } else {
         let Some((tag_stream, cached_tags)) = flv_egress_hub.subscribe(&stream_key) else {
             warn!(stream_key = %stream_key, "No FLV channel found for play request");
@@ -253,7 +284,7 @@ async fn spawn_connection_handler(
             .with_cached_tags(cached_tags)
     };
 
-    let builder = builder.with_cancel_token(cancel_token);
+    let builder = builder.with_cancel_token(cancel_token.clone());
 
     match builder.build() {
         Ok(mut handler) => {
@@ -266,7 +297,23 @@ async fn spawn_connection_handler(
         }
     }
 
-    // Clean up the FLV channel so subscribers see the stream end
-    // (broadcast::Receiver::recv() returns Closed) and memory is freed.
+    // Cancel the pipeline before removing the FLV channel so buffered
+    // FlvTags drain to subscribers before the channel is destroyed.
+    cancel_token.cancel();
+
+    // Allow buffered pipeline data to drain before removing the channel.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
     flv_egress_hub.remove_channel(&stream_key);
+
+    // Ensure registry token is cancelled for publish sessions.
+    drop(publish_token);
+}
+
+fn spawn_source_task(source: Arc<RtmpSource>) {
+    tokio::spawn(async move {
+        if let Err(e) = source.start().await {
+            tracing::error!(stream = %source.name(), error = %e, "RtmpSource failed");
+        }
+    });
 }

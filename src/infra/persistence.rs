@@ -12,6 +12,14 @@ use std::time::Instant;
 use tracing::debug;
 
 use crate::config::MinioConfig;
+use livestream_pipeline::sink::minio::ObjectUploader;
+
+#[async_trait::async_trait]
+impl ObjectUploader for PersistenceClient {
+    async fn upload_file(&self, object_key: &str, file_path: &Path) -> Result<()> {
+        PersistenceClient::upload_file(self, object_key, file_path).await
+    }
+}
 
 /// Client for interacting with MinIO or S3-compatible storage.
 #[derive(Debug, Clone)]

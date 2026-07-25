@@ -4,8 +4,9 @@
 //! and MinIO persistence.
 
 mod config;
+// infra is preserved for future HLS pipeline integration (MinIoSink).
+#[allow(dead_code)]
 mod infra;
-mod persistence;
 
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -26,7 +27,7 @@ use livestream_transport::{
 async fn main() -> Result<()> {
     // 1. Initialize FFmpeg and telemetry
     livestream_media::init();
-    let _guard = livestream_telemetry::setup_telemetry();
+    let _guard = livestream_telemetry::setup_telemetry()?;
 
     // 2. Load configuration
     let config = config::load_config();
@@ -77,14 +78,7 @@ async fn main() -> Result<()> {
         None
     };
 
-    // 8. Spawn persistence handler (optional)
-    if let Some(minio_config) = &config.storage.minio {
-        let minio_client = infra::PersistenceClient::create(minio_config.clone()).await?;
-        persistence::SegmentPersistenceHandler::spawn(minio_client);
-        info!("MinIO persistence handler started");
-    }
-
-    // 9. Spawn signal handler for graceful shutdown (SIGINT + SIGTERM)
+    // 8. Spawn signal handler for graceful shutdown (SIGINT + SIGTERM)
     let shutdown_cancel = cancel.clone();
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;

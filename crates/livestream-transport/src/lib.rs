@@ -14,3 +14,4 @@ pub mod registry;
 pub mod rtmp;
 pub mod rtsp;
 pub mod source;
+pub mod task;
