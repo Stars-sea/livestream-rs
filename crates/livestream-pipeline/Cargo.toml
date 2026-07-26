@@ -16,3 +16,7 @@ tempfile.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
+
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

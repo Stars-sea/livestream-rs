@@ -160,7 +160,7 @@ type BoxedFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// Always builds the FLV path (OTelProbe → SeqCacheProbe → FlvMux → FlvSink).
 /// HLS path (HlsSegmenter → MinIoSink) is only added when `codec_params` is non-empty.
 /// HLS construction failures are logged as warnings and do not affect the FLV path.
-fn build_encoded_chain(
+pub fn build_encoded_chain(
     live_id: &str,
     src_rx: PadReceiver<EncodedPacket>,
     codec_params: &[CodecParams],

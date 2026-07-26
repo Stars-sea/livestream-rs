@@ -163,6 +163,7 @@ impl OwnedCodecParams {
                 }
                 Codec::Aac | Codec::Opus | Codec::Mp3 => {
                     (*ptr).codec_type = AVMediaType::AVMEDIA_TYPE_AUDIO;
+                    (*ptr).sample_rate = params.clock_rate as i32;
                 }
             }
             (*ptr).codec_id = codec_to_av_codec_id(params.codec);

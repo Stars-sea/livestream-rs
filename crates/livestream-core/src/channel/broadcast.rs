@@ -111,6 +111,27 @@ impl<T> BroadcastReceiver<T> {
             }
         }
     }
+
+    /// Try to receive the next item without blocking. Returns `None` if no
+    /// message is immediately available.
+    pub fn try_recv(&mut self) -> Option<T>
+    where
+        T: Clone,
+    {
+        use broadcast::error::TryRecvError;
+        match self.inner.try_recv() {
+            Ok(item) => Some(item),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Lagged(n)) => {
+                warn!(
+                    skipped = n,
+                    "Broadcast receiver lagged, skipped {n} messages"
+                );
+                None
+            }
+            Err(TryRecvError::Closed) => None,
+        }
+    }
 }
 
 impl<T: Clone> Clone for BroadcastReceiver<T> {

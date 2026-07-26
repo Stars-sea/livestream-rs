@@ -34,3 +34,6 @@ opentelemetry = []
 
 [build-dependencies]
 tonic-prost-build.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
