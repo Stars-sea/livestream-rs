@@ -21,6 +21,7 @@ use livestream_media::ffmpeg_sys_next::AVRational;
 use livestream_media::{
     context::HlsOutputContext, convert::IntoAvPacket, stream::StaticStreamCollection,
 };
+use livestream_telemetry::metric_pipeline_error;
 use parking_lot::Mutex;
 use tempfile::TempDir;
 
@@ -354,6 +355,7 @@ impl Processor for HlsSegmenter {
         match self.write_packet(&pkt) {
             Ok(()) => {}
             Err(e) => {
+                metric_pipeline_error!("hls_muxer");
                 tracing::warn!(
                     stream = %self.stream_id,
                     error = %e,

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use livestream_core::traits::{Processor, Sink};
+use livestream_telemetry::metric_pipeline_error;
 use tokio_util::sync::CancellationToken;
 
 /// Run a processor's consume loop in the current task.
@@ -39,7 +40,10 @@ where
                             }
                         }
                     }
-                    Err(e) => tracing::warn!(processor=%processor.name(), error=%e, "drop"),
+                    Err(e) => {
+                        metric_pipeline_error!(processor.name().to_string());
+                        tracing::warn!(processor=%processor.name(), error=%e, "drop");
+                    }
                 }
             }
             _ = cancel.cancelled() => break,
@@ -62,6 +66,7 @@ where
             item = sink.input().recv() => {
                 let Some(item) = item else { break };
                 if let Err(e) = sink.consume(item).await {
+                    metric_pipeline_error!(sink.name().to_string());
                     tracing::warn!(sink=%sink.name(), error=%e, "drop");
                 }
             }

@@ -8,7 +8,6 @@ use livestream_codec::{EncodedPacket, RtpPacket, SegmentConfig};
 use livestream_core::pad::{DemandSignal, PadReceiver, PadSender};
 use livestream_core::traits::PipelineHandle;
 use livestream_core::types::CodecParams;
-use livestream_media::ffmpeg_sys_next::AVRational;
 use livestream_media::stream::StaticStreamCollection;
 use tokio_util::sync::CancellationToken;
 
@@ -39,6 +38,44 @@ pub fn null_uploader() -> Arc<dyn ObjectUploader> {
 }
 
 // ── Public API ──
+// ── PipelineFactory ──
+
+/// Holds shared dependencies for constructing pipeline instances.
+///
+/// Created once at startup and passed to protocol servers (RTMP, RTSP).
+/// Each `build_*` call produces an independent `PipelineImpl`.
+pub struct PipelineFactory {
+    segment_cfg: SegmentConfig,
+    minio: Arc<dyn ObjectUploader>,
+    #[allow(dead_code)]
+    flv_broadcast: Arc<dyn FlvBroadcast>,
+}
+
+impl PipelineFactory {
+    pub fn new(
+        segment_cfg: SegmentConfig,
+        minio: Arc<dyn ObjectUploader>,
+        flv_broadcast: Arc<dyn FlvBroadcast>,
+    ) -> Self {
+        Self {
+            segment_cfg,
+            minio,
+            flv_broadcast,
+        }
+    }
+
+    /// Access the segment configuration for protocol server construction.
+    pub fn segment_cfg(&self) -> &SegmentConfig {
+        &self.segment_cfg
+    }
+
+    /// Access the object uploader for protocol server construction.
+    pub fn minio(&self) -> &Arc<dyn ObjectUploader> {
+        &self.minio
+    }
+}
+
+// ── Retained free-function API (backward compat for callers in transition) ──
 
 /// Build a standard pipeline for an EncodedPacket source (RTMP path).
 ///
@@ -80,7 +117,6 @@ pub fn build_rtsp_pipeline(
     cancel: CancellationToken,
 ) -> Result<PipelineImpl> {
     let (enc_tx, enc_rx) = PadSender::<EncodedPacket>::new_channel(256);
-
     let depack = Arc::new(RtpDemuxProcessor::new(
         live_id,
         sdp,
@@ -88,9 +124,7 @@ pub fn build_rtsp_pipeline(
         rtp_rx,
         vec![enc_tx],
     )?);
-
     let mut rtp_tasks = vec![tokio::spawn(run_processor(depack, cancel.child_token()))];
-
     let (handle, encoded_tasks) = build_encoded_chain(
         live_id,
         enc_rx,
@@ -103,7 +137,6 @@ pub fn build_rtsp_pipeline(
     rtp_tasks.extend(encoded_tasks);
     Ok(PipelineImpl::new(handle, rtp_tasks))
 }
-
 // ── Private helpers ──
 
 /// Build the standard EncodedPacket processing chain.
@@ -190,7 +223,7 @@ fn try_build_hls(
     hls_input: PadReceiver<EncodedPacket>,
     cancel: &CancellationToken,
 ) -> Result<Vec<tokio::task::JoinHandle<()>>> {
-    let streams = build_static_streams(codec_params)?;
+    let streams = StaticStreamCollection::from_codec_params(codec_params)?;
     let (hls_tx, hls_rx) = PadSender::<livestream_codec::TsSegment>::new_channel(256);
     let hls_demand = DemandSignal::new_always_wanted().new_handle();
 
@@ -214,25 +247,4 @@ fn try_build_hls(
         tokio::spawn(run_processor(hls_segmenter, cancel.child_token())),
         tokio::spawn(run_sink(minio_sink, cancel.child_token())),
     ])
-}
-
-/// Build a StaticStreamCollection from codec parameters.
-fn build_static_streams(codec_params: &[CodecParams]) -> Result<StaticStreamCollection> {
-    let video_tb = AVRational { num: 1, den: 90000 };
-    let audio_tb = AVRational { num: 1, den: 44100 };
-
-    let owned: Vec<_> = codec_params
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let tb = if p.is_video() { video_tb } else { audio_tb };
-            Ok((
-                i,
-                tb,
-                livestream_media::codec::OwnedCodecParams::from_codec_params(p)?,
-            ))
-        })
-        .collect::<Result<_>>()?;
-
-    Ok(StaticStreamCollection::from_owned_params(owned))
 }

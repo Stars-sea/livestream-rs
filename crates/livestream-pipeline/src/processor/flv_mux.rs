@@ -24,6 +24,7 @@ use livestream_core::{
     types::{Codec, CodecParams},
 };
 use livestream_media::flv::FlvTag;
+use livestream_telemetry::metric_pipeline_error;
 
 pub struct FlvMux {
     stream_id: String,
@@ -145,6 +146,7 @@ impl Processor for FlvMux {
             Codec::H264 | Codec::H265 => self.mux_video(&pkt),
             Codec::Aac => self.mux_audio(&pkt),
             other => {
+                metric_pipeline_error!("flv_mux.unsupported_codec");
                 tracing::warn!(
                     stream = %self.stream_id,
                     codec = ?other,

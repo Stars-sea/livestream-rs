@@ -12,4 +12,5 @@ pub mod lifecycle;
 pub mod registry;
 pub mod rtmp;
 pub mod rtsp;
+pub mod server;
 pub mod source;

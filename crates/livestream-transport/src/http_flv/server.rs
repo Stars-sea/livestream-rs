@@ -55,6 +55,9 @@ impl HttpFlvServer {
             cancel_token: cancel_token.clone(),
         };
         let router = Router::new()
+            .route("/alive", get(handle_alive))
+            .route("/health", get(handle_health))
+            .route("/health/stream/{live_id}", get(handle_stream_health))
             .route(
                 ROUTE_PATH,
                 get(handle_http_flv).options(handle_cors_preflight),
@@ -255,7 +258,47 @@ fn apply_metadata_tracks(metadata: &StreamMetadata, has_audio: &mut bool, has_vi
     *has_video |= metadata.video_codec_id.is_some();
 }
 
+// ── Health endpoints ──
+
+async fn handle_alive() -> &'static str {
+    "ok"
+}
+
+#[derive(serde::Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    session_count: usize,
+}
+
+async fn handle_health() -> axum::Json<HealthResponse> {
+    let sessions = registry::INSTANCE.list_descriptors().await;
+    axum::Json(HealthResponse {
+        status: "healthy",
+        session_count: sessions.len(),
+    })
+}
+
+#[derive(serde::Serialize)]
+struct StreamHealth {
+    live_id: String,
+    state: String,
+}
+
+async fn handle_stream_health(
+    axum::extract::Path(live_id): axum::extract::Path<String>,
+) -> Result<axum::Json<StreamHealth>, axum::http::StatusCode> {
+    let session = registry::INSTANCE
+        .get_descriptor(&live_id)
+        .await
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+
+    Ok(axum::Json(StreamHealth {
+        live_id,
+        state: format!("{:?}", session.state),
+    }))
+}
 #[cfg(test)]
+#[allow(unused_imports)]
 mod tests {
     use super::{
         ROUTE_PATH, apply_metadata_tracks, build_flv_header, parse_live_id, playback_path,

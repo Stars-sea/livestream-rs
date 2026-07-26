@@ -73,7 +73,14 @@ impl Sink for MinIoSink {
             "{}/{}/{}",
             self.segment_cfg.minio_prefix, self.live_id, seg.filename
         );
-        self.client.upload_file(&key, &seg.path).await
+        let result = self.client.upload_file(&key, &seg.path).await;
+        if result.is_ok() {
+            // Clean up the staged segment file after successful upload.
+            if let Err(e) = std::fs::remove_file(&seg.path) {
+                tracing::warn!(path = %seg.path.display(), error = %e, "Failed to remove staged segment");
+            }
+        }
+        result
     }
 }
 

@@ -12,6 +12,7 @@ use anyhow::Result;
 use ffmpeg_sys_next::*;
 
 use crate::codec::{CodecParamsPtrTrait, OwnedCodecParams};
+use livestream_core::types::CodecParams;
 
 // ── Traits ──
 
@@ -184,6 +185,27 @@ impl StaticStreamCollection {
             })
             .collect();
         Self { streams }
+    }
+
+    /// Construct from a Source's `CodecParams` slice.
+    ///
+    /// Each `CodecParams` is converted to an `OwnedCodecParams` (deep-copies
+    /// the underlying `AVCodecParameters*` via `avcodec_parameters_alloc` + fill).
+    /// Video streams get a 90kHz timebase; audio streams get the sample rate.
+    pub fn from_codec_params(codec_params: &[CodecParams]) -> Result<Self> {
+        let video_tb = AVRational { num: 1, den: 90000 };
+        let audio_tb = AVRational { num: 1, den: 44100 };
+
+        let owned: Vec<_> = codec_params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let tb = if p.is_video() { video_tb } else { audio_tb };
+                Ok((i, tb, OwnedCodecParams::from_codec_params(p)?))
+            })
+            .collect::<Result<_>>()?;
+
+        Ok(Self::from_owned_params(owned))
     }
 
     pub fn len(&self) -> usize {
