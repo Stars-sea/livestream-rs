@@ -4,8 +4,6 @@
 //! and MinIO persistence.
 
 mod config;
-// infra is preserved for future HLS pipeline integration (MinIoSink).
-#[allow(dead_code)]
 mod infra;
 
 use std::net::SocketAddr;
@@ -17,7 +15,10 @@ use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
+use infra::persistence::PersistenceClient;
 use livestream_core::channel;
+use livestream_pipeline::factory;
+use livestream_pipeline::sink::minio::ObjectUploader;
 use livestream_transport::{
     controller::TransportController, flv::FlvEgressHub, grpc::GrpcServer, http_flv::HttpFlvServer,
     rtmp::RtmpServer, rtsp::server::RtspServer,
@@ -32,11 +33,23 @@ async fn main() -> Result<()> {
     // 2. Load configuration
     let config = config::load_config();
 
-    // 3. Create shared infrastructure
+    // 3. Create MinIO persistence client (or null uploader for dev/test)
+    let minio: Arc<dyn ObjectUploader> = match &config.storage.minio {
+        Some(minio_cfg) => {
+            let client = PersistenceClient::create(minio_cfg.clone())
+                .await
+                .expect("Failed to create MinIO persistence client");
+            Arc::new(client) as Arc<dyn ObjectUploader>
+        }
+        None => factory::null_uploader(),
+    };
+    let segment_cfg = config.storage.segment.clone();
+
+    // 4. Create shared infrastructure
     let cancel = CancellationToken::new();
     let flv_egress_hub = Arc::new(FlvEgressHub::new());
 
-    // 4. Create control channel and RTMP server
+    // 5. Create control channel and RTMP server
     let (rtmp_tx, rtmp_rx) = channel::mpsc("ctrl_rtmp", None, config.queue.control);
     let rtmp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", config.transport.rtmp.port))?;
     let session_ttl = Duration::from_secs(config.transport.rtmp.session_ttl_secs);
@@ -47,11 +60,13 @@ async fn main() -> Result<()> {
         session_ttl,
         rtmp_rx,
         flv_egress_hub.clone(),
+        minio.clone(),
+        segment_cfg.clone(),
         cancel.child_token(),
     )
     .await?;
 
-    // 5. Create RTSP control channel and server
+    // 6. Create RTSP control channel and server
     let (rtsp_tx, rtsp_rx) = channel::mpsc("ctrl_rtsp", None, config.queue.control);
     let rtsp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", config.transport.rtsp.port))?;
     let rtsp_ttl = Duration::from_secs(config.transport.rtsp.session_ttl_secs);
@@ -61,14 +76,16 @@ async fn main() -> Result<()> {
         rtsp_rx,
         flv_egress_hub.clone(),
         rtsp_ttl,
+        minio.clone(),
+        segment_cfg.clone(),
         cancel.child_token(),
     )
     .await?;
 
-    // 6. Create transport controller
+    // 7. Create transport controller
     let controller = Arc::new(TransportController::new(rtmp_tx, rtsp_tx));
 
-    // 7. Create gRPC server
+    // 8. Create gRPC server
     let grpc_server = GrpcServer::new(
         config.services.grpc.port,
         config.transport.rtmp.port,
@@ -79,7 +96,7 @@ async fn main() -> Result<()> {
         controller,
     );
 
-    // 8. Create HTTP-FLV server (optional)
+    // 9. Create HTTP-FLV server (optional)
     let http_flv_server = if config.services.http_flv.enabled {
         Some(
             HttpFlvServer::create(
@@ -93,16 +110,14 @@ async fn main() -> Result<()> {
         None
     };
 
-    // 9. Spawn signal handler for graceful shutdown (SIGINT + SIGTERM)
+    // 10. Spawn signal handler for graceful shutdown (SIGINT + SIGTERM)
     let shutdown_cancel = cancel.clone();
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
         shutdown_cancel.cancel();
     });
 
-    // 10. Run all servers concurrently.
-    //     An mpsc channel collects the first spontaneous exit; cancel cascades
-    //     to all child tokens, and join! awaits the graceful drain.
+    // 11. Run all servers concurrently.
     let (error_tx, mut error_rx) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
     let rtmp_handle = spawn_server(error_tx.clone(), rtmp_server.run());
@@ -181,8 +196,10 @@ async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
+
         let mut sigint = signal(SignalKind::interrupt()).ok();
         let mut sigterm = signal(SignalKind::terminate()).ok();
+
         let sigint_fut = async {
             if let Some(ref mut s) = sigint {
                 s.recv().await;
@@ -193,14 +210,22 @@ async fn wait_for_shutdown_signal() {
                 s.recv().await;
             }
         };
+
         tokio::select! {
-            _ = sigint_fut => info!("SIGINT received, shutting down..."),
-            _ = sigterm_fut => info!("SIGTERM received, shutting down..."),
+            _ = sigint_fut => {
+                info!("Received SIGINT, initiating graceful shutdown...");
+            }
+            _ = sigterm_fut => {
+                info!("Received SIGTERM, initiating graceful shutdown...");
+            }
         }
     }
+
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c().await.ok();
-        info!("SIGINT received, shutting down...");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to register Ctrl+C handler");
+        info!("Received Ctrl+C, initiating graceful shutdown...");
     }
 }

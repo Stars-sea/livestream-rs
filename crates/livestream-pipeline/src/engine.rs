@@ -18,6 +18,12 @@ pub struct PipelineImpl {
 }
 
 impl PipelineImpl {
+    /// Construct a PipelineImpl directly from a handle and spawned task handles.
+    /// Used by PipelineFactory to bypass PipelineGraph type-erased build.
+    pub fn new(handle: PipelineHandle, tasks: Vec<JoinHandle<()>>) -> Self {
+        Self { handle, tasks }
+    }
+
     pub(crate) fn from_graph(
         _graph: PipelineGraph,
         cancel: tokio_util::sync::CancellationToken,

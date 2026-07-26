@@ -24,15 +24,13 @@ use rtsp_types::Message;
 use super::rtp::RtpInterleavedReader;
 use super::session::{self, RtspSession};
 
-use livestream_codec::{EncodedPacket, RtpPacket};
+use livestream_codec::{RtpPacket, SegmentConfig};
 use livestream_core::channel::MpscRx;
 use livestream_core::pad::PadSender;
 use livestream_core::traits::Source;
 use livestream_core::types::Protocol;
-use livestream_media::flv::FlvTag;
-use livestream_pipeline::broadcast::FlvBroadcast;
-use livestream_pipeline::processor::{FlvMux, RtpDemuxProcessor};
-use livestream_pipeline::sink::FlvSink;
+use livestream_pipeline::factory;
+use livestream_pipeline::sink::minio::ObjectUploader;
 
 pub struct RtspServer {
     listener: TcpListener,
@@ -40,15 +38,20 @@ pub struct RtspServer {
     flv_egress_hub: Arc<FlvEgressHub>,
     pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
     precreate_ttl: Duration,
+    minio: Arc<dyn ObjectUploader>,
+    segment_cfg: SegmentConfig,
     cancel_token: CancellationToken,
 }
 
 impl RtspServer {
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         addr: SocketAddr,
         ctrl_channel: MpscRx<ControlMessage>,
         flv_egress_hub: Arc<FlvEgressHub>,
         precreate_ttl: Duration,
+        minio: Arc<dyn ObjectUploader>,
+        segment_cfg: SegmentConfig,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
@@ -58,6 +61,8 @@ impl RtspServer {
             flv_egress_hub,
             pending_lifecycle: Arc::new(DashMap::new()),
             precreate_ttl,
+            minio,
+            segment_cfg,
             cancel_token,
         })
     }
@@ -85,7 +90,17 @@ impl RtspServer {
 
         Ok(())
     }
+    fn accept_client(&self, socket: TcpStream, addr: SocketAddr) {
+        debug!(client_addr = %addr, "Accepted new RTSP connection");
 
+        tokio::spawn(spawn_connection_handler(
+            socket,
+            self.pending_lifecycle.clone(),
+            self.flv_egress_hub.clone(),
+            self.minio.clone(),
+            self.segment_cfg.clone(),
+        ));
+    }
     async fn handle_accept_result(&mut self, accept_res: std::io::Result<(TcpStream, SocketAddr)>) {
         fn is_retryable_accept_error(err: &std::io::Error) -> bool {
             matches!(
@@ -180,16 +195,6 @@ impl RtspServer {
             lifecycle.disconnect();
         });
     }
-
-    fn accept_client(&self, socket: TcpStream, addr: SocketAddr) {
-        debug!(client_addr = %addr, "Accepted new RTSP connection");
-
-        tokio::spawn(spawn_connection_handler(
-            socket,
-            self.pending_lifecycle.clone(),
-            self.flv_egress_hub.clone(),
-        ));
-    }
 }
 
 // ── RTSP message I/O ──
@@ -257,9 +262,20 @@ async fn spawn_connection_handler(
     stream: TcpStream,
     pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
     hub: Arc<FlvEgressHub>,
+    minio: Arc<dyn ObjectUploader>,
+    segment_cfg: SegmentConfig,
 ) {
     let cancel_token = CancellationToken::new();
-    if let Err(e) = handle_connection(stream, pending_lifecycle, hub, cancel_token).await {
+    if let Err(e) = handle_connection(
+        stream,
+        pending_lifecycle,
+        hub,
+        minio,
+        segment_cfg,
+        cancel_token,
+    )
+    .await
+    {
         error!(error = %e, "RTSP connection error");
     }
 }
@@ -379,66 +395,14 @@ async fn run_rtsp_handshake(
     })
 }
 
-// ── Pipeline runner ──
-
-struct PipelineNodes {
-    depack: Arc<RtpDemuxProcessor>,
-    flv_mux: Arc<FlvMux>,
-    flv_sink: Arc<FlvSink>,
-    source: Arc<RtspSource>,
-    cancel: CancellationToken,
-}
-
-fn spawn_pipeline_tasks(nodes: &PipelineNodes) -> Vec<tokio::task::JoinHandle<()>> {
-    let mut tasks = Vec::new();
-
-    let source = Arc::clone(&nodes.source);
-    tasks.push(tokio::spawn(async move {
-        if let Err(e) = source.start().await {
-            error!(error = %e, "RtspSource failed");
-        }
-    }));
-
-    let depack = Arc::clone(&nodes.depack);
-    let cancel = nodes.cancel.clone();
-    tasks.push(tokio::spawn(async move {
-        crate::task::run_processor(depack, cancel).await;
-    }));
-
-    let flv_mux = Arc::clone(&nodes.flv_mux);
-    let cancel = nodes.cancel.clone();
-    tasks.push(tokio::spawn(async move {
-        crate::task::run_processor(flv_mux, cancel).await;
-    }));
-
-    let flv_sink = Arc::clone(&nodes.flv_sink);
-    let cancel = nodes.cancel.clone();
-    tasks.push(tokio::spawn(async move {
-        crate::task::run_sink(flv_sink, cancel).await;
-    }));
-
-    tasks
-}
-
-async fn cleanup_pipeline(
-    tasks: Vec<tokio::task::JoinHandle<()>>,
-    cancel: CancellationToken,
-    hub: Arc<FlvEgressHub>,
-    live_id: &str,
-) {
-    cancel.cancel();
-    for task in tasks {
-        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
-    }
-    hub.remove_channel(live_id);
-}
-
 // ── Main connection handler ──
 
 async fn handle_connection(
     stream: TcpStream,
     pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
     hub: Arc<FlvEgressHub>,
+    minio: Arc<dyn ObjectUploader>,
+    segment_cfg: SegmentConfig,
     cancel_token: CancellationToken,
 ) -> Result<()> {
     let (read_half, mut write_half) = stream.into_split();
@@ -466,34 +430,37 @@ async fn handle_connection(
 
     let cancel = cancel_token.child_token();
     hub.create_channel(&live_id);
-    let broadcast: Arc<dyn FlvBroadcast> = hub.clone();
 
     let (rtp_tx, rtp_rx) = PadSender::<RtpPacket>::new_channel(256);
-    let (enc_tx, enc_rx) = PadSender::<EncodedPacket>::new_channel(256);
-    let (flv_tx, flv_rx) = PadSender::<FlvTag>::new_channel(256);
-
-    let depack = Arc::new(RtpDemuxProcessor::new(
-        &live_id,
-        &sdp,
-        codec_params.clone(),
-        rtp_rx,
-        vec![enc_tx],
-    )?);
-
-    let demand_handle = flv_tx.demand().new_handle();
-    let flv_mux = Arc::new(FlvMux::new(&live_id, enc_rx, vec![flv_tx]));
-    let flv_sink = Arc::new(FlvSink::new(&live_id, broadcast, flv_rx, demand_handle));
-    let (source, frame_tx) = RtspSource::new(&live_id, codec_params, rtp_tx, cancel.clone());
+    let (source, frame_tx) =
+        RtspSource::new(&live_id, codec_params.clone(), rtp_tx, cancel.clone());
     let source = Arc::new(source);
 
-    let nodes = PipelineNodes {
-        depack,
-        flv_mux,
-        flv_sink,
-        source,
-        cancel: cancel.clone(),
-    };
-    let tasks = spawn_pipeline_tasks(&nodes);
+    // Spawn RTSP source
+    tokio::spawn({
+        let source = source.clone();
+        async move {
+            if let Err(e) = source.start().await {
+                error!(error = %e, "RtspSource failed");
+            }
+        }
+    });
+
+    // Build pipeline via factory (RtpDemuxProcessor → OTelProbe → SeqCacheProbe → [FlvMux→FlvSink, HlsSegmenter→MinIoSink])
+    let _pipeline = factory::build_rtsp_pipeline(
+        &live_id,
+        rtp_rx,
+        &sdp,
+        &codec_params,
+        hub.clone(),
+        minio,
+        &segment_cfg,
+        cancel.clone(),
+    );
+
+    if let Err(ref e) = _pipeline {
+        warn!(live_id = %live_id, error = %e, "RTSP pipeline factory failed, stream will have no HLS output");
+    }
 
     let inner = reader.into_inner();
     let mut rtp_reader = RtpInterleavedReader::new(inner);
@@ -540,6 +507,7 @@ async fn handle_connection(
     }
 
     lifecycle.disconnect();
-    cleanup_pipeline(tasks, cancel, hub, &live_id).await;
+    cancel.cancel();
+    hub.remove_channel(&live_id);
     Ok(())
 }

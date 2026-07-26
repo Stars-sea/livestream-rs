@@ -1,2 +1,2 @@
-// Preserved for future HLS pipeline integration (MinIoSink / ObjectUploader).
-mod persistence;
+// MinIO persistence client for HLS segment upload.
+pub mod persistence;

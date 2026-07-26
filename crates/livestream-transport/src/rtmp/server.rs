@@ -17,16 +17,14 @@ use crate::registry;
 use crate::registry::state::SessionEndpoint;
 use crate::rtmp::handler::HandlerBuilder;
 use crate::source::rtmp::RtmpSource;
-use crate::task::{run_processor, run_sink};
 use livestream_codec::EncodedPacket;
+use livestream_codec::SegmentConfig;
 use livestream_core::channel::MpscRx;
 use livestream_core::pad::PadSender;
 use livestream_core::traits::{Node, Source};
 use livestream_core::types::Protocol;
-use livestream_media::flv::FlvTag;
-use livestream_pipeline::broadcast::FlvBroadcast;
-use livestream_pipeline::processor::{FlvMux, OTelProbe, SeqCacheProbe};
-use livestream_pipeline::sink::FlvSink;
+use livestream_pipeline::factory;
+use livestream_pipeline::sink::minio::ObjectUploader;
 
 pub struct RtmpServer {
     listener: TcpListener,
@@ -35,16 +33,20 @@ pub struct RtmpServer {
     ctrl_channel: MpscRx<ControlMessage>,
     flv_egress_hub: Arc<FlvEgressHub>,
     pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
+    minio: Arc<dyn livestream_pipeline::sink::minio::ObjectUploader>,
+    segment_cfg: livestream_codec::SegmentConfig,
     cancel_token: CancellationToken,
 }
-
 impl RtmpServer {
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         addr: SocketAddr,
         appname: String,
         precreate_ttl: Duration,
         ctrl_channel: MpscRx<ControlMessage>,
         flv_egress_hub: Arc<FlvEgressHub>,
+        minio: Arc<dyn livestream_pipeline::sink::minio::ObjectUploader>,
+        segment_cfg: livestream_codec::SegmentConfig,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
@@ -56,6 +58,8 @@ impl RtmpServer {
             ctrl_channel,
             flv_egress_hub,
             pending_lifecycle: Arc::new(DashMap::new()),
+            minio,
+            segment_cfg,
             cancel_token,
         })
     }
@@ -187,6 +191,8 @@ impl RtmpServer {
             socket,
             self.pending_lifecycle.clone(),
             self.flv_egress_hub.clone(),
+            self.minio.clone(),
+            self.segment_cfg.clone(),
         ));
     }
 }
@@ -196,6 +202,8 @@ async fn spawn_connection_handler(
     socket: TcpStream,
     pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
     flv_egress_hub: Arc<FlvEgressHub>,
+    minio: Arc<dyn ObjectUploader>,
+    segment_cfg: SegmentConfig,
 ) {
     let cancel_token = CancellationToken::new();
     let _cancel_guard = cancel_token.drop_guard_ref();
@@ -247,31 +255,29 @@ async fn spawn_connection_handler(
             warn!(stream_key = %stream_key, "No pending lifecycle found, exiting...");
             return;
         };
-
-        // Build the pipeline: source → otel → seq_cache → flv_mux → flv_sink → hub.
+        // Build the pipeline via PipelineFactory.
         let pipeline_cancel = cancel_token.child_token();
         let (src_tx, src_rx) = PadSender::<EncodedPacket>::new_channel(512);
-        let (otel_tx, otel_rx) = PadSender::<EncodedPacket>::new_channel(256);
-        let (seq_main_tx, seq_main_rx) = PadSender::<EncodedPacket>::new_channel(256);
-        let (flv_tx, flv_rx) = PadSender::<FlvTag>::new_channel(256);
-
-        let otel = Arc::new(OTelProbe::new(&stream_key, src_rx, vec![otel_tx]));
-        let seq_cache = Arc::new(SeqCacheProbe::new(otel_rx, vec![seq_main_tx]));
-        let flv_demand = flv_tx.demand().new_handle();
-        let flv_mux = Arc::new(FlvMux::new(&stream_key, seq_main_rx, vec![flv_tx]));
-        let broadcast: Arc<dyn FlvBroadcast> = flv_egress_hub.clone();
-        let flv_sink = Arc::new(FlvSink::new(&stream_key, broadcast, flv_rx, flv_demand));
 
         let (rtmp_source, frame_tx) =
             RtmpSource::new(&stream_key, vec![], src_tx, pipeline_cancel.clone());
         let source = Arc::new(rtmp_source);
 
-        // Spawn processor/sink tasks.
-        tokio::spawn(run_processor(otel, pipeline_cancel.clone()));
-        tokio::spawn(run_processor(seq_cache, pipeline_cancel.clone()));
-        tokio::spawn(run_processor(flv_mux, pipeline_cancel.clone()));
-        tokio::spawn(run_sink(flv_sink, pipeline_cancel.clone()));
-        spawn_source_task(source.clone());
+        // Spawn source
+        spawn_source_task(source);
+
+        // Factory: always succeeds for FLV path (OTelProbe → SeqCacheProbe → FlvMux → FlvSink).
+        // HLS is skipped gracefully when codec params are empty (RTMP metadata arrives later).
+        let _pipeline = factory::build_pipeline(
+            &stream_key,
+            src_rx,
+            &[], // codec_params — empty for RTMP; HLS branch skipped with info log
+            flv_egress_hub.clone(),
+            minio,
+            &segment_cfg,
+            pipeline_cancel,
+        )
+        .expect("Pipeline factory should never fail for FLV-only path");
 
         builder.with_lifecycle(lifecycle).with_source_tx(frame_tx)
     } else {
