@@ -33,6 +33,7 @@ impl GrpcServer {
         port: u16,
         rtmp_port: u16,
         rtmp_app_name: String,
+        rtsp_port: u16,
         http_flv_enabled: bool,
         http_flv_port: u16,
         control: Arc<TransportController>,
@@ -43,6 +44,7 @@ impl GrpcServer {
                 control,
                 rtmp_port,
                 rtmp_app_name,
+                rtsp_port,
                 http_flv_enabled,
                 http_flv_port,
             ),
@@ -77,6 +79,7 @@ struct IngestGrpcService {
     control: Arc<TransportController>,
     rtmp_port: u16,
     rtmp_app_name: String,
+    rtsp_port: u16,
     http_flv_enabled: bool,
     http_flv_port: u16,
 }
@@ -86,6 +89,7 @@ impl IngestGrpcService {
         control: Arc<TransportController>,
         rtmp_port: u16,
         rtmp_app_name: String,
+        rtsp_port: u16,
         http_flv_enabled: bool,
         http_flv_port: u16,
     ) -> Self {
@@ -93,6 +97,7 @@ impl IngestGrpcService {
             control,
             rtmp_port,
             rtmp_app_name,
+            rtsp_port,
             http_flv_enabled,
             http_flv_port,
         }
@@ -206,9 +211,13 @@ impl api::livestream_server::Livestream for IngestGrpcService {
                 .control
                 .precreate_rtmp_session(live_id.clone())
                 .map_err(|e| Status::internal(e.to_string()))?,
+            api::InputProtocol::Rtsp => self
+                .control
+                .precreate_rtsp_session(live_id.clone(), request.passphrase)
+                .map_err(|e| Status::internal(e.to_string()))?,
             api::InputProtocol::Unspecified => {
                 return Err(Status::invalid_argument(
-                    "input_protocol must be specified (RTMP=1)",
+                    "input_protocol must be specified (RTMP=1, RTSP=2)",
                 ));
             }
         };
@@ -337,8 +346,9 @@ impl IngestGrpcService {
     fn descriptor_to_proto(&self, descriptor: SessionDescriptor) -> api::StreamDescriptor {
         let input_protocol = match descriptor.protocol {
             Protocol::Rtmp => api::InputProtocol::Rtmp as i32,
+            Protocol::Rtsp => api::InputProtocol::Rtsp as i32,
             other => {
-                warn!(protocol = %other, live_id = %descriptor.id, "Descriptor with non-RTMP protocol mapped to RTMP in gRPC response");
+                warn!(protocol = %other, live_id = %descriptor.id, "Descriptor with unknown protocol mapped to RTMP in gRPC response");
                 api::InputProtocol::Rtmp as i32
             }
         };
@@ -373,16 +383,37 @@ impl IngestGrpcService {
         protocol: Protocol,
         _ingest_port: u32,
     ) -> api::IngestEndpoints {
-        if !matches!(protocol, Protocol::Rtmp) {
-            warn!(protocol = %protocol, live_id = %live_id, "Ingest endpoints requested for non-RTMP protocol");
+        match protocol {
+            Protocol::Rtmp => api::IngestEndpoints {
+                rtmp: Some(api::RtmpEndpoint {
+                    port: self.rtmp_port as u32,
+                    app_name: self.rtmp_app_name.clone(),
+                    stream_key: live_id.to_owned(),
+                }),
+                srt: None,
+                rtsp: None,
+            },
+            Protocol::Rtsp => api::IngestEndpoints {
+                rtmp: None,
+                srt: None,
+                rtsp: Some(api::RtspEndpoint {
+                    port: self.rtsp_port as u32,
+                    path: format!("/live/{}", live_id),
+                }),
+            },
+            other => {
+                warn!(protocol = %other, live_id = %live_id, "Ingest endpoints requested for unsupported protocol, falling back to RTMP");
+                api::IngestEndpoints {
+                    rtmp: Some(api::RtmpEndpoint {
+                        port: self.rtmp_port as u32,
+                        app_name: self.rtmp_app_name.clone(),
+                        stream_key: live_id.to_owned(),
+                    }),
+                    srt: None,
+                    rtsp: None,
+                }
+            }
         }
-        let rtmp = Some(api::RtmpEndpoint {
-            port: self.rtmp_port as u32,
-            app_name: self.rtmp_app_name.clone(),
-            stream_key: live_id.to_owned(),
-        });
-
-        api::IngestEndpoints { rtmp, srt: None }
     }
 
     fn playback_endpoints(

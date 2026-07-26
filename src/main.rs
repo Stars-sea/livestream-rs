@@ -20,7 +20,7 @@ use tracing::{error, info};
 use livestream_core::channel;
 use livestream_transport::{
     controller::TransportController, flv::FlvEgressHub, grpc::GrpcServer, http_flv::HttpFlvServer,
-    rtmp::RtmpServer,
+    rtmp::RtmpServer, rtsp::server::RtspServer,
 };
 
 #[tokio::main]
@@ -51,20 +51,35 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    // 5. Create transport controller
-    let controller = Arc::new(TransportController::new(rtmp_tx));
+    // 5. Create RTSP control channel and server
+    let (rtsp_tx, rtsp_rx) = channel::mpsc("ctrl_rtsp", None, config.queue.control);
+    let rtsp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", config.transport.rtsp.port))?;
+    let rtsp_ttl = Duration::from_secs(config.transport.rtsp.session_ttl_secs);
 
-    // 6. Create gRPC server
+    let rtsp_server = RtspServer::create(
+        rtsp_addr,
+        rtsp_rx,
+        flv_egress_hub.clone(),
+        rtsp_ttl,
+        cancel.child_token(),
+    )
+    .await?;
+
+    // 6. Create transport controller
+    let controller = Arc::new(TransportController::new(rtmp_tx, rtsp_tx));
+
+    // 7. Create gRPC server
     let grpc_server = GrpcServer::new(
         config.services.grpc.port,
         config.transport.rtmp.port,
         config.transport.rtmp.app_name.clone(),
+        config.transport.rtsp.port,
         config.services.http_flv.enabled,
         config.services.http_flv.port,
         controller,
     );
 
-    // 7. Create HTTP-FLV server (optional)
+    // 8. Create HTTP-FLV server (optional)
     let http_flv_server = if config.services.http_flv.enabled {
         Some(
             HttpFlvServer::create(
@@ -78,7 +93,7 @@ async fn main() -> Result<()> {
         None
     };
 
-    // 8. Spawn signal handler for graceful shutdown (SIGINT + SIGTERM)
+    // 9. Spawn signal handler for graceful shutdown (SIGINT + SIGTERM)
     let shutdown_cancel = cancel.clone();
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
@@ -100,8 +115,9 @@ async fn main() -> Result<()> {
     };
     let http_flv_handle =
         http_flv_server.map(|server| spawn_server(error_tx.clone(), server.run()));
+    let rtsp_handle = spawn_server(error_tx.clone(), rtsp_server.run());
 
-    info!("All servers started");
+    info!("All servers started (RTMP, RTSP, gRPC, HTTP-FLV)");
 
     // Wait for either a server error or graceful shutdown signal.
     let first_error: Option<anyhow::Error> = tokio::select! {
@@ -132,6 +148,9 @@ async fn main() -> Result<()> {
                 if let Some(h) = http_flv_handle {
                     let _ = h.await;
                 }
+            },
+            async {
+                let _ = rtsp_handle.await;
             },
         );
     })

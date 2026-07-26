@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use crossfire::oneshot::{RxOneshot, oneshot};
 use livestream_core::channel::{MpscTx, SendError};
+use livestream_core::types::Protocol;
 
 use crate::registry;
 use crate::registry::state::SessionDescriptor;
@@ -25,11 +26,15 @@ pub enum ControlMessage {
 
 pub struct TransportController {
     rtmp_channel: MpscTx<ControlMessage>,
+    rtsp_channel: MpscTx<ControlMessage>,
 }
 
 impl TransportController {
-    pub fn new(rtmp_channel: MpscTx<ControlMessage>) -> Self {
-        Self { rtmp_channel }
+    pub fn new(rtmp_channel: MpscTx<ControlMessage>, rtsp_channel: MpscTx<ControlMessage>) -> Self {
+        Self {
+            rtmp_channel,
+            rtsp_channel,
+        }
     }
 
     pub fn precreate_rtmp_session(
@@ -39,24 +44,33 @@ impl TransportController {
         self.precreate_session(self.rtmp_channel.clone(), "RTMP", live_id, None)
     }
 
+    pub fn precreate_rtsp_session(
+        &self,
+        live_id: String,
+        passphrase: Option<String>,
+    ) -> Result<RxOneshot<Result<SessionDescriptor>>> {
+        self.precreate_session(self.rtsp_channel.clone(), "RTSP", live_id, passphrase)
+    }
+
     pub fn close_session(&self, live_id: String) -> Result<RxOneshot<Result<()>>> {
-        let live_id_clone = live_id.clone();
+        let rtmp = self.rtmp_channel.clone();
+        let rtsp = self.rtsp_channel.clone();
         let rx = Self::spawn_waiter(async move {
-            Self::wait_for_cleanup(&live_id_clone, SESSION_CLEANUP_TIMEOUT).await
+            let desc = registry::INSTANCE.get_descriptor(&live_id).await;
+            let Some(desc) = desc else {
+                return Ok(());
+            };
+            let channel = match desc.protocol {
+                Protocol::Rtmp => rtmp.with_live_id(live_id.clone()),
+                Protocol::Rtsp => rtsp.with_live_id(live_id.clone()),
+                _ => return Ok(()),
+            };
+            let msg = ControlMessage::StopStream {
+                live_id: live_id.clone(),
+            };
+            let _ = channel.send(msg);
+            Self::wait_for_cleanup(&live_id, SESSION_CLEANUP_TIMEOUT).await
         });
-
-        let msg = ControlMessage::StopStream {
-            live_id: live_id.clone(),
-        };
-
-        let rtmp_channel = self.rtmp_channel.clone().with_live_id(live_id);
-
-        let rtmp_status = rtmp_channel.send(msg);
-
-        if rtmp_status.is_err() {
-            anyhow::bail!("Failed to send StopStream to RTMP: {:?}", rtmp_status);
-        }
-
         Ok(rx)
     }
 

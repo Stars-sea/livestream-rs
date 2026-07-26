@@ -3,7 +3,6 @@
 //! Phase 5: RTSP source, FlvEgressHub (FlvBroadcast impl).
 //! Phase 6: RTMP/gRPC/HTTP-FLV/registry/controller/dispatcher/lifecycle migration.
 
-pub mod config;
 pub mod controller;
 pub mod dispatcher;
 pub mod flv;

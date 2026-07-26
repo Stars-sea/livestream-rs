@@ -25,6 +25,7 @@ service Livestream {
 enum InputProtocol {
   INPUT_PROTOCOL_UNSPECIFIED = 0;
   INPUT_PROTOCOL_RTMP = 1;
+  INPUT_PROTOCOL_RTSP = 2;
 }
 
 enum SessionStatus {
@@ -52,10 +53,10 @@ message StreamEndpoints {
   PlaybackEndpoints playback = 2;
 }
 
-// Ingest-side endpoints.
 message IngestEndpoints {
   optional RtmpEndpoint rtmp = 1;
   optional SrtIngestEndpoint srt = 2;
+  optional RtspEndpoint rtsp = 3;
 }
 
 // Playback-side endpoints.
@@ -77,6 +78,13 @@ message SrtIngestEndpoint {
   uint32 port = 1;
   string live_id = 2;
   optional string passphrase = 3;
+}
+
+// RTSP ingest URI components, for example:
+// rtsp://{hostname}:{port}/{path}
+message RtspEndpoint {
+  uint32 port = 1;
+  string path = 2;
 }
 
 // HTTP-FLV playback URI components, for example:

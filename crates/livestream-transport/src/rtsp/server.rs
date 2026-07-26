@@ -1,22 +1,34 @@
 //! RTSP server — TCP listener for RTSP ingest connections.
 
+use std::io::ErrorKind;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
+use dashmap::DashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
+use crate::controller::ControlMessage;
 use crate::flv::hub::FlvEgressHub;
+use crate::lifecycle::HandlerLifecycle;
+use crate::registry;
+use crate::registry::state::SessionEndpoint;
 use crate::source::rtsp::{RawRtpFrame, RtspSource};
-use crate::task::{run_processor, run_sink};
+use rtsp_types::Message;
 
 use super::rtp::RtpInterleavedReader;
 use super::session::{self, RtspSession};
 
 use livestream_codec::{EncodedPacket, RtpPacket};
-use livestream_core::{pad::PadSender, traits::Source};
+use livestream_core::channel::MpscRx;
+use livestream_core::pad::PadSender;
+use livestream_core::traits::Source;
+use livestream_core::types::Protocol;
 use livestream_media::flv::FlvTag;
 use livestream_pipeline::broadcast::FlvBroadcast;
 use livestream_pipeline::processor::{FlvMux, RtpDemuxProcessor};
@@ -24,44 +36,183 @@ use livestream_pipeline::sink::FlvSink;
 
 pub struct RtspServer {
     listener: TcpListener,
+    ctrl_channel: MpscRx<ControlMessage>,
+    flv_egress_hub: Arc<FlvEgressHub>,
+    pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
+    precreate_ttl: Duration,
+    cancel_token: CancellationToken,
 }
 
 impl RtspServer {
-    pub async fn bind(addr: &str) -> Result<Self> {
+    pub async fn create(
+        addr: SocketAddr,
+        ctrl_channel: MpscRx<ControlMessage>,
+        flv_egress_hub: Arc<FlvEgressHub>,
+        precreate_ttl: Duration,
+        cancel_token: CancellationToken,
+    ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
-        info!("RTSP server listening on {}", addr);
-        Ok(Self { listener })
+        Ok(Self {
+            listener,
+            ctrl_channel,
+            flv_egress_hub,
+            pending_lifecycle: Arc::new(DashMap::new()),
+            precreate_ttl,
+            cancel_token,
+        })
     }
 
-    pub async fn serve(&self, hub: Arc<FlvEgressHub>) -> Result<()> {
+    pub async fn run(mut self) -> Result<()> {
         loop {
-            let (stream, addr) = self.listener.accept().await?;
-            info!("RTSP connection from {}", addr);
-            let hub = Arc::clone(&hub);
-            let live_id = format!("rtsp-{}", addr);
-            tokio::spawn(spawn_connection(stream, live_id, hub));
+            tokio::select! {
+                _ = self.cancel_token.cancelled() => {
+                    debug!("RTSP server cancellation requested, shutting down");
+                    break;
+                }
+
+                msg = self.ctrl_channel.recv() => {
+                    if let Some(msg) = msg
+                        && let Err(e) = self.handle_control_message(msg).await {
+                            error!(error = %e, "Failed to handle RTSP control message");
+                        }
+                }
+
+                accept_res = self.listener.accept() => {
+                    self.handle_accept_result(accept_res).await;
+                }
+            }
         }
+
+        Ok(())
+    }
+
+    async fn handle_accept_result(&mut self, accept_res: std::io::Result<(TcpStream, SocketAddr)>) {
+        fn is_retryable_accept_error(err: &std::io::Error) -> bool {
+            matches!(
+                err.kind(),
+                ErrorKind::Interrupted
+                    | ErrorKind::WouldBlock
+                    | ErrorKind::TimedOut
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::ConnectionReset
+            )
+        }
+
+        match accept_res {
+            Ok((socket, addr)) => self.accept_client(socket, addr),
+            Err(err) if is_retryable_accept_error(&err) => {
+                warn!(error = %err, kind = ?err.kind(), "Retryable RTSP accept error, server continues running");
+                sleep(Duration::from_millis(20)).await;
+            }
+            Err(err) => {
+                error!(error = %err, kind = ?err.kind(), "Non-retryable RTSP accept error, server stays alive with backoff");
+                sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
+
+    async fn handle_control_message(&mut self, msg: ControlMessage) -> Result<()> {
+        match msg {
+            ControlMessage::PrecreateStream { live_id, .. } => {
+                // Pre-create the FLV broadcast channel so subscribers can join
+                // before the publisher connects.
+                self.flv_egress_hub.create_channel(&live_id);
+
+                let session_token = self.cancel_token.child_token();
+
+                let lifecycle = HandlerLifecycle::new(live_id.clone(), Protocol::Rtsp);
+                lifecycle
+                    .pending(SessionEndpoint::default(), session_token.clone())
+                    .await?;
+
+                self.spawn_precreate_session_ttl(live_id, lifecycle, session_token);
+
+                Ok(())
+            }
+            ControlMessage::StopStream { live_id } => {
+                if let Some(token) = registry::INSTANCE.get_cancel_token(&live_id) {
+                    token.cancel();
+                }
+
+                Ok(())
+            }
+        }
+    }
+
+    fn spawn_precreate_session_ttl(
+        &mut self,
+        live_id: String,
+        lifecycle: HandlerLifecycle,
+        session_token: CancellationToken,
+    ) {
+        let pending_lifecycle = self.pending_lifecycle.clone();
+        pending_lifecycle.insert(live_id.clone(), lifecycle);
+
+        let ttl = self.precreate_ttl;
+        if ttl.is_zero() {
+            debug!(
+                "Precreate session TTL is set to 0, skipping TTL expiration for live_id {}",
+                live_id
+            );
+            return;
+        }
+
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = session_token.cancelled() => { return; }
+                _ = sleep(ttl) => {}
+            }
+
+            if !pending_lifecycle.contains_key(&live_id) {
+                return;
+            }
+
+            warn!(
+                live_id = %live_id,
+                ttl_secs = ttl.as_secs(),
+                "Expired pending RTSP precreated session by TTL"
+            );
+
+            let Some((_, lifecycle)) = pending_lifecycle.remove(&live_id) else {
+                debug!(live_id = %live_id, "Pending lifecycle already removed for live_id, skipping TTL expiration");
+                return;
+            };
+            lifecycle.disconnect();
+        });
+    }
+
+    fn accept_client(&self, socket: TcpStream, addr: SocketAddr) {
+        debug!(client_addr = %addr, "Accepted new RTSP connection");
+
+        tokio::spawn(spawn_connection_handler(
+            socket,
+            self.pending_lifecycle.clone(),
+            self.flv_egress_hub.clone(),
+        ));
     }
 }
 
 // ── RTSP message I/O ──
 
 async fn read_message(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(4096);
     let mut tmp = [0u8; 4096];
 
     loop {
         let n = reader.read(&mut tmp).await?;
         if n == 0 {
-            anyhow::bail!("Connection closed");
+            anyhow::bail!("RTSP connection closed by client before complete request");
         }
         buf.extend_from_slice(&tmp[..n]);
 
         if let Some(pos) = find_header_end(&buf) {
-            let content_len = extract_content_length(&buf[..pos + 4]);
-            let total = pos + 4 + content_len;
-            read_body_until(&mut buf, reader, &mut tmp, total).await?;
-            return Ok(buf[..total].to_vec());
+            let content_length = extract_content_length(&buf[..pos]);
+            let total = pos + 4 + content_length;
+            if buf.len() < total {
+                read_body_until(&mut buf, reader, &mut tmp, total).await?;
+            }
+            buf.truncate(total);
+            return Ok(buf);
         }
     }
 }
@@ -71,14 +222,17 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 }
 
 fn extract_content_length(buf: &[u8]) -> usize {
-    let text = String::from_utf8_lossy(buf);
-    for line in text.lines() {
-        let trimmed = line.trim().to_lowercase();
-        if let Some(val) = trimmed.strip_prefix("content-length:") {
-            return val.trim().parse().unwrap_or(0);
-        }
-    }
-    0
+    let headers = String::from_utf8_lossy(buf);
+    headers
+        .lines()
+        .find_map(|line| {
+            if line.trim().to_lowercase().starts_with("content-length:") {
+                line.split(':').nth(1).and_then(|v| v.trim().parse().ok())
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0)
 }
 
 async fn read_body_until(
@@ -90,27 +244,24 @@ async fn read_body_until(
     while buf.len() < total {
         let n = reader.read(tmp).await?;
         if n == 0 {
-            anyhow::bail!("Connection closed");
+            anyhow::bail!("RTSP connection closed before complete body");
         }
         buf.extend_from_slice(&tmp[..n]);
     }
     Ok(())
 }
 
-// ── Connection / task helpers ──
+// ── Connection handler ──
 
-async fn spawn_connection(stream: TcpStream, live_id: String, hub: Arc<FlvEgressHub>) {
-    if let Err(e) = handle_connection(stream, &live_id, hub).await {
-        error!(error = %e, live_id = %live_id, "RTSP connection error");
+async fn spawn_connection_handler(
+    stream: TcpStream,
+    pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
+    hub: Arc<FlvEgressHub>,
+) {
+    let cancel_token = CancellationToken::new();
+    if let Err(e) = handle_connection(stream, pending_lifecycle, hub, cancel_token).await {
+        error!(error = %e, "RTSP connection error");
     }
-}
-
-fn spawn_source_start(source: Arc<RtspSource>) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        if let Err(e) = source.start().await {
-            error!(error = %e, "RtspSource failed");
-        }
-    })
 }
 
 // ── RTSP handshake ──
@@ -128,6 +279,7 @@ struct HandshakeOutcome {
     recording: bool,
     sdp: Option<String>,
     codec_params: Vec<livestream_core::types::CodecParams>,
+    live_id: Option<String>,
 }
 
 /// Runs the RTSP handshake (OPTIONS/ANNOUNCE/SETUP/RECORD).
@@ -135,50 +287,65 @@ struct HandshakeOutcome {
 async fn run_rtsp_handshake(
     reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
     write_half: &mut tokio::net::tcp::OwnedWriteHalf,
-    live_id: &str,
 ) -> Result<HandshakeOutcome> {
     let mut session = RtspSession::new();
 
     loop {
-        let raw = match read_message(reader).await {
-            Ok(data) => data,
+        let data = match read_message(reader).await {
+            Ok(d) => d,
             Err(e) => {
-                warn!(error = %e, "Failed to read RTSP message");
-                break;
+                warn!(error = %e, "RTSP read error during handshake");
+                return Ok(HandshakeOutcome {
+                    recording: false,
+                    sdp: None,
+                    codec_params: vec![],
+                    live_id: None,
+                });
             }
         };
 
-        let message = match session::parse_message(&raw) {
-            Ok(msg) => msg,
+        let request = match session::parse_message(&data) {
+            Ok(Message::Request(req)) => req,
+            Ok(_) => continue,
             Err(e) => {
-                warn!(error = %e, "Failed to parse RTSP message");
-                let err_resp = session::error_response(rtsp_types::StatusCode::BadRequest, 0);
-                let resp_bytes = session::serialize_response(&err_resp)?;
-                write_half.write_all(&resp_bytes).await?;
-                continue;
+                error!(error = %e, "Failed to parse RTSP request");
+                return Ok(HandshakeOutcome {
+                    recording: false,
+                    sdp: None,
+                    codec_params: vec![],
+                    live_id: None,
+                });
             }
         };
 
-        let is_request = matches!(message, rtsp_types::Message::Request(_));
-        if !is_request {
-            continue;
-        }
+        let cseq = extract_cseq(&request);
 
-        let request = match message {
-            rtsp_types::Message::Request(req) => req,
-            _ => continue,
-        };
-
-        let method = request.method().clone();
         match session.handle_request(&request) {
-            Ok(Some(response)) => {
-                let resp_bytes = session::serialize_response(&response)?;
-                write_half.write_all(&resp_bytes).await?;
+            Ok(Some(resp)) => {
+                let resp_bytes = match session::serialize_response(&resp) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        error!(error = %e, "Failed to serialize RTSP response");
+                        return Ok(HandshakeOutcome {
+                            recording: false,
+                            sdp: None,
+                            codec_params: vec![],
+                            live_id: None,
+                        });
+                    }
+                };
+                if write_half.write_all(&resp_bytes).await.is_err() {
+                    return Ok(HandshakeOutcome {
+                        recording: false,
+                        sdp: None,
+                        codec_params: vec![],
+                        live_id: None,
+                    });
+                }
             }
-            Ok(None) => {}
+            Ok(None) => { /* request consumed without response */ }
             Err(e) => {
-                let cseq = extract_cseq(&request);
-                error!(error = %e, method = ?method, "RTSP handler error");
+                error!(error = %e, cseq = cseq, "RTSP session error");
                 let err_resp =
                     session::error_response(rtsp_types::StatusCode::InternalServerError, cseq);
                 if let Ok(resp_bytes) = session::serialize_response(&err_resp) {
@@ -192,11 +359,13 @@ async fn run_rtsp_handshake(
         }
 
         if session.is_recording() {
-            info!(live_id = %live_id, "RTSP session recording, building pipeline");
+            let live_id = session.live_id().map(String::from);
+            info!(live_id = ?live_id, "RTSP session recording, building pipeline");
             let outcome = HandshakeOutcome {
                 recording: true,
                 sdp: session.sdp_body().map(String::from),
                 codec_params: session.codec_params().unwrap_or(&[]).to_vec(),
+                live_id,
             };
             return Ok(outcome);
         }
@@ -206,6 +375,7 @@ async fn run_rtsp_handshake(
         recording: false,
         sdp: None,
         codec_params: vec![],
+        live_id: None,
     })
 }
 
@@ -220,24 +390,34 @@ struct PipelineNodes {
 }
 
 fn spawn_pipeline_tasks(nodes: &PipelineNodes) -> Vec<tokio::task::JoinHandle<()>> {
-    let depack_task = {
-        let depack = Arc::clone(&nodes.depack);
-        let cancel = nodes.cancel.clone();
-        tokio::spawn(async move { run_processor(depack, cancel).await })
-    };
-    let flv_mux_task = {
-        let flv_mux = Arc::clone(&nodes.flv_mux);
-        let cancel = nodes.cancel.clone();
-        tokio::spawn(async move { run_processor(flv_mux, cancel).await })
-    };
-    let flv_sink_task = {
-        let flv_sink = Arc::clone(&nodes.flv_sink);
-        let cancel = nodes.cancel.clone();
-        tokio::spawn(async move { run_sink(flv_sink, cancel).await })
-    };
-    let source_task = spawn_source_start(Arc::clone(&nodes.source));
+    let mut tasks = Vec::new();
 
-    vec![depack_task, flv_mux_task, flv_sink_task, source_task]
+    let source = Arc::clone(&nodes.source);
+    tasks.push(tokio::spawn(async move {
+        if let Err(e) = source.start().await {
+            error!(error = %e, "RtspSource failed");
+        }
+    }));
+
+    let depack = Arc::clone(&nodes.depack);
+    let cancel = nodes.cancel.clone();
+    tasks.push(tokio::spawn(async move {
+        crate::task::run_processor(depack, cancel).await;
+    }));
+
+    let flv_mux = Arc::clone(&nodes.flv_mux);
+    let cancel = nodes.cancel.clone();
+    tasks.push(tokio::spawn(async move {
+        crate::task::run_processor(flv_mux, cancel).await;
+    }));
+
+    let flv_sink = Arc::clone(&nodes.flv_sink);
+    let cancel = nodes.cancel.clone();
+    tasks.push(tokio::spawn(async move {
+        crate::task::run_sink(flv_sink, cancel).await;
+    }));
+
+    tasks
 }
 
 async fn cleanup_pipeline(
@@ -246,22 +426,21 @@ async fn cleanup_pipeline(
     hub: Arc<FlvEgressHub>,
     live_id: &str,
 ) {
-    info!(live_id = %live_id, "Shutting down RTSP pipeline");
     cancel.cancel();
-
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        for t in tasks {
-            let _ = t.await;
-        }
-    })
-    .await;
-
+    for task in tasks {
+        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+    }
     hub.remove_channel(live_id);
 }
 
 // ── Main connection handler ──
 
-async fn handle_connection(stream: TcpStream, live_id: &str, hub: Arc<FlvEgressHub>) -> Result<()> {
+async fn handle_connection(
+    stream: TcpStream,
+    pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
+    hub: Arc<FlvEgressHub>,
+    cancel_token: CancellationToken,
+) -> Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
 
@@ -269,16 +448,24 @@ async fn handle_connection(stream: TcpStream, live_id: &str, hub: Arc<FlvEgressH
         recording,
         sdp,
         codec_params,
-    } = run_rtsp_handshake(&mut reader, &mut write_half, live_id).await?;
+        live_id,
+    } = run_rtsp_handshake(&mut reader, &mut write_half).await?;
 
     if !recording {
         return Ok(());
     }
 
+    let live_id = live_id.ok_or_else(|| {
+        anyhow::anyhow!("RTSP ANNOUNCE did not provide a recognizable stream path")
+    })?;
     let sdp = sdp.ok_or_else(|| anyhow::anyhow!("SDP missing"))?;
 
-    let cancel = CancellationToken::new();
-    hub.create_channel(live_id);
+    let Some((_, lifecycle)) = pending_lifecycle.remove(&live_id) else {
+        anyhow::bail!("No precreated session found for live_id: {}", live_id);
+    };
+
+    let cancel = cancel_token.child_token();
+    hub.create_channel(&live_id);
     let broadcast: Arc<dyn FlvBroadcast> = hub.clone();
 
     let (rtp_tx, rtp_rx) = PadSender::<RtpPacket>::new_channel(256);
@@ -286,7 +473,7 @@ async fn handle_connection(stream: TcpStream, live_id: &str, hub: Arc<FlvEgressH
     let (flv_tx, flv_rx) = PadSender::<FlvTag>::new_channel(256);
 
     let depack = Arc::new(RtpDemuxProcessor::new(
-        live_id,
+        &live_id,
         &sdp,
         codec_params.clone(),
         rtp_rx,
@@ -294,9 +481,9 @@ async fn handle_connection(stream: TcpStream, live_id: &str, hub: Arc<FlvEgressH
     )?);
 
     let demand_handle = flv_tx.demand().new_handle();
-    let flv_mux = Arc::new(FlvMux::new(live_id, enc_rx, vec![flv_tx]));
-    let flv_sink = Arc::new(FlvSink::new(live_id, broadcast, flv_rx, demand_handle));
-    let (source, frame_tx) = RtspSource::new(live_id, codec_params, rtp_tx, cancel.clone());
+    let flv_mux = Arc::new(FlvMux::new(&live_id, enc_rx, vec![flv_tx]));
+    let flv_sink = Arc::new(FlvSink::new(&live_id, broadcast, flv_rx, demand_handle));
+    let (source, frame_tx) = RtspSource::new(&live_id, codec_params, rtp_tx, cancel.clone());
     let source = Arc::new(source);
 
     let nodes = PipelineNodes {
@@ -352,6 +539,7 @@ async fn handle_connection(stream: TcpStream, live_id: &str, hub: Arc<FlvEgressH
         }
     }
 
-    cleanup_pipeline(tasks, cancel, hub, live_id).await;
+    lifecycle.disconnect();
+    cleanup_pipeline(tasks, cancel, hub, &live_id).await;
     Ok(())
 }

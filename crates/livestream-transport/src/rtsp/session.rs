@@ -28,6 +28,7 @@ pub struct RtspSession {
     parsed_sdp: Option<ParsedSdp>,
     video_channel: u8,
     audio_channel: u8,
+    live_id: Option<String>,
 }
 
 impl Default for RtspSession {
@@ -43,6 +44,7 @@ impl RtspSession {
             parsed_sdp: None,
             video_channel: 0,
             audio_channel: 2,
+            live_id: None,
         }
     }
 
@@ -85,8 +87,21 @@ impl RtspSession {
         let body = String::from_utf8_lossy(request.body());
         let parsed = sdp::parse_sdp(&body)?;
         self.parsed_sdp = Some(parsed);
+
+        // Extract live_id from URL path.
+        // URL is e.g. rtsp://host:554/live/mystream — path is "/live/mystream"
+        // or rtsp://host:554/live/mystream/track1 — take the last non-track segment.
+        if let Some(uri) = request.request_uri() {
+            let path = uri.path();
+            self.live_id = path
+                .trim_start_matches('/')
+                .split('/')
+                .rfind(|s| !s.is_empty() && !s.starts_with("track"))
+                .map(String::from);
+        }
+
         self.state = State::WaitSetup;
-        info!("RTSP ANNOUNCE received, SDP parsed");
+        info!(live_id = ?self.live_id, "RTSP ANNOUNCE received, SDP parsed");
         Ok(Some(ok_response(cseq)))
     }
 
@@ -146,6 +161,11 @@ impl RtspSession {
     /// Raw SDP body for feeding to FFmpeg's RTP demuxer.
     pub fn sdp_body(&self) -> Option<&str> {
         self.parsed_sdp.as_ref().map(|p| p.raw_sdp())
+    }
+
+    /// Stream key extracted from the ANNOUNCE URL path.
+    pub fn live_id(&self) -> Option<&str> {
+        self.live_id.as_deref()
     }
 
     /// Codec parameters extracted from the SDP.
