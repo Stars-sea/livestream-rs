@@ -1,4 +1,4 @@
-mod connection;
+mod session;
 pub mod state;
 
-pub use connection::INSTANCE;
+pub use session::INSTANCE;

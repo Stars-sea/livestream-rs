@@ -98,7 +98,37 @@ impl PipelineGraph {
     }
 
     fn validate(&self) -> Result<()> {
-        // TODO: implement full validation in Phase 4.1
+        // Rule 4: Source must have at least one downstream edge.
+        if !self.edges.iter().any(|e| e.from_node == 0) {
+            anyhow::bail!("Pipeline validation failed: Source has no downstream connections");
+        }
+
+        // Rule 1: The main chain tail node must be a Sink.
+        let tail_node = &self.nodes[self.tail];
+        if !matches!(tail_node.kind, ErasedNodeKind::Sink(_)) {
+            anyhow::bail!(
+                "Pipeline validation failed: main chain does not end with a Sink (last node: '{}')",
+                tail_node.name
+            );
+        }
+
+        // Rule 2: Every Processor must have at least one outgoing edge.
+        for (i, node) in self.nodes.iter().enumerate() {
+            if matches!(node.kind, ErasedNodeKind::Processor(_))
+                && !self.edges.iter().any(|e| e.from_node == i)
+            {
+                anyhow::bail!(
+                    "Pipeline validation failed: Processor '{}' (node {}) has no downstream connections",
+                    node.name,
+                    i
+                );
+            }
+        }
+
+        // NOTE: Rule 3 (codec compatibility) and Rule 5 (channel capacities) are
+        // deferred — they require type-erased downcasting and app config inspection
+        // respectively.
+
         Ok(())
     }
 
