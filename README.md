@@ -1,16 +1,19 @@
 # livestream-rs
 
-Rust 实现的直播接入与分发服务，支持 SRT/RTMP ingest、统一 RTMP egress，以及 TS 分段上传到 MinIO/S3。  
-A Rust live ingest/distribution service with SRT/RTMP ingest, unified RTMP egress, and TS segment persistence to MinIO/S3.
+Rust 实现的直播接入与分发服务，支持 RTMP/RTSP ingest、HTTP-FLV 播放，以及 HLS TS 分段上传到 MinIO/S3。
+A Rust live ingest/distribution service with RTMP/RTSP ingest, HTTP-FLV playback, and HLS TS segment persistence to MinIO/S3.
 
 ## 功能特性 / Features
 
-- SRT ingest（动态端口分配）/ SRT ingest with dynamic port allocation
-- RTMP ingest + RTMP egress（同一服务内统一处理）/ RTMP ingest + RTMP egress in one service
-- gRPC 控制面（Start/Stop/List/Get/Watch）/ gRPC control plane (Start/Stop/List/Get/Watch)
-- 基于中间件链的统一媒体处理管道 / Unified media processing pipeline via middleware chain
-- 分段完成事件驱动上传 MinIO/S3 / Event-driven segment upload to MinIO/S3
-- OpenTelemetry 指标与链路（按环境变量启用）/ OpenTelemetry metrics and tracing (env-enabled)
+- RTMP ingest（推流）+ HTTP-FLV playback（拉流）
+- RTSP ingest（ANNOUNCE/SETUP/RECORD，基于 rtsp-types）
+- gRPC 控制面（StartLivestream, StopLivestream, ListLivestreams, GetLivestreamInfo, WatchLivestream）
+- 统一媒体处理管道（Processor/Sink 模型，有界通道反压）
+- HLS 分段 → MinIO/S3 上传（内存缓冲，异步上传）
+- FlvBroadcast 多订阅者 FLV 分发
+- SessionRegistry 全局会话管理 + EventDispatcher 事件广播
+- OpenTelemetry 指标（按 feature 启用）
+- Pipeline shutdown 排空（5s 超时，逆序 close Processor）
 
 ## 快速开始 / Quick Start
 
@@ -27,131 +30,157 @@ cargo build --release
 ### 运行示例 / Run Example
 
 ```bash
-export SRT__PORTS=4000-4100
-export PERSISTENCE__DURATION=10
-export PERSISTENCE__CACHE_DIR=
-export GRPC__PORT=50051
 export RTMP__PORT=1935
 export RTMP__APP_NAME=lives
 export RTMP__SESSION_TTL_SECS=30
+export RTSP__PORT=8554
 export HTTP_FLV__ENABLED=true
 export HTTP_FLV__PORT=8080
-export MINIO_URI=http://localhost:9000
-export MINIO_ACCESSKEY=minioadmin
-export MINIO_SECRETKEY=miniokey
-export MINIO_BUCKET=videos
+export GRPC__PORT=50051
+export SEGMENT__DURATION_SECS=10
+export SEGMENT__CACHE_DIR=/tmp/livestream-segments
+export MINIO__URI=http://localhost:9000
+export MINIO__ACCESS_KEY=minioadmin
+export MINIO__SECRET_KEY=miniokey
+export MINIO__BUCKET=videos
 export RUST_LOG=info
 
-./target/release/livestream-rs
+cargo run --release
 ```
 
-HTTP-FLV 播放地址示例：`http://127.0.0.1:8080/lives/<live_id>.flv`  
-Example HTTP-FLV playback URL: `http://127.0.0.1:8080/lives/<live_id>.flv`
-
-### Docker 构建 / Docker Build
-
-```bash
-docker build -t livestream-rs .
-```
+HTTP-FLV 播放地址示例：`http://127.0.0.1:8080/lives/<live_id>.flv`
 
 ## 配置 / Configuration
 
-配置来源：`config.toml` + 环境变量（环境变量覆盖文件）。  
-Configuration source: `config.toml` + environment variables (env overrides file).
-
-环境变量使用 `__` 表示嵌套层级，例如 `RTMP__APP_NAME` 对应 `rtmp.app_name`。MinIO 同时兼容原有的 `MINIO_URI`、`MINIO_ACCESSKEY`、`MINIO_SECRETKEY`、`MINIO_BUCKET`。  
-Environment variables use `__` to express nesting, for example `RTMP__APP_NAME` maps to `rtmp.app_name`. MinIO also keeps compatibility with the legacy `MINIO_URI`, `MINIO_ACCESSKEY`, `MINIO_SECRETKEY`, and `MINIO_BUCKET` names.
+配置来源：`config.toml` + 环境变量（环境变量覆盖文件）。
+环境变量使用 `__` 表示嵌套层级，例如 `RTMP__APP_NAME` 对应 `rtmp.app_name`。
 
 关键配置项 / Key settings:
 
-- `srt.ports` / `SRT__PORTS`
-- `persistence.duration` / `PERSISTENCE__DURATION`
-- `persistence.cache_dir` / `PERSISTENCE__CACHE_DIR`
-- `grpc.port` / `GRPC__PORT`
-- `rtmp.port` / `RTMP__PORT`
-- `rtmp.app_name` / `RTMP__APP_NAME`
-- `rtmp.session_ttl_secs` / `RTMP__SESSION_TTL_SECS`
-- `queue.*` / `QUEUE__*`
-- `minio.uri/access_key/secret_key/bucket` / legacy `MINIO_*`
+| 环境变量 | 说明 |
+|----------|------|
+| `RTMP__PORT` | RTMP ingest 端口（默认 1935） |
+| `RTMP__APP_NAME` | RTMP application name |
+| `RTMP__SESSION_TTL_SECS` | RTMP 预创建会话超时（默认 30s） |
+| `RTSP__PORT` | RTSP ingest 端口（默认 8554） |
+| `HTTP_FLV__ENABLED` | 启用 HTTP-FLV 播放端点 |
+| `HTTP_FLV__PORT` | HTTP-FLV 端口（默认 8080） |
+| `GRPC__PORT` | gRPC 控制面端口（默认 50051） |
+| `SEGMENT__DURATION_SECS` | HLS 分段时长（秒） |
+| `SEGMENT__CACHE_DIR` | 分段暂存目录 |
+| `MINIO__URI` | MinIO/S3 endpoint（必填） |
+| `MINIO__ACCESS_KEY` | Access key（必填） |
+| `MINIO__SECRET_KEY` | Secret key（必填） |
+| `MINIO__BUCKET` | Bucket name（必填） |
+| `QUEUE__*` | 通道容量配置 |
 
-`rtmp.session_ttl_secs` 默认值为 30 秒，允许范围为 0..=86400 秒。  
-`rtmp.session_ttl_secs` defaults to 30 seconds, with a valid range of 0..=86400 seconds.
-
-最小必需项：`MINIO_*` 必填，否则启动失败。  
-Minimum required: `MINIO_*` must be provided, otherwise startup fails.
+MinIO 配置为必填，缺失时启动失败。
 
 ## gRPC API
 
-定义见 `proto/livestream.proto`。  
-Definitions are in `proto/livestream.proto`.
+定义见 `proto/livestream.proto`。
 
-- `StartLivestream`
-- `StopLivestream`
-- `ListLivestreams`
-- `GetLivestreamInfo`
-- `WatchLivestream`
+- `StartLivestream` — 预创建 RTMP/RTSP 会话
+- `StopLivestream` — 终止活跃会话
+- `ListLivestreams` — 列出所有当前会话
+- `GetLivestreamInfo` — 查询单个会话状态
+- `WatchLivestream` — 流式订阅会话生命周期事件
 
-## 架构速览 / Architecture Snapshot
+## 架构 / Architecture
 
-`transport` 负责连接与会话，`pipeline` 负责媒体处理，二者通过事件和有界通道解耦协作。  
-`transport` handles connections/sessions, `pipeline` handles media processing, and both collaborate via events and bounded channels.
+### Crate 结构 / Crate Layout
+
+```
+livestream-rs (binary)
+├── livestream-core       — 共享 trait、类型、Pad 通道、PipelineState
+├── livestream-codec      — EncodedPacket、FlvTag、RtpPacket、TsSegment
+├── livestream-media      — FFmpeg 封装（解码器/编码器/Scaler/HLS muxer）
+├── livestream-pipeline   — 媒体处理管道（Processor/Sink 链、PipelineGraph、PipelineImpl）
+├── livestream-transport  — 协议接入（RTMP/RTSP）、HTTP-FLV、gRPC、会话管理
+└── livestream-telemetry  — OpenTelemetry 指标与追踪
+```
+
+依赖方向：`binary → transport → pipeline → media/codec/core`，`pipeline` 不依赖 `transport`。
+
+### 数据流 / Data Flow
 
 ```mermaid
 flowchart LR
-  grpc[gRPC Livestream Service]
-  tc[TransportController]
-  rtmp[RtmpServer]
-  srt[SrtServer]
-  registry[Global Session Registry]
-  disp[EventDispatcher]
-  bus[PipeBus]
-  factory[UnifiedPipeFactory]
-  pipe[Per-stream Pipe]
-  mw1[OTelMiddleware]
-  mw2[FlvMuxForwardMiddleware]
-  mw3[SegmentMiddleware]
-  egress[RTMP Play Broadcaster]
-  persist[SegmentPersistenceHandler]
-  minio[MinIO/S3]
+  grpc[gRPC] --> tc[TransportController]
+  tc --> rtmp[RtmpServer]
+  tc --> rtsp[RtspServer]
 
-  grpc --> tc
-  tc --> rtmp
-  tc --> srt
+  rtmp --> registry[SessionRegistry]
+  rtsp --> registry
 
-  rtmp --> registry
-  srt --> registry
+  rtmp --> src_rtmp[RtspSource\2 RtmpSource]
+  rtsp --> src_rtsp
 
-  rtmp --> disp
-  srt --> disp
-  disp --> bus
-  bus --> factory
-  factory --> pipe
-  pipe --> mw1 --> mw2 --> mw3
+  src_rtmp --> factory[PipelineFactory]
+  src_rtsp --> factory
 
-  mw2 --> egress
-  mw3 --> disp
-  disp --> persist --> minio
+  subgraph Pipeline
+    otel[OTelProbe] --> cache[SeqCacheProbe]
+    cache --> flvmux[FlvMux] --> flvsink[FlvSink] --> hub[FlvEgressHub]
+    cache --> hls[HlsSegmenter] --> minio_sink[MinIoSink] --> s3[(MinIO/S3)]
+  end
+
+  factory --> otel
+  hub --> http_flv[HttpFlvServer]
+  hub --> rtmp_play[RTMP playback]
+
+  dispatcher[EventDispatcher] --> registry
 ```
 
-## transport 与 pipeline 的协作主线 / Main Collaboration Flow
+### 关键组件 / Key Components
 
-1. gRPC 调用进入 `TransportController`，下发控制命令到 RTMP/SRT server。  
-gRPC calls enter `TransportController`, which dispatches control commands to RTMP/SRT servers.
-2. transport 侧在会话初始化后发布 `SessionInit/SessionStarted` 事件。  
-transport publishes `SessionInit/SessionStarted` events after session initialization.
-3. `PipeBus` 监听事件并按 `live_id` 创建独立管道。  
-`PipeBus` listens to events and creates isolated per-`live_id` pipelines.
-4. 媒体包进入中间件链，完成计量、转发、分段与持久化触发。  
-Media packets go through middleware chain for metering, forwarding, segmentation, and persistence triggering.
+**Transport 层：**
+- `TransportServer` — 聚合 RTMP/RTSP/HTTP-FLV server 统一生命周期
+- `TransportController` — 控制面命令分发（PrecreateStream / StopStream）
+- `RtmpServer` — RTMP ingest + 预创建 TTL 管理
+- `RtspServer` — RTSP ANNOUNCE/SETUP/RECORD/TEARDOWN，RTP 交错帧读取
+- `HttpFlvServer` — HTTP-FLV 播放端点（`/lives/{live_id}.flv`）+ 健康检查端点
+- `GrpcServer` — gRPC 控制面实现
+- `FlvEgressHub` — 每流 FLV 广播通道，订阅者通过 `FlvBroadcast` trait 接入
+- `SessionRegistry` — 全局会话描述 + CancellationToken + PipelineHandle 管理
+- `EventDispatcher` — `SessionEvent`（Started/Init/Ended + EndReason）广播
+
+**Pipeline 层：**
+- `PipelineFactory` — 持有共享依赖（MinIO、SegmentConfig、FlvBroadcast），构建管道实例
+- `PipelineImpl` — 管道运行时：tasks 管理、shutdown 排空（5s 超时）
+- `PipelineHandle` — `PipelineState`（AtomicU8）+ `CancellationToken`
+- Processor 链：`OTelProbe` → `SeqCacheProbe` → fan-out → `FlvMux`/`HlsSegmenter`
+- Sink：`FlvSink`（广播 FLV 到 FlvEgressHub）、`MinIoSink`（上传 TS 分段到 MinIO）
+
+### 管道结构 / Pipeline Structure
+
+```
+Source (EncodedPacket)
+  → OTelProbe (passthrough + metrics)
+  → SeqCacheProbe (缓存 seq header + recent keyframe)
+  → [fan-out]
+    ├→ FlvMux (EncodedPacket → FlvTag) → FlvSink → FlvEgressHub
+    └→ HlsSegmenter (EncodedPacket → TsSegment) → MinIoSink → MinIO/S3
+
+Source (RtpPacket, RTSP):
+  → RtpDemuxProcessor (RtpPacket → EncodedPacket, FFmpeg RTP demuxer)
+  → 进入上述 EncodedPacket 链
+```
+
+### 设计原则 / Design Principles
+
+- **分层职责**：transport 处理连接/会话，pipeline 处理媒体/内容
+- **事件驱动解耦**：会话生命周期通过 `EventDispatcher` 广播
+- **按流隔离**：每 `live_id` 独立管道实例，无跨流状态污染
+- **有界通道反压**：`PadSender`/`PadReceiver` 有界通道控制突发流量
+- **RAII 资源管理**：FFmpeg 原始指针封装在 media crate，pipeline 只传递类型化包
+- **Result pattern**：`anyhow::Result` 用于应用级错误，无 panic 业务路径
 
 ## 文档 / Documentation
 
-- 关键组件与架构设计要点：`docs/transport-pipeline-architecture.md`  
-Detailed component and architecture-principles guide: `docs/transport-pipeline-architecture.md`
-- 架构演进待办：`docs/TODOs.md`  
-Architecture evolution backlog: `docs/TODOs.md`
-- FFmpeg unsafe 所有权：`docs/ffmpeg-unsafe-ownership-map.md`  
-FFmpeg unsafe ownership map: `docs/ffmpeg-unsafe-ownership-map.md`
+- 架构详细说明：`docs/transport-pipeline-architecture.md`
+- FFmpeg unsafe 所有权映射：`docs/ffmpeg-unsafe-ownership-map.md`
+- 架构演进待办：`docs/TODOs.md`
 
 ## License
 
