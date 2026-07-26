@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::flv::FlvEgressHub;
-use crate::registry;
+use crate::registry::SessionRegistry;
 use crate::registry::state::SessionState;
 use livestream_media::flv::{FlvTag, encode_flv_header, encode_flv_tag};
 
@@ -33,6 +33,7 @@ pub fn playback_path(live_id: &str) -> String {
 struct HttpFlvState {
     flv_egress_hub: Arc<FlvEgressHub>,
     cancel_token: CancellationToken,
+    registry: Arc<SessionRegistry>,
 }
 
 pub struct HttpFlvServer {
@@ -45,6 +46,7 @@ impl HttpFlvServer {
     pub async fn create(
         port: u16,
         flv_egress_hub: Arc<FlvEgressHub>,
+        registry: Arc<SessionRegistry>,
         cancel_token: CancellationToken,
     ) -> Result<Self> {
         let addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
@@ -52,6 +54,7 @@ impl HttpFlvServer {
 
         let state = HttpFlvState {
             flv_egress_hub,
+            registry,
             cancel_token: cancel_token.clone(),
         };
         let router = Router::new()
@@ -89,7 +92,7 @@ async fn handle_http_flv(State(state): State<HttpFlvState>, Path(path): Path<Str
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    match registry::INSTANCE.get_state(live_id).await {
+    match state.registry.get_state(live_id).await {
         Some(SessionState::Connected) => stream_response(state, live_id.to_owned()).await,
         Some(SessionState::Pending | SessionState::Connecting | SessionState::Disconnected) => {
             StatusCode::SERVICE_UNAVAILABLE.into_response()
@@ -270,8 +273,8 @@ struct HealthResponse {
     session_count: usize,
 }
 
-async fn handle_health() -> axum::Json<HealthResponse> {
-    let sessions = registry::INSTANCE.list_descriptors().await;
+async fn handle_health(State(state): State<HttpFlvState>) -> axum::Json<HealthResponse> {
+    let sessions = state.registry.list_descriptors().await;
     axum::Json(HealthResponse {
         status: "healthy",
         session_count: sessions.len(),
@@ -285,9 +288,11 @@ struct StreamHealth {
 }
 
 async fn handle_stream_health(
+    State(state): State<HttpFlvState>,
     axum::extract::Path(live_id): axum::extract::Path<String>,
 ) -> Result<axum::Json<StreamHealth>, axum::http::StatusCode> {
-    let session = registry::INSTANCE
+    let session = state
+        .registry
         .get_descriptor(&live_id)
         .await
         .ok_or(axum::http::StatusCode::NOT_FOUND)?;

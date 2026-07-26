@@ -6,15 +6,19 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::dispatcher::{self, EndReason, SessionEvent};
-use crate::registry;
-use crate::registry::state::{SessionDescriptor, SessionEndpoint, SessionState};
+use crate::dispatcher::{EndReason, EventDispatcher, SessionEvent};
+use crate::registry::{
+    SessionRegistry,
+    state::{SessionDescriptor, SessionEndpoint, SessionState},
+};
 use livestream_core::types::Protocol;
 use livestream_media::stream::StreamCollection;
 
 pub struct HandlerLifecycle {
     live_id: String,
     protocol: Protocol,
+    registry: Arc<SessionRegistry>,
+    dispatcher: Arc<EventDispatcher>,
 
     initialized: AtomicBool,
     connected: AtomicBool,
@@ -22,10 +26,17 @@ pub struct HandlerLifecycle {
 }
 
 impl HandlerLifecycle {
-    pub fn new(live_id: String, protocol: Protocol) -> Self {
+    pub fn new(
+        live_id: String,
+        protocol: Protocol,
+        registry: Arc<SessionRegistry>,
+        dispatcher: Arc<EventDispatcher>,
+    ) -> Self {
         Self {
             live_id,
             protocol,
+            registry,
+            dispatcher,
             initialized: AtomicBool::new(false),
             connected: AtomicBool::new(false),
             disconnected: AtomicBool::new(false),
@@ -58,7 +69,7 @@ impl HandlerLifecycle {
             endpoint,
             state: SessionState::Pending,
         };
-        registry::INSTANCE
+        self.registry
             .register_session(Arc::new(RwLock::new(descriptor)), cancel_token)
             .await
     }
@@ -70,22 +81,19 @@ impl HandlerLifecycle {
 
         self.initialized.store(true, Ordering::Relaxed);
 
-        // NOTE: Pipeline engine is a stub in Phase 6. SessionInit events are
-        // dispatched but not consumed by any pipeline factory.
-        dispatcher::INSTANCE.send(SessionEvent::SessionInit {
+        self.dispatcher.send(SessionEvent::SessionInit {
             live_id: self.live_id.clone(),
             streams: _streams,
         });
     }
 
     pub async fn connecting(&self) -> Result<()> {
-        registry::INSTANCE
+        self.registry
             .update_state(&self.live_id, SessionState::Connecting)
             .await
     }
 
     pub async fn connect(&self) -> Result<()> {
-        // Idempotency guard: dispatch SessionStarted only once per lifecycle.
         if self
             .connected
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -94,11 +102,11 @@ impl HandlerLifecycle {
             return Ok(());
         }
 
-        registry::INSTANCE
+        self.registry
             .update_state(&self.live_id, SessionState::Connected)
             .await?;
 
-        dispatcher::INSTANCE.send(SessionEvent::SessionStarted {
+        self.dispatcher.send(SessionEvent::SessionStarted {
             live_id: self.live_id.clone(),
             protocol: self.protocol,
         });
@@ -114,13 +122,13 @@ impl HandlerLifecycle {
             return;
         }
 
-        let Some(ct) = registry::INSTANCE.get_cancel_token(&self.live_id) else {
+        let Some(ct) = self.registry.get_cancel_token(&self.live_id) else {
             debug!(live_id = %self.live_id, "No cancellation token found for live_id during disconnect");
             return;
         };
         ct.cancel();
 
-        dispatcher::INSTANCE.send(SessionEvent::SessionEnded {
+        self.dispatcher.send(SessionEvent::SessionEnded {
             live_id: self.live_id.clone(),
             protocol: self.protocol,
             reason,
@@ -136,6 +144,8 @@ impl HandlerLifecycle {
 
 impl Drop for HandlerLifecycle {
     fn drop(&mut self) {
-        self.disconnect();
+        if !self.disconnected.load(Ordering::Acquire) {
+            self.disconnect();
+        }
     }
 }

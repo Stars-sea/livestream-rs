@@ -14,29 +14,36 @@ use tracing::{debug, info, warn};
 use super::connection::RtmpConnection;
 use super::handler::HandlerBuilder;
 use crate::lifecycle::HandlerLifecycle;
-use crate::registry::{self, state::*};
+use crate::registry::{SessionRegistry, state::*};
 use livestream_media::flv::FlvTag;
 
 pub struct SessionGuard {
     connection: RtmpConnection,
     session: ServerSession,
     appname: String,
+    registry: Arc<SessionRegistry>,
 
     chunk_size: u32,
 }
-
 pub(super) struct SessionGuardBuilder {
     connection: RtmpConnection,
     session: Option<ServerSession>,
     appname: Option<String>,
+    registry: Option<Arc<SessionRegistry>>,
 }
 
 impl SessionGuard {
-    pub(self) fn new(connection: RtmpConnection, session: ServerSession, appname: String) -> Self {
+    pub(self) fn new(
+        connection: RtmpConnection,
+        session: ServerSession,
+        appname: String,
+        registry: Arc<SessionRegistry>,
+    ) -> Self {
         Self {
             connection,
             session,
             appname,
+            registry,
             chunk_size: 2048,
         }
     }
@@ -372,7 +379,7 @@ impl SessionGuard {
         stream_id: u32,
         ct: &CancellationToken,
     ) -> Result<Option<HandlerBuilder>> {
-        let is_active = match registry::INSTANCE.get_state(&stream_key).await {
+        let is_active = match self.registry.get_state(&stream_key).await {
             Some(state) => state == SessionState::Connected,
             None => false,
         };
@@ -407,7 +414,7 @@ impl SessionGuard {
             }
         };
 
-        let Some(state) = registry::INSTANCE.get_state(&stream_key).await else {
+        let Some(state) = self.registry.get_state(&stream_key).await else {
             debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
             lifecycle.disconnect();
 
@@ -457,6 +464,7 @@ impl SessionGuardBuilder {
             connection,
             session: None,
             appname: None,
+            registry: None,
         }
     }
 
@@ -470,6 +478,11 @@ impl SessionGuardBuilder {
         self
     }
 
+    pub fn with_registry(mut self, registry: Arc<SessionRegistry>) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
     pub fn build(self) -> Result<SessionGuard> {
         let session = self
             .session
@@ -477,7 +490,14 @@ impl SessionGuardBuilder {
         let appname = self
             .appname
             .ok_or_else(|| anyhow::anyhow!("App name is required to build SessionGuard"))?;
-
-        Ok(SessionGuard::new(self.connection, session, appname))
+        let registry = self
+            .registry
+            .ok_or_else(|| anyhow::anyhow!("Registry is required to build SessionGuard"))?;
+        Ok(SessionGuard::new(
+            self.connection,
+            session,
+            appname,
+            registry,
+        ))
     }
 }

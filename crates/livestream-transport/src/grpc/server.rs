@@ -14,21 +14,25 @@ use super::api::livestream_server::LivestreamServer;
 #[cfg(feature = "opentelemetry")]
 use super::context_propagation::OtelContextPropagationService;
 use crate::controller::TransportController;
-use crate::dispatcher::{self, SessionEvent};
+use crate::dispatcher::{EventDispatcher, SessionEvent};
 use crate::http_flv::playback_path;
-use crate::registry;
+use crate::registry::SessionRegistry;
 use crate::registry::state::*;
 use livestream_core::channel::BroadcastRx;
 use livestream_core::types::Protocol;
 
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+#[allow(dead_code)]
 pub struct GrpcServer {
     port: u16,
+    registry: Arc<SessionRegistry>,
+    dispatcher: Arc<EventDispatcher>,
     service: IngestGrpcService,
 }
 
 impl GrpcServer {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         port: u16,
         rtmp_port: u16,
@@ -37,9 +41,13 @@ impl GrpcServer {
         http_flv_enabled: bool,
         http_flv_port: u16,
         control: Arc<TransportController>,
+        registry: Arc<SessionRegistry>,
+        dispatcher: Arc<EventDispatcher>,
     ) -> Self {
         Self {
             port,
+            registry: registry.clone(),
+            dispatcher: dispatcher.clone(),
             service: IngestGrpcService::new(
                 control,
                 rtmp_port,
@@ -47,6 +55,8 @@ impl GrpcServer {
                 rtsp_port,
                 http_flv_enabled,
                 http_flv_port,
+                registry,
+                dispatcher,
             ),
         }
     }
@@ -77,6 +87,8 @@ impl GrpcServer {
 #[derive(Clone)]
 struct IngestGrpcService {
     control: Arc<TransportController>,
+    registry: Arc<SessionRegistry>,
+    dispatcher: Arc<EventDispatcher>,
     rtmp_port: u16,
     rtmp_app_name: String,
     rtsp_port: u16,
@@ -85,6 +97,7 @@ struct IngestGrpcService {
 }
 
 impl IngestGrpcService {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         control: Arc<TransportController>,
         rtmp_port: u16,
@@ -92,9 +105,13 @@ impl IngestGrpcService {
         rtsp_port: u16,
         http_flv_enabled: bool,
         http_flv_port: u16,
+        registry: Arc<SessionRegistry>,
+        dispatcher: Arc<EventDispatcher>,
     ) -> Self {
         Self {
             control,
+            registry,
+            dispatcher,
             rtmp_port,
             rtmp_app_name,
             rtsp_port,
@@ -150,9 +167,10 @@ impl IngestGrpcService {
         live_id: &str,
         previous_state: Option<SessionState>,
         subscription: &mut BroadcastRx<SessionEvent>,
+        registry: &SessionRegistry,
     ) -> Option<SessionState> {
         loop {
-            match registry::INSTANCE.get_state(live_id).await {
+            match registry.get_state(live_id).await {
                 Some(state) if previous_state != Some(state) => return Some(state),
                 Some(SessionState::Disconnected) => return None,
                 Some(_) => {}
@@ -200,7 +218,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         let request = request.into_inner();
         let live_id = Self::validate_live_id(request.live_id)?;
 
-        if registry::INSTANCE.get_session(&live_id).is_some() {
+        if self.registry.get_session(&live_id).is_some() {
             return Err(Status::already_exists("stream already exists"));
         }
 
@@ -241,7 +259,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
     ) -> Result<Response<api::StopLivestreamResponse>, Status> {
         let live_id = Self::validate_live_id(request.into_inner().live_id)?;
 
-        if registry::INSTANCE.get_session(&live_id).is_none() {
+        if self.registry.get_session(&live_id).is_none() {
             return Err(Status::not_found("stream not found"));
         }
 
@@ -265,7 +283,8 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         &self,
         _request: Request<api::ListLivestreamsRequest>,
     ) -> Result<Response<api::ListLivestreamsResponse>, Status> {
-        let streams = registry::INSTANCE
+        let streams = self
+            .registry
             .list_descriptors()
             .await
             .into_iter()
@@ -287,7 +306,8 @@ impl api::livestream_server::Livestream for IngestGrpcService {
     ) -> Result<Response<api::GetLivestreamInfoResponse>, Status> {
         let live_id = Self::validate_live_id(request.into_inner().live_id)?;
 
-        let descriptor = registry::INSTANCE
+        let descriptor = self
+            .registry
             .get_descriptor(&live_id)
             .await
             .ok_or_else(|| Status::not_found("stream not found"))?;
@@ -308,12 +328,14 @@ impl api::livestream_server::Livestream for IngestGrpcService {
         request: Request<api::WatchLivestreamRequest>,
     ) -> Result<Response<Self::WatchLivestreamStream>, Status> {
         let live_id = Self::validate_live_id(request.into_inner().live_id)?;
+        let dispatcher = self.dispatcher.clone();
+        let registry = self.registry.clone();
 
         let stream = async_stream::try_stream! {
             let mut previous_state = None;
-            let mut subscription = dispatcher::INSTANCE.subscribe(&live_id);
+            let mut subscription = dispatcher.subscribe(&live_id);
 
-            while let Some(state) = Self::wait_for_next_state(&live_id, previous_state, &mut subscription).await {
+            while let Some(state) = Self::wait_for_next_state(&live_id, previous_state, &mut subscription, &registry).await {
                 previous_state = Some(state);
                 yield Self::watch_response(state);
 

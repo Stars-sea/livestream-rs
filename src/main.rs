@@ -20,8 +20,9 @@ use livestream_core::channel;
 use livestream_pipeline::factory;
 use livestream_pipeline::sink::minio::ObjectUploader;
 use livestream_transport::{
-    controller::TransportController, flv::FlvEgressHub, grpc::GrpcServer, http_flv::HttpFlvServer,
-    rtmp::RtmpServer, rtsp::server::RtspServer,
+    controller::TransportController, dispatcher::EventDispatcher, flv::FlvEgressHub,
+    grpc::GrpcServer, http_flv::HttpFlvServer, registry::SessionRegistry, rtmp::RtmpServer,
+    rtsp::server::RtspServer,
 };
 
 #[tokio::main]
@@ -48,12 +49,13 @@ async fn main() -> Result<()> {
     // 4. Create shared infrastructure
     let cancel = CancellationToken::new();
     let flv_egress_hub = Arc::new(FlvEgressHub::new());
+    let registry = Arc::new(SessionRegistry::new());
+    let dispatcher = Arc::new(EventDispatcher::new());
 
     // 5. Create control channel and RTMP server
     let (rtmp_tx, rtmp_rx) = channel::mpsc("ctrl_rtmp", None, config.queue.control);
     let rtmp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", config.transport.rtmp.port))?;
     let session_ttl = Duration::from_secs(config.transport.rtmp.session_ttl_secs);
-
     let rtmp_server = RtmpServer::create(
         rtmp_addr,
         config.transport.rtmp.app_name.clone(),
@@ -63,6 +65,8 @@ async fn main() -> Result<()> {
         minio.clone(),
         segment_cfg.clone(),
         cancel.child_token(),
+        registry.clone(),
+        dispatcher.clone(),
     )
     .await?;
 
@@ -75,6 +79,8 @@ async fn main() -> Result<()> {
         rtsp_addr,
         rtsp_rx,
         flv_egress_hub.clone(),
+        registry.clone(),
+        dispatcher.clone(),
         rtsp_ttl,
         minio.clone(),
         segment_cfg.clone(),
@@ -82,8 +88,7 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    // 7. Create transport controller
-    let controller = Arc::new(TransportController::new(rtmp_tx, rtsp_tx));
+    let controller = Arc::new(TransportController::new(registry.clone(), rtmp_tx, rtsp_tx));
 
     // 8. Create gRPC server
     let grpc_server = GrpcServer::new(
@@ -94,6 +99,8 @@ async fn main() -> Result<()> {
         config.services.http_flv.enabled,
         config.services.http_flv.port,
         controller,
+        registry.clone(),
+        dispatcher.clone(),
     );
 
     // 9. Create HTTP-FLV server (optional)
@@ -102,6 +109,7 @@ async fn main() -> Result<()> {
             HttpFlvServer::create(
                 config.services.http_flv.port,
                 flv_egress_hub.clone(),
+                registry.clone(),
                 cancel.child_token(),
             )
             .await?,

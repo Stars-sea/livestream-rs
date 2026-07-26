@@ -12,9 +12,10 @@ use tracing::{debug, error, warn};
 use super::connection::RtmpConnection;
 use crate::controller::ControlMessage;
 use crate::dispatcher::EndReason;
+use crate::dispatcher::EventDispatcher;
 use crate::flv::FlvEgressHub;
 use crate::lifecycle::HandlerLifecycle;
-use crate::registry;
+use crate::registry::SessionRegistry;
 use crate::registry::state::SessionEndpoint;
 use crate::rtmp::handler::HandlerBuilder;
 use crate::source::rtmp::RtmpSource;
@@ -26,7 +27,6 @@ use livestream_core::traits::{Node, Source};
 use livestream_core::types::Protocol;
 use livestream_pipeline::factory;
 use livestream_pipeline::sink::minio::ObjectUploader;
-
 pub struct RtmpServer {
     listener: TcpListener,
     appname: String,
@@ -37,6 +37,8 @@ pub struct RtmpServer {
     minio: Arc<dyn livestream_pipeline::sink::minio::ObjectUploader>,
     segment_cfg: livestream_codec::SegmentConfig,
     cancel_token: CancellationToken,
+    registry: Arc<SessionRegistry>,
+    dispatcher: Arc<EventDispatcher>,
 }
 impl RtmpServer {
     #[allow(clippy::too_many_arguments)]
@@ -49,6 +51,8 @@ impl RtmpServer {
         minio: Arc<dyn livestream_pipeline::sink::minio::ObjectUploader>,
         segment_cfg: livestream_codec::SegmentConfig,
         cancel_token: CancellationToken,
+        registry: Arc<SessionRegistry>,
+        dispatcher: Arc<EventDispatcher>,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
 
@@ -62,6 +66,8 @@ impl RtmpServer {
             minio,
             segment_cfg,
             cancel_token,
+            registry,
+            dispatcher,
         })
     }
 
@@ -123,7 +129,12 @@ impl RtmpServer {
 
                 let session_token = self.cancel_token.child_token();
 
-                let lifecycle = HandlerLifecycle::new(live_id.clone(), Protocol::Rtmp);
+                let lifecycle = HandlerLifecycle::new(
+                    live_id.clone(),
+                    Protocol::Rtmp,
+                    self.registry.clone(),
+                    self.dispatcher.clone(),
+                );
                 lifecycle
                     .pending(SessionEndpoint::default(), session_token.clone())
                     .await?;
@@ -133,7 +144,7 @@ impl RtmpServer {
                 Ok(())
             }
             ControlMessage::StopStream { live_id } => {
-                if let Some(token) = registry::INSTANCE.get_cancel_token(&live_id) {
+                if let Some(token) = self.registry.get_cancel_token(&live_id) {
                     token.cancel();
                 }
 
@@ -194,6 +205,7 @@ impl RtmpServer {
             self.flv_egress_hub.clone(),
             self.minio.clone(),
             self.segment_cfg.clone(),
+            self.registry.clone(),
         ));
     }
 }
@@ -205,6 +217,7 @@ async fn spawn_connection_handler(
     flv_egress_hub: Arc<FlvEgressHub>,
     minio: Arc<dyn ObjectUploader>,
     segment_cfg: SegmentConfig,
+    registry: Arc<SessionRegistry>,
 ) {
     let cancel_token = CancellationToken::new();
     let _cancel_guard = cancel_token.drop_guard_ref();
@@ -219,7 +232,9 @@ async fn spawn_connection_handler(
         }
     };
 
-    let builder = builder.with_appname(appname);
+    let builder = builder
+        .with_appname(appname)
+        .with_registry(registry.clone());
     let session = match builder.build() {
         Ok(session) => session,
         Err(e) => {
@@ -241,7 +256,7 @@ async fn spawn_connection_handler(
     let stream_key = builder.stream_key().to_string();
     let is_publish = matches!(&builder, HandlerBuilder::Publish { .. });
 
-    let Some(cancel_token) = registry::INSTANCE.get_cancel_token(&stream_key) else {
+    let Some(cancel_token) = registry.get_cancel_token(&stream_key) else {
         error!(stream_key = %stream_key, "No cancellation token found for stream key");
         return;
     };

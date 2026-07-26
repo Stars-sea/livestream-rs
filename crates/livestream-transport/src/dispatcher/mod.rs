@@ -1,14 +1,9 @@
 mod event;
 
+use dashmap::{DashMap, Entry};
 pub use event::{EndReason, SessionEvent};
 
-use std::sync::{Arc, LazyLock};
-
-use dashmap::{DashMap, Entry};
 use livestream_core::channel::{self, BroadcastRx, BroadcastTx};
-
-pub static INSTANCE: LazyLock<Arc<EventDispatcher>> =
-    LazyLock::new(|| Arc::new(EventDispatcher::new()));
 
 pub struct EventDispatcher {
     channel: BroadcastTx<SessionEvent>,
@@ -16,7 +11,7 @@ pub struct EventDispatcher {
 }
 
 impl EventDispatcher {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let (tx, _) = channel::broadcast("session_event", None, 16);
         Self {
             channel: tx,
@@ -49,5 +44,11 @@ impl EventDispatcher {
         }
 
         let _ = self.channel.send(event);
+    }
+}
+
+impl Default for EventDispatcher {
+    fn default() -> Self {
+        Self::new()
     }
 }

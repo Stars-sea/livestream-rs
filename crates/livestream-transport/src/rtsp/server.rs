@@ -15,9 +15,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::controller::ControlMessage;
 use crate::dispatcher::EndReason;
+use crate::dispatcher::EventDispatcher;
 use crate::flv::hub::FlvEgressHub;
 use crate::lifecycle::HandlerLifecycle;
-use crate::registry;
+use crate::registry::SessionRegistry;
 use crate::registry::state::SessionEndpoint;
 use crate::source::rtsp::{RawRtpFrame, RtspSource};
 use rtsp_types::Message;
@@ -34,6 +35,8 @@ use livestream_pipeline::factory;
 use livestream_pipeline::sink::minio::ObjectUploader;
 
 pub struct RtspServer {
+    registry: Arc<SessionRegistry>,
+    dispatcher: Arc<EventDispatcher>,
     listener: TcpListener,
     ctrl_channel: MpscRx<ControlMessage>,
     flv_egress_hub: Arc<FlvEgressHub>,
@@ -50,6 +53,8 @@ impl RtspServer {
         addr: SocketAddr,
         ctrl_channel: MpscRx<ControlMessage>,
         flv_egress_hub: Arc<FlvEgressHub>,
+        registry: Arc<SessionRegistry>,
+        dispatcher: Arc<EventDispatcher>,
         precreate_ttl: Duration,
         minio: Arc<dyn ObjectUploader>,
         segment_cfg: SegmentConfig,
@@ -59,6 +64,8 @@ impl RtspServer {
         Ok(Self {
             listener,
             ctrl_channel,
+            registry,
+            dispatcher,
             flv_egress_hub,
             pending_lifecycle: Arc::new(DashMap::new()),
             precreate_ttl,
@@ -136,7 +143,12 @@ impl RtspServer {
 
                 let session_token = self.cancel_token.child_token();
 
-                let lifecycle = HandlerLifecycle::new(live_id.clone(), Protocol::Rtsp);
+                let lifecycle = HandlerLifecycle::new(
+                    live_id.clone(),
+                    Protocol::Rtsp,
+                    self.registry.clone(),
+                    self.dispatcher.clone(),
+                );
                 lifecycle
                     .pending(SessionEndpoint::default(), session_token.clone())
                     .await?;
@@ -146,7 +158,7 @@ impl RtspServer {
                 Ok(())
             }
             ControlMessage::StopStream { live_id } => {
-                if let Some(token) = registry::INSTANCE.get_cancel_token(&live_id) {
+                if let Some(token) = self.registry.get_cancel_token(&live_id) {
                     token.cancel();
                 }
 

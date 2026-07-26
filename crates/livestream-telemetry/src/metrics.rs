@@ -98,7 +98,7 @@ mod imp {
     #[macro_export]
     macro_rules! metric_pipeline_packet {
         ($packet_kind:expr, $bytes:expr) => {{
-            let labels = [::opentelemetry::KeyValue::new("packet.kind", $packet_kind)];
+            let labels = [$crate::KeyValue::new("packet.kind", $packet_kind)];
             let metrics = $crate::metrics::get_metrics();
             metrics.pipeline_packets_total.add(1, &labels);
             metrics.pipeline_bytes_total.add(($bytes) as u64, &labels);
@@ -108,10 +108,9 @@ mod imp {
     #[macro_export]
     macro_rules! metric_pipeline_error {
         ($stage:expr) => {{
-            $crate::metrics::get_metrics().pipeline_errors_total.add(
-                1,
-                &[::opentelemetry::KeyValue::new("pipeline.stage", $stage)],
-            );
+            $crate::metrics::get_metrics()
+                .pipeline_errors_total
+                .add(1, &[$crate::KeyValue::new("pipeline.stage", $stage)]);
         }};
     }
 

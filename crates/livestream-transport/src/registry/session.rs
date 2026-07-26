@@ -1,8 +1,7 @@
-use std::sync::{Arc, LazyLock};
-
 use anyhow::Result;
 use dashmap::{DashMap, Entry};
 use livestream_core::traits::PipelineHandle;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
@@ -10,9 +9,6 @@ use tokio_util::sync::CancellationToken;
 use super::state::*;
 
 const SESSION_REMOVAL_GRACE_PERIOD: Duration = Duration::from_millis(200);
-
-pub static INSTANCE: LazyLock<Arc<SessionRegistry>> =
-    LazyLock::new(|| Arc::new(SessionRegistry::new()));
 
 #[derive(Clone)]
 struct SessionEntry {
@@ -24,8 +20,14 @@ struct SessionEntry {
 pub struct SessionRegistry {
     sessions: Arc<DashMap<String, SessionEntry>>,
 }
+
+impl Default for SessionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl SessionRegistry {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             sessions: Arc::new(DashMap::new()),
         }

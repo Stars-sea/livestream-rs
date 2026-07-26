@@ -8,22 +8,24 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
-use tokio_util::sync::CancellationToken;
-use tracing::info;
-
 use crate::controller::TransportController;
+use crate::dispatcher::EventDispatcher;
 use crate::flv::FlvEgressHub;
 use crate::http_flv::HttpFlvServer;
+use crate::registry::SessionRegistry;
 use crate::rtmp::RtmpServer;
 use crate::rtsp::server::RtspServer;
+use anyhow::Result;
 use livestream_core::channel;
 use livestream_pipeline::factory::PipelineFactory;
-
+use tokio_util::sync::CancellationToken;
+use tracing::info;
 pub struct TransportServer {
     rtmp: RtmpServer,
     rtsp: RtspServer,
     http_flv: Option<HttpFlvServer>,
+    registry: Arc<SessionRegistry>,
+    dispatcher: Arc<EventDispatcher>,
     controller: Arc<TransportController>,
     cancel: CancellationToken,
 }
@@ -42,11 +44,13 @@ impl TransportServer {
         cancel: CancellationToken,
     ) -> Result<Self> {
         let session_ttl = Duration::from_secs(session_ttl_secs);
+        let registry = Arc::new(SessionRegistry::new());
+        let dispatcher = Arc::new(EventDispatcher::new());
 
         let (rtmp_tx, rtmp_rx) = channel::mpsc("ctrl_rtmp", None, Default::default());
         let (rtsp_tx, rtsp_rx) = channel::mpsc("ctrl_rtsp", None, Default::default());
 
-        let controller = Arc::new(TransportController::new(rtmp_tx, rtsp_tx));
+        let controller = Arc::new(TransportController::new(registry.clone(), rtmp_tx, rtsp_tx));
 
         let rtmp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", rtmp_port))?;
         let rtmp_server = RtmpServer::create(
@@ -58,6 +62,8 @@ impl TransportServer {
             factory.minio().clone(),
             factory.segment_cfg().clone(),
             cancel.child_token(),
+            registry.clone(),
+            dispatcher.clone(),
         )
         .await?;
 
@@ -66,6 +72,8 @@ impl TransportServer {
             rtsp_addr,
             rtsp_rx,
             flv_egress_hub.clone(),
+            registry.clone(),
+            dispatcher.clone(),
             session_ttl,
             factory.minio().clone(),
             factory.segment_cfg().clone(),
@@ -74,7 +82,15 @@ impl TransportServer {
         .await?;
 
         let http_flv_server = if http_flv_enabled {
-            Some(HttpFlvServer::create(http_flv_port, flv_egress_hub, cancel.child_token()).await?)
+            Some(
+                HttpFlvServer::create(
+                    http_flv_port,
+                    flv_egress_hub,
+                    registry.clone(),
+                    cancel.child_token(),
+                )
+                .await?,
+            )
         } else {
             None
         };
@@ -83,6 +99,8 @@ impl TransportServer {
             rtmp: rtmp_server,
             rtsp: rtsp_server,
             http_flv: http_flv_server,
+            registry,
+            dispatcher,
             controller,
             cancel,
         })
@@ -90,6 +108,14 @@ impl TransportServer {
 
     pub fn controller(&self) -> Arc<TransportController> {
         self.controller.clone()
+    }
+
+    pub fn registry(&self) -> Arc<SessionRegistry> {
+        self.registry.clone()
+    }
+
+    pub fn dispatcher(&self) -> Arc<EventDispatcher> {
+        self.dispatcher.clone()
     }
 
     pub async fn serve(self) -> Result<()> {

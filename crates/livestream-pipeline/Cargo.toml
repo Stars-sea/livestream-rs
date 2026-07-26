@@ -8,7 +8,6 @@ livestream-core = { path = "../livestream-core" }
 livestream-codec = { path = "../livestream-codec" }
 livestream-media = { path = "../livestream-media" }
 livestream-telemetry = { path = "../livestream-telemetry" }
-opentelemetry = { version = "0.32" }
 tokio = { workspace = true, features = ["full"] }
 tokio-util.workspace = true
 tracing.workspace = true

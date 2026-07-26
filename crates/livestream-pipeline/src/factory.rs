@@ -1,21 +1,27 @@
 //! PipelineFactory — convenience wiring for standard pipeline construction.
 
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::broadcast::FlvBroadcast;
+use crate::processor::flv_mux::FlvMux;
+use crate::processor::hls_segment::HlsSegmenter;
+use crate::processor::otel::OTelProbe;
+use crate::processor::rtp_depack::RtpDemuxProcessor;
+use crate::processor::seq_cache::SeqCacheProbe;
+use crate::sink::flv::FlvSink;
+use crate::sink::minio::{MinIoSink, ObjectUploader};
 use anyhow::Result;
-use livestream_codec::{EncodedPacket, RtpPacket, SegmentConfig};
+use livestream_codec::{CodecParams, EncodedPacket, RtpPacket};
+use livestream_core::config::SegmentConfig;
 use livestream_core::pad::{DemandSignal, PadReceiver, PadSender};
 use livestream_core::traits::PipelineHandle;
-use livestream_core::types::CodecParams;
 use livestream_media::stream::StaticStreamCollection;
 use tokio_util::sync::CancellationToken;
 
-use crate::broadcast::FlvBroadcast;
 use crate::engine::PipelineImpl;
-use crate::processor::{FlvMux, HlsSegmenter, OTelProbe, RtpDemuxProcessor, SeqCacheProbe};
-use crate::sink::minio::ObjectUploader;
-use crate::sink::{FlvSink, MinIoSink};
 use crate::task::{run_processor, run_sink};
 
 // ── NullUploader (dev/test fallback) ──
@@ -26,8 +32,9 @@ struct NullUploader;
 
 #[async_trait::async_trait]
 impl ObjectUploader for NullUploader {
-    async fn upload_file(&self, _key: &str, _path: &Path) -> Result<()> {
-        tracing::warn!("HLS upload skipped: no MinIO configured");
+    async fn upload_file(&self, key: &str, path: &Path) -> Result<()> {
+        tracing::warn!(key=%key, path=%path.display(), "NullUploader: dropping segment");
+        let _ = std::fs::remove_file(path);
         Ok(())
     }
 }
@@ -37,7 +44,6 @@ pub fn null_uploader() -> Arc<dyn ObjectUploader> {
     Arc::new(NullUploader)
 }
 
-// ── Public API ──
 // ── PipelineFactory ──
 
 /// Holds shared dependencies for constructing pipeline instances.
@@ -45,10 +51,10 @@ pub fn null_uploader() -> Arc<dyn ObjectUploader> {
 /// Created once at startup and passed to protocol servers (RTMP, RTSP).
 /// Each `build_*` call produces an independent `PipelineImpl`.
 pub struct PipelineFactory {
-    segment_cfg: SegmentConfig,
-    minio: Arc<dyn ObjectUploader>,
     #[allow(dead_code)]
     flv_broadcast: Arc<dyn FlvBroadcast>,
+    segment_cfg: SegmentConfig,
+    minio: Arc<dyn ObjectUploader>,
 }
 
 impl PipelineFactory {
@@ -75,7 +81,7 @@ impl PipelineFactory {
     }
 }
 
-// ── Retained free-function API (backward compat for callers in transition) ──
+// ── Public free-function API ──
 
 /// Build a standard pipeline for an EncodedPacket source (RTMP path).
 ///
@@ -90,7 +96,7 @@ pub fn build_pipeline(
     segment_cfg: &SegmentConfig,
     cancel: CancellationToken,
 ) -> Result<PipelineImpl> {
-    let (handle, tasks) = build_encoded_chain(
+    let (handle, futures) = build_encoded_chain(
         live_id,
         src_rx,
         codec_params,
@@ -99,6 +105,7 @@ pub fn build_pipeline(
         segment_cfg,
         cancel,
     )?;
+    let tasks: Vec<_> = futures.into_iter().map(|f| tokio::spawn(f)).collect();
     Ok(PipelineImpl::new(handle, tasks))
 }
 
@@ -124,8 +131,11 @@ pub fn build_rtsp_pipeline(
         rtp_rx,
         vec![enc_tx],
     )?);
-    let mut rtp_tasks = vec![tokio::spawn(run_processor(depack, cancel.child_token()))];
-    let (handle, encoded_tasks) = build_encoded_chain(
+
+    let rtp_future: Pin<Box<dyn Future<Output = ()> + Send>> =
+        Box::pin(run_processor(depack, cancel.child_token()));
+
+    let (handle, encoded_futures) = build_encoded_chain(
         live_id,
         enc_rx,
         codec_params,
@@ -134,10 +144,16 @@ pub fn build_rtsp_pipeline(
         segment_cfg,
         cancel,
     )?;
-    rtp_tasks.extend(encoded_tasks);
-    Ok(PipelineImpl::new(handle, rtp_tasks))
+
+    let mut all_futures = vec![rtp_future];
+    all_futures.extend(encoded_futures);
+    let tasks: Vec<_> = all_futures.into_iter().map(|f| tokio::spawn(f)).collect();
+    Ok(PipelineImpl::new(handle, tasks))
 }
+
 // ── Private helpers ──
+
+type BoxedFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 /// Build the standard EncodedPacket processing chain.
 ///
@@ -152,7 +168,7 @@ fn build_encoded_chain(
     minio: Arc<dyn ObjectUploader>,
     segment_cfg: &SegmentConfig,
     cancel: CancellationToken,
-) -> Result<(PipelineHandle, Vec<tokio::task::JoinHandle<()>>)> {
+) -> Result<(PipelineHandle, Vec<BoxedFuture>)> {
     let has_codec_params = !codec_params.is_empty();
 
     // Phase 1: OTelProbe
@@ -175,12 +191,11 @@ fn build_encoded_chain(
     let flv_mux = Arc::new(FlvMux::new(live_id, seq_flv_rx, vec![flv_tx]));
     let flv_sink = Arc::new(FlvSink::new(live_id, flv_broadcast, flv_rx, flv_demand));
 
-    // Spawn FLV tasks
-    let mut tasks: Vec<tokio::task::JoinHandle<()>> = vec![
-        tokio::spawn(run_processor(otel, cancel.child_token())),
-        tokio::spawn(run_processor(seq_cache, cancel.child_token())),
-        tokio::spawn(run_processor(flv_mux, cancel.child_token())),
-        tokio::spawn(run_sink(flv_sink, cancel.child_token())),
+    let mut futures: Vec<BoxedFuture> = vec![
+        Box::pin(run_processor(otel, cancel.child_token())),
+        Box::pin(run_processor(seq_cache, cancel.child_token())),
+        Box::pin(run_processor(flv_mux, cancel.child_token())),
+        Box::pin(run_sink(flv_sink, cancel.child_token())),
     ];
 
     // Phase 4: HLS path (only when codec params available)
@@ -193,7 +208,7 @@ fn build_encoded_chain(
             seq_hls_rx,
             &cancel,
         ) {
-            Ok(hls_tasks) => tasks.extend(hls_tasks),
+            Ok(hls_futures) => futures.extend(hls_futures),
             Err(e) => {
                 tracing::warn!(
                     live_id = %live_id,
@@ -210,11 +225,11 @@ fn build_encoded_chain(
     }
 
     let handle = PipelineHandle::new(cancel);
-    Ok((handle, tasks))
+    Ok((handle, futures))
 }
 
 /// Attempt to build the HLS branch (HlsSegmenter → MinIoSink).
-/// Returns task handles on success, or an error if construction fails.
+/// Returns boxed futures on success, or an error if construction fails.
 fn try_build_hls(
     live_id: &str,
     codec_params: &[CodecParams],
@@ -222,7 +237,7 @@ fn try_build_hls(
     segment_cfg: &SegmentConfig,
     hls_input: PadReceiver<EncodedPacket>,
     cancel: &CancellationToken,
-) -> Result<Vec<tokio::task::JoinHandle<()>>> {
+) -> Result<Vec<BoxedFuture>> {
     let streams = StaticStreamCollection::from_codec_params(codec_params)?;
     let (hls_tx, hls_rx) = PadSender::<livestream_codec::TsSegment>::new_channel(256);
     let hls_demand = DemandSignal::new_always_wanted().new_handle();
@@ -244,7 +259,7 @@ fn try_build_hls(
     ));
 
     Ok(vec![
-        tokio::spawn(run_processor(hls_segmenter, cancel.child_token())),
-        tokio::spawn(run_sink(minio_sink, cancel.child_token())),
+        Box::pin(run_processor(hls_segmenter, cancel.child_token())),
+        Box::pin(run_sink(minio_sink, cancel.child_token())),
     ])
 }

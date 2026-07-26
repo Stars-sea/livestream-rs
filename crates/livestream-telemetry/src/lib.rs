@@ -1,6 +1,7 @@
 #[cfg(feature = "opentelemetry")]
+pub use opentelemetry::KeyValue;
+#[cfg(feature = "opentelemetry")]
 mod init;
-
 pub mod metrics;
 
 #[cfg(feature = "opentelemetry")]
