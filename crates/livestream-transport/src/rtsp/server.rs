@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::controller::ControlMessage;
+use crate::dispatcher::EndReason;
 use crate::flv::hub::FlvEgressHub;
 use crate::lifecycle::HandlerLifecycle;
 use crate::registry;
@@ -192,7 +193,7 @@ impl RtspServer {
                 debug!(live_id = %live_id, "Pending lifecycle already removed for live_id, skipping TTL expiration");
                 return;
             };
-            lifecycle.disconnect();
+            lifecycle.disconnect_with_reason(EndReason::Timeout);
         });
     }
 }

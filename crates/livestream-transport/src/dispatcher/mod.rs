@@ -1,6 +1,6 @@
 mod event;
 
-pub use event::SessionEvent;
+pub use event::{EndReason, SessionEvent};
 
 use std::sync::{Arc, LazyLock};
 

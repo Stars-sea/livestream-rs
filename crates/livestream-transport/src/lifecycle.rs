@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::dispatcher::{self, SessionEvent};
+use crate::dispatcher::{self, EndReason, SessionEvent};
 use crate::registry;
 use crate::registry::state::{SessionDescriptor, SessionEndpoint, SessionState};
 use livestream_core::types::Protocol;
@@ -106,6 +106,10 @@ impl HandlerLifecycle {
     }
 
     pub fn disconnect(&self) {
+        self.disconnect_with_reason(EndReason::ClientDisconnect);
+    }
+
+    pub fn disconnect_with_reason(&self, reason: EndReason) {
         if !self.try_mark_disconnected() {
             return;
         }
@@ -119,6 +123,7 @@ impl HandlerLifecycle {
         dispatcher::INSTANCE.send(SessionEvent::SessionEnded {
             live_id: self.live_id.clone(),
             protocol: self.protocol,
+            reason,
         });
     }
 

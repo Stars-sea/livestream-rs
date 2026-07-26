@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use dashmap::DashMap;
+use livestream_core::pad::DemandSignal;
 use livestream_media::flv::FlvTag;
 use livestream_pipeline::broadcast::FlvBroadcast;
 use tokio::sync::broadcast;
@@ -16,6 +17,7 @@ use super::channel::FlvLiveChannel;
 /// Central hub for FLV tag distribution.  Maps stream IDs to channels.
 pub struct FlvEgressHub {
     channels: DashMap<String, Arc<FlvLiveChannel>>,
+    demand_signals: DashMap<String, DemandSignal>,
 }
 
 impl Default for FlvEgressHub {
@@ -28,11 +30,14 @@ impl FlvEgressHub {
     pub fn new() -> Self {
         Self {
             channels: DashMap::new(),
+            demand_signals: DashMap::new(),
         }
     }
 
     /// Get or create a channel for the given stream.
+    /// Also ensures a demand signal entry exists for the stream.
     pub fn create_channel(&self, live_id: &str) -> Arc<FlvLiveChannel> {
+        self.demand_signals.entry(live_id.to_string()).or_default();
         self.channels
             .entry(live_id.to_string())
             .or_insert_with(|| Arc::new(FlvLiveChannel::new()))
@@ -64,5 +69,12 @@ impl FlvBroadcast for FlvEgressHub {
             let _ = ch.broadcast(&tag);
         }
         Ok(())
+    }
+
+    fn subscribe(&self, live_id: &str) -> livestream_core::pad::DemandHandle {
+        self.demand_signals
+            .entry(live_id.to_string())
+            .or_default()
+            .new_handle()
     }
 }

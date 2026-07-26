@@ -4,6 +4,18 @@ use std::sync::Arc;
 use livestream_core::types::Protocol;
 use livestream_media::stream::StreamCollection;
 
+#[derive(Clone, Debug)]
+pub enum EndReason {
+    /// Client disconnected normally (TCP close, RTSP TEARDOWN).
+    ClientDisconnect,
+    /// Stream ended due to an error.
+    Error(String),
+    /// Stream stopped by admin (gRPC StopLivestream).
+    AdminStop,
+    /// Precreate session expired by TTL.
+    Timeout,
+}
+
 #[derive(Clone)]
 pub enum SessionEvent {
     SessionStarted {
@@ -19,6 +31,7 @@ pub enum SessionEvent {
     SessionEnded {
         live_id: String,
         protocol: Protocol,
+        reason: EndReason,
     },
 }
 
@@ -45,10 +58,15 @@ impl Debug for SessionEvent {
                 .field("live_id", live_id)
                 .field("streams", &"<stream collection>")
                 .finish(),
-            SessionEvent::SessionEnded { live_id, protocol } => f
+            SessionEvent::SessionEnded {
+                live_id,
+                protocol,
+                reason,
+            } => f
                 .debug_struct("SessionEnded")
                 .field("live_id", live_id)
                 .field("protocol", protocol)
+                .field("reason", reason)
                 .finish(),
         }
     }

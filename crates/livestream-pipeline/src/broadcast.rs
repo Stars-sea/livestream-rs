@@ -4,6 +4,7 @@
 //! by `FlvEgressHub` (Phase 5).
 
 use anyhow::Result;
+use livestream_core::pad::DemandHandle;
 use livestream_media::flv::FlvTag;
 
 /// Broadcast an FLV tag to all subscribers of a live stream.
@@ -15,4 +16,8 @@ use livestream_media::flv::FlvTag;
 pub trait FlvBroadcast: Send + Sync {
     /// Send an FLV tag to all RTMP/HTTP-FLV subscribers for the given stream.
     async fn broadcast(&self, live_id: &str, tag: FlvTag) -> Result<()>;
+
+    /// Register a subscriber demand handle.
+    /// Dropping the handle signals that this subscriber is gone.
+    fn subscribe(&self, live_id: &str) -> DemandHandle;
 }
