@@ -155,13 +155,27 @@ fn convert_frame(frame: RtmpRawFrame) -> Option<EncodedPacket> {
         let is_keyframe = frame_type == 1;
         let is_seq_header = avc_packet_type == 0;
 
-        // Parse Composition Time offset for non-keyframe H.264/H.265.
-        // FLV tag body bytes 2-4 = 24-bit signed big-endian CTS in milliseconds.
+        // rml_rtmp gives us the full FLV tag body (5-byte header + codec data).
+        // Strip the header: FlvMux will re-add it.
+        let codec_data = if frame.data.len() > 5 {
+            frame.data.slice(5..)
+        } else {
+            Bytes::new()
+        };
+
+        // For sequence headers, populate extradata with AVCDecoderConfigurationRecord
+        // so build_avc_sequence_header can use it.
+        let extradata = if is_seq_header && !codec_data.is_empty() {
+            Some(codec_data.clone())
+        } else {
+            None
+        };
+
+        // CTS = Composition Time offset (PTS - DTS). FLV tag body bytes 2-4.
         let cts_ms = if frame.data.len() >= 5 {
             let cts_raw = ((frame.data[2] as i32) << 16)
                 | ((frame.data[3] as i32) << 8)
                 | (frame.data[4] as i32);
-            // Sign-extend 24-bit to 32-bit
             if cts_raw & 0x800000 != 0 {
                 cts_raw | !0xFFFFFF
             } else {
@@ -170,22 +184,41 @@ fn convert_frame(frame: RtmpRawFrame) -> Option<EncodedPacket> {
         } else {
             0
         };
-
         let dts_ms = pts_ms - cts_ms as i64;
 
         Some(EncodedPacket {
             codec,
             stream_index: 0,
-            data: frame.data,
+            data: codec_data,
             pts_ms: Some(pts_ms),
             dts_ms: Some(dts_ms),
             is_keyframe,
             is_sequence_header: is_seq_header,
             is_script_data: false,
-            extradata: None,
+            extradata,
         })
     } else if frame.is_audio {
-        Some(EncodedPacket::new_audio(frame.data, pts_ms, 0))
+        let is_aac_seq = frame.data.len() >= 2
+            && (frame.data[0] >> 4) == 10 // SoundFormat = AAC
+            && frame.data[1] == 0; // AACPacketType = sequence header
+        // Strip 2-byte FLV audio tag header (SoundFormat + AACPacketType).
+        // FlvMux will re-add it.
+        let codec_data = if frame.data.len() > 2 {
+            frame.data.slice(2..)
+        } else {
+            Bytes::new()
+        };
+        Some(EncodedPacket {
+            codec: livestream_codec::Codec::Aac,
+            stream_index: 0,
+            data: codec_data,
+            pts_ms: Some(pts_ms),
+            dts_ms: None,
+            is_keyframe: false,
+            is_sequence_header: is_aac_seq,
+            is_script_data: false,
+            extradata: None,
+        })
     } else {
         None
     }

@@ -76,7 +76,8 @@ impl FlvMux {
         }
         tag_payload.extend_from_slice(&payload);
 
-        let tag = FlvTag::video(timestamp, tag_payload.freeze());
+        let tag_bytes = tag_payload.freeze();
+        let tag = FlvTag::video(timestamp, tag_bytes);
         Ok(vec![tag])
     }
 

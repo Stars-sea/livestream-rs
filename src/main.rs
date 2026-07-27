@@ -36,12 +36,13 @@ async fn main() -> Result<()> {
 
     // 3. Create MinIO persistence client (or null uploader for dev/test)
     let minio: Arc<dyn ObjectUploader> = match &config.storage.minio {
-        Some(minio_cfg) => {
-            let client = PersistenceClient::create(minio_cfg.clone())
-                .await
-                .expect("Failed to create MinIO persistence client");
-            Arc::new(client) as Arc<dyn ObjectUploader>
-        }
+        Some(minio_cfg) => match PersistenceClient::create(minio_cfg.clone()).await {
+            Ok(client) => Arc::new(client) as Arc<dyn ObjectUploader>,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to create MinIO client, HLS upload disabled");
+                factory::null_uploader()
+            }
+        },
         None => factory::null_uploader(),
     };
     let segment_cfg = config.storage.segment.clone();
@@ -56,7 +57,7 @@ async fn main() -> Result<()> {
     let (rtmp_tx, rtmp_rx) = channel::mpsc("ctrl_rtmp", None, config.queue.control);
     let rtmp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", config.transport.rtmp.port))?;
     let session_ttl = Duration::from_secs(config.transport.rtmp.session_ttl_secs);
-    let rtmp_server = RtmpServer::create(
+    let rtmp_server = match RtmpServer::create(
         rtmp_addr,
         config.transport.rtmp.app_name.clone(),
         session_ttl,
@@ -68,14 +69,21 @@ async fn main() -> Result<()> {
         registry.clone(),
         dispatcher.clone(),
     )
-    .await?;
+    .await
+    {
+        Ok(server) => Some(server),
+        Err(e) => {
+            tracing::warn!(error = %e, "RTMP server failed to start, RTMP ingest disabled");
+            None
+        }
+    };
 
     // 6. Create RTSP control channel and server
     let (rtsp_tx, rtsp_rx) = channel::mpsc("ctrl_rtsp", None, config.queue.control);
     let rtsp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", config.transport.rtsp.port))?;
     let rtsp_ttl = Duration::from_secs(config.transport.rtsp.session_ttl_secs);
 
-    let rtsp_server = RtspServer::create(
+    let rtsp_server = match RtspServer::create(
         rtsp_addr,
         rtsp_rx,
         flv_egress_hub.clone(),
@@ -86,7 +94,14 @@ async fn main() -> Result<()> {
         segment_cfg.clone(),
         cancel.child_token(),
     )
-    .await?;
+    .await
+    {
+        Ok(server) => Some(server),
+        Err(e) => {
+            tracing::warn!(error = %e, "RTSP server failed to start, RTSP ingest disabled");
+            None
+        }
+    };
 
     let controller = Arc::new(TransportController::new(registry.clone(), rtmp_tx, rtsp_tx));
 
@@ -128,7 +143,7 @@ async fn main() -> Result<()> {
     // 11. Run all servers concurrently.
     let (error_tx, mut error_rx) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
-    let rtmp_handle = spawn_server(error_tx.clone(), rtmp_server.run());
+    let rtmp_handle = rtmp_server.map(|server| spawn_server(error_tx.clone(), server.run()));
     let grpc_handle = {
         let grpc_cancel = cancel.clone();
         spawn_server(
@@ -138,7 +153,7 @@ async fn main() -> Result<()> {
     };
     let http_flv_handle =
         http_flv_server.map(|server| spawn_server(error_tx.clone(), server.run()));
-    let rtsp_handle = spawn_server(error_tx.clone(), rtsp_server.run());
+    let rtsp_handle = rtsp_server.map(|server| spawn_server(error_tx.clone(), server.run()));
 
     info!("All servers started (RTMP, RTSP, gRPC, HTTP-FLV)");
 
@@ -162,7 +177,9 @@ async fn main() -> Result<()> {
     let _ = tokio::time::timeout(drain_timeout, async {
         let _ = tokio::join!(
             async {
-                let _ = rtmp_handle.await;
+                if let Some(h) = rtmp_handle {
+                    let _ = h.await;
+                }
             },
             async {
                 let _ = grpc_handle.await;
@@ -173,7 +190,9 @@ async fn main() -> Result<()> {
                 }
             },
             async {
-                let _ = rtsp_handle.await;
+                if let Some(h) = rtsp_handle {
+                    let _ = h.await;
+                }
             },
         );
     })

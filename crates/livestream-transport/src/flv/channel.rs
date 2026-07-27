@@ -50,9 +50,6 @@ impl FlvLiveChannel {
         };
         *slot.lock().unwrap() = Some(tag.clone());
     }
-
-    /// Subscribe to this channel. Returns the receiver and any cached
-    /// initialization tags (video seq, audio seq, metadata).
     pub fn subscribe(&self) -> (broadcast::Receiver<FlvTag>, Vec<FlvTag>) {
         let rx = self.sender.subscribe();
         let mut cached = Vec::new();

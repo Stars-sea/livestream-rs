@@ -250,10 +250,8 @@ impl StorageConfig {
         if cache_dir == "." || cache_dir == ".." {
             bail!("segment.cache_dir cannot be '.' or '..'");
         }
-        if !cfg!(test) && self.minio.is_none() {
-            bail!(
-                "MinIO configuration is missing: please set minio.uri, minio.access_key, minio.secret_key, and minio.bucket"
-            );
+        if self.minio.is_none() {
+            tracing::warn!("MinIO configuration is missing — HLS segment upload disabled");
         }
         Ok(())
     }

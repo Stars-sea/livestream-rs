@@ -2586,6 +2586,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "prost",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
