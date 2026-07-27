@@ -11,11 +11,10 @@ use livestream_codec::{EncodedPacket, RtpPacket};
 use livestream_core::{
     pad::{PadReceiver, PadSender},
     traits::{Node, Processor},
-    types::CodecParams,
+    types::{Codec, CodecParams, MediaType},
 };
 use livestream_media::convert::FromAvPacket;
 use livestream_media::rtp::RtpDemuxContext;
-
 pub struct RtpDemuxProcessor {
     demuxer: Mutex<RtpDemuxContext>,
     input: PadReceiver<RtpPacket>,
@@ -23,6 +22,8 @@ pub struct RtpDemuxProcessor {
     /// Tracks whether codec sequence headers (SPS+PPS / ASC) have been sent.
     /// Set to true after the first process() call emits them.
     sent_seq_header: AtomicBool,
+    /// Codec parameters extracted from the demuxer at construction time.
+    codec_params: Vec<CodecParams>,
 }
 
 impl RtpDemuxProcessor {
@@ -34,12 +35,36 @@ impl RtpDemuxProcessor {
         outputs: Vec<PadSender<EncodedPacket>>,
     ) -> Result<Self> {
         let demuxer = RtpDemuxContext::new(sdp)?;
+        let codec_params = Self::extract_codec_params(&demuxer);
         Ok(Self {
             demuxer: Mutex::new(demuxer),
             input,
             outputs,
             sent_seq_header: AtomicBool::new(false),
+            codec_params,
         })
+    }
+
+    fn extract_codec_params(demuxer: &RtpDemuxContext) -> Vec<CodecParams> {
+        let mut params = Vec::new();
+        for si in 0..demuxer.stream_count() {
+            if let (Some(codec), Some(tb)) = (
+                demuxer.codec_for_stream(si),
+                demuxer.time_base_for_stream(si),
+            ) {
+                let media_type = match codec {
+                    Codec::H264 | Codec::H265 | Codec::Av1 => MediaType::Video,
+                    Codec::Aac | Codec::Mp3 | Codec::Opus => MediaType::Audio,
+                };
+                params.push(CodecParams {
+                    codec,
+                    media_type,
+                    clock_rate: tb.den as u32,
+                    extradata: demuxer.extradata(si),
+                });
+            }
+        }
+        params
     }
 }
 
@@ -59,7 +84,7 @@ impl Processor for RtpDemuxProcessor {
     }
 
     fn output_codec(&self) -> &[CodecParams] {
-        &[]
+        &self.codec_params
     }
 
     fn input(&self) -> &PadReceiver<Self::Input> {

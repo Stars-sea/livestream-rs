@@ -174,15 +174,16 @@ impl PlaylistState {
 
 struct HlsMuxerState {
     hls_ctx: Option<HlsOutputContext>,
-    ts_buffer: Vec<u8>,
+    // Box is REQUIRED: parking_lot::Mutex stores T inline. Without Box,
+    // Vec<u8> moves when the outer HlsSegmenter is moved (Ok(this) →
+    // Arc::new), invalidating the AVIO opaque pointer.
+    #[allow(clippy::box_collection)]
+    ts_buffer: Box<Vec<u8>>,
     next_sequence: u64,
     /// Last written DTS value (in 90kHz ticks). Used to enforce
     /// monotonicity across muxer context resets.
     last_dts: i64,
 }
-
-// ── SegmentState ──
-
 struct SegmentState {
     first_pts: Option<i64>,
     last_pts: Option<i64>,
@@ -229,22 +230,28 @@ impl HlsSegmenter {
         let workspace = SegmentWorkspace::new(stream_id, cfg)?;
         let playlist = PlaylistState::new(cfg);
 
-        // ts_buffer must be heap-allocated (Box) so its address is stable
-        // across moves. The raw opaque pointer passed to FFmpeg's AVIO
-        // must not be invalidated when HlsMuxerState is moved into the Mutex.
-        // Construct the struct first so the muxer state is at its final
-        // heap address (inside the Mutex). We then take the opaque pointer
-        // from within the lock — no Box needed.
-        let this = Self {
+        // Box<Vec<u8>> ensures the Vec is at a stable heap address even
+        // when the outer HlsSegmenter struct is moved (parking_lot::Mutex
+        // stores data inline). The opaque pointer is taken BEFORE Ok(this)
+        // moves the struct into Arc::new.
+        let mut ts_buffer = Box::new(Vec::new());
+        let opaque = &mut *ts_buffer as *mut Vec<u8> as *mut std::ffi::c_void;
+
+        let mut muxer_state = HlsMuxerState {
+            hls_ctx: None,
+            ts_buffer,
+            next_sequence: 0,
+            last_dts: 0,
+        };
+        let mut hls_ctx = unsafe { HlsOutputContext::create(&streams, opaque) }?;
+        hls_ctx.write_header()?;
+        muxer_state.hls_ctx = Some(hls_ctx);
+
+        Ok(Self {
             stream_id: stream_id.into(),
             segment_duration: Duration::from_secs(cfg.duration_secs),
             streams,
-            muxer: Mutex::new(HlsMuxerState {
-                hls_ctx: None,
-                ts_buffer: Vec::new(),
-                next_sequence: 0,
-                last_dts: 0,
-            }),
+            muxer: Mutex::new(muxer_state),
             segmenter: Mutex::new(SegmentState {
                 first_pts: None,
                 last_pts: None,
@@ -253,18 +260,7 @@ impl HlsSegmenter {
             workspace,
             input,
             outputs,
-        };
-
-        // NOW the muxer state is at a stable heap address — take the opaque.
-        {
-            let mut muxer = this.muxer.lock();
-            let opaque = &mut muxer.ts_buffer as *mut Vec<u8> as *mut std::ffi::c_void;
-            let mut hls_ctx = unsafe { HlsOutputContext::create(&this.streams, opaque) }?;
-            hls_ctx.write_header()?;
-            muxer.hls_ctx = Some(hls_ctx);
-        }
-
-        Ok(this)
+        })
     }
 
     fn write_packet(&self, pkt: &EncodedPacket) -> Result<()> {
@@ -319,7 +315,7 @@ impl HlsSegmenter {
             }
 
             // Re-create TS muxer for the next segment (opaque pointer from Box).
-            let new_opaque = &mut muxer.ts_buffer as *mut Vec<u8> as *mut std::ffi::c_void;
+            let new_opaque = &mut *muxer.ts_buffer as *mut Vec<u8> as *mut std::ffi::c_void;
             let mut new_ctx = unsafe { HlsOutputContext::create(&self.streams, new_opaque) }?;
             new_ctx.write_header()?;
             muxer.hls_ctx = Some(new_ctx);
@@ -375,6 +371,11 @@ impl Processor for HlsSegmenter {
     }
 
     async fn process(&self, pkt: Self::Input) -> Result<Vec<Self::Output>> {
+        // Sequence headers are synthetic (extradata only, no frame data).
+        // Writing them to the TS muxer triggers "h264 bitstream malformed".
+        if pkt.is_sequence_header {
+            return Ok(vec![]);
+        }
         {
             let mut state = self.segmenter.lock();
             if state.first_pts.is_none() {
@@ -401,7 +402,7 @@ impl Processor for HlsSegmenter {
                 muxer.hls_ctx = None;
                 muxer.ts_buffer.clear();
                 muxer.last_dts = 0;
-                let new_opaque = &mut muxer.ts_buffer as *mut Vec<u8> as *mut std::ffi::c_void;
+                let new_opaque = &mut *muxer.ts_buffer as *mut Vec<u8> as *mut std::ffi::c_void;
                 match unsafe { HlsOutputContext::create(&self.streams, new_opaque) } {
                     Ok(mut new_ctx) => {
                         if let Err(e) = new_ctx.write_header() {

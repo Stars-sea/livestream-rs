@@ -9,6 +9,7 @@ use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use bytes::Bytes;
 use ffmpeg_sys_next::*;
 use tracing::warn;
 
@@ -19,9 +20,9 @@ use std::collections::VecDeque;
 
 struct RtpBuf {
     /// Queue of complete RTP packets, each with its framing preserved.
-    packets: VecDeque<Vec<u8>>,
+    packets: VecDeque<Bytes>,
     /// Currently-being-read packet + offset for partial AVIO reads.
-    current: Option<(Vec<u8>, usize)>,
+    current: Option<(Bytes, usize)>,
     /// Upper bound on total bytes across all queued packets.
     max_bytes: usize,
     /// Whether we've already handled RTP sequence probation.
@@ -229,7 +230,7 @@ impl RtpDemuxContext {
                 break;
             }
         }
-        inner.packets.push_back(data.to_vec());
+        inner.packets.push_back(Bytes::copy_from_slice(data));
         Ok(())
     }
 
@@ -311,6 +312,19 @@ impl RtpDemuxContext {
     }
     pub fn stream_count(&self) -> usize {
         unsafe { (*self.fmt_ctx).nb_streams as usize }
+    }
+
+    /// Returns the time_base for a given stream index.
+    pub fn time_base_for_stream(&self, stream_index: usize) -> Option<AVRational> {
+        unsafe {
+            let nb = (*self.fmt_ctx).nb_streams as usize;
+            if stream_index >= nb {
+                return None;
+            }
+            let sp = *(*self.fmt_ctx).streams.add(stream_index);
+            let st = &*sp;
+            Some(st.time_base)
+        }
     }
 }
 
