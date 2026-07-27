@@ -25,10 +25,15 @@ pub trait IntoAvPacket {
     fn to_av_packet(&self) -> Result<Packet>;
 }
 
-/// Convert from an `AVPacket`. Timestamps are assumed to be in the given
-/// `time_base` and are converted to milliseconds.
+/// Convert from an `AVPacket`. Timestamps are rescaled from the given
+/// `time_base` to milliseconds via `av_packet_rescale_ts`.
+/// The packet is mutated in place (timestamps are rescaled).
 pub trait FromAvPacket {
-    fn from_av_packet(pkt: &Packet, time_base: AVRational, codec: Codec) -> Result<EncodedPacket>;
+    fn from_av_packet(
+        pkt: &mut Packet,
+        time_base: AVRational,
+        codec: Codec,
+    ) -> Result<EncodedPacket>;
 }
 
 impl IntoAvPacket for EncodedPacket {
@@ -57,29 +62,34 @@ impl IntoAvPacket for EncodedPacket {
 }
 
 impl FromAvPacket for EncodedPacket {
-    fn from_av_packet(pkt: &Packet, time_base: AVRational, codec: Codec) -> Result<EncodedPacket> {
-        let ptr = pkt.as_ptr();
+    fn from_av_packet(
+        pkt: &mut Packet,
+        time_base: AVRational,
+        codec: Codec,
+    ) -> Result<EncodedPacket> {
+        // Rescale timestamps from the original timebase to milliseconds.
+        // av_packet_rescale_ts handles AV_NOPTS_VALUE correctly (leaves it).
+        pkt.rescale_ts(time_base, AVRational { num: 1, den: 1000 });
+
+        let pts_ms = pkt.pts();
+        // Fallback: when DTS is missing, use PTS. When both are missing, use 0.
+        // This prevents `AV_NOPTS_VALUE` reaching the TS muxer. Consecutive
+        // zeros are non-monotonic on their own, but the HLS path has a separate
+        // `last_dts` enforcement in `write_packet()`; the FLV path only uses PTS.
+        let dts_ms = pkt.dts().or(pts_ms).or(Some(0));
+
         Ok(EncodedPacket {
             codec,
-            stream_index: unsafe { (*ptr).stream_index as usize },
+            stream_index: pkt.stream_idx(),
             data: bytes::Bytes::copy_from_slice(pkt.data()),
-            pts_ms: pts_to_ms(unsafe { (*ptr).pts }, time_base),
-            dts_ms: pts_to_ms(unsafe { (*ptr).dts }, time_base),
+            pts_ms,
+            dts_ms,
             is_keyframe: pkt.is_key_frame(),
             is_sequence_header: false,
             is_script_data: false,
             extradata: None,
         })
     }
-}
-
-/// Convert FFmpeg timestamp (in the given timebase) to milliseconds.
-fn pts_to_ms(pts: i64, time_base: AVRational) -> Option<i64> {
-    if pts == AV_NOPTS_VALUE || time_base.num <= 0 || time_base.den <= 0 {
-        return None;
-    }
-    // pts * time_base.num / time_base.den * 1000
-    Some((pts as i128 * time_base.num as i128 * 1000 / time_base.den as i128) as i64)
 }
 
 // ── Tests ──
@@ -93,14 +103,17 @@ mod tests {
         let data: &[u8] = &[0x00, 0x00, 0x01, 0x67, 0x42];
         let pkt = EncodedPacket::new_video_keyframe(data, 1000, 900, 0);
 
-        let av_pkt = pkt.to_av_packet().unwrap();
+        let mut av_pkt = pkt.to_av_packet().unwrap();
         assert_eq!(av_pkt.pts(), Some(1000));
         assert_eq!(av_pkt.dts(), Some(900));
         assert!(av_pkt.is_key_frame());
 
-        let roundtripped =
-            EncodedPacket::from_av_packet(&av_pkt, AVRational { num: 1, den: 1000 }, Codec::H264)
-                .unwrap();
+        let roundtripped = EncodedPacket::from_av_packet(
+            &mut av_pkt,
+            AVRational { num: 1, den: 1000 },
+            Codec::H264,
+        )
+        .unwrap();
         assert_eq!(roundtripped.pts_ms, Some(1000));
         assert_eq!(roundtripped.dts_ms, Some(900));
         assert!(roundtripped.is_keyframe);
@@ -112,10 +125,13 @@ mod tests {
         let data: &[u8] = &[0xff, 0xf1, 0x50, 0x80];
         let pkt = EncodedPacket::new_audio(data, 500, 1);
 
-        let av_pkt = pkt.to_av_packet().unwrap();
-        let roundtripped =
-            EncodedPacket::from_av_packet(&av_pkt, AVRational { num: 1, den: 1000 }, Codec::Aac)
-                .unwrap();
+        let mut av_pkt = pkt.to_av_packet().unwrap();
+        let roundtripped = EncodedPacket::from_av_packet(
+            &mut av_pkt,
+            AVRational { num: 1, den: 1000 },
+            Codec::Aac,
+        )
+        .unwrap();
 
         assert_eq!(roundtripped.codec, Codec::Aac);
         assert_eq!(roundtripped.pts_ms, Some(500));
@@ -129,40 +145,17 @@ mod tests {
         pkt.pts_ms = None;
         pkt.dts_ms = None;
 
-        let av_pkt = pkt.to_av_packet().unwrap();
-        let roundtripped =
-            EncodedPacket::from_av_packet(&av_pkt, AVRational { num: 1, den: 1000 }, Codec::H264)
-                .unwrap();
+        let mut av_pkt = pkt.to_av_packet().unwrap();
+        let roundtripped = EncodedPacket::from_av_packet(
+            &mut av_pkt,
+            AVRational { num: 1, den: 1000 },
+            Codec::H264,
+        )
+        .unwrap();
 
+        // PTS was None; rescale_ts preserves AV_NOPTS_VALUE → None.
+        // DTS falls back to PTS (None), then to 0.
         assert_eq!(roundtripped.pts_ms, None);
-        assert_eq!(roundtripped.dts_ms, None);
-    }
-
-    #[test]
-    fn pts_to_ms_correct() {
-        // 90000 ticks at {1, 90000} = 1 second = 1000 ms
-        assert_eq!(
-            pts_to_ms(90000, AVRational { num: 1, den: 90000 }),
-            Some(1000)
-        );
-        // 44100 ticks at {1, 44100} = 1 second
-        assert_eq!(
-            pts_to_ms(44100, AVRational { num: 1, den: 44100 }),
-            Some(1000)
-        );
-    }
-
-    #[test]
-    fn pts_to_ms_invalid_timebase() {
-        assert_eq!(pts_to_ms(1000, AVRational { num: 0, den: 1000 }), None);
-        assert_eq!(pts_to_ms(1000, AVRational { num: 1, den: 0 }), None);
-    }
-
-    #[test]
-    fn pts_to_ms_nopts_value() {
-        assert_eq!(
-            pts_to_ms(AV_NOPTS_VALUE, AVRational { num: 1, den: 1000 }),
-            None
-        );
+        assert_eq!(roundtripped.dts_ms, Some(0));
     }
 }

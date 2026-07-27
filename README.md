@@ -180,7 +180,6 @@ Source (RtpPacket, RTSP):
 
 - 架构详细说明：`docs/transport-pipeline-architecture.md`
 - FFmpeg unsafe 所有权映射：`docs/ffmpeg-unsafe-ownership-map.md`
-- 架构演进待办：`docs/TODOs.md`
 
 ## License
 

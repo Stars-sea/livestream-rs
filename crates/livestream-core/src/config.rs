@@ -175,7 +175,7 @@ fn default_http_flv_port() -> u16 {
 }
 
 fn default_rtsp_port() -> u16 {
-    554
+    8554
 }
 
 fn default_rtsp_session_ttl_secs() -> u64 {

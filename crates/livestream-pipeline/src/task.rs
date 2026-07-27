@@ -23,7 +23,6 @@ where
             }
             continue;
         }
-
         tokio::select! {
             pkt = processor.input().recv() => {
                 let Some(pkt) = pkt else { break };
@@ -33,8 +32,6 @@ where
                         for item in results {
                             for out_pad in processor.outputs() {
                                 if out_pad.send(item.clone()).is_err() {
-                                    // Channel closed — stop sending to remaining pads
-                                    // but continue to next item (may have different codec pads).
                                     break;
                                 }
                             }

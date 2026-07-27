@@ -9,22 +9,24 @@ use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use bytes::BytesMut;
 use ffmpeg_sys_next::*;
 use tracing::warn;
 
 use crate::packet::Packet;
 use livestream_core::types::Codec;
 
-// ── RTP ring buffer + state ──
+use std::collections::VecDeque;
 
 struct RtpBuf {
-    /// BytesMut: O(1) split_to (advances internal pointer) for reading,
-    /// O(1) extend_from_slice (single memcpy) for writing.
-    buf: BytesMut,
-    max: usize,
+    /// Queue of complete RTP packets, each with its framing preserved.
+    packets: VecDeque<Vec<u8>>,
+    /// Currently-being-read packet + offset for partial AVIO reads.
+    current: Option<(Vec<u8>, usize)>,
+    /// Upper bound on total bytes across all queued packets.
+    max_bytes: usize,
+    /// Whether we've already handled RTP sequence probation.
+    probation_satisfied: bool,
 }
-
 pub struct RtpDemuxContext {
     fmt_ctx: *mut AVFormatContext,
     rtp_io: *mut AVIOContext,
@@ -96,10 +98,27 @@ impl RtpDemuxContext {
         }
 
         let mut opts: *mut AVDictionary = null_mut();
-        let k = CString::new("sdp_flags").unwrap();
-        let v = CString::new("custom_io").unwrap();
         unsafe {
-            av_dict_set(&mut opts, k.as_ptr(), v.as_ptr(), 0);
+            av_dict_set(
+                &mut opts,
+                CString::new("sdp_flags").unwrap().as_ptr(),
+                CString::new("custom_io").unwrap().as_ptr(),
+                0,
+            );
+            // Disable reorder queue — with custom_io we feed one packet at a time.
+            av_dict_set(
+                &mut opts,
+                CString::new("reorder_queue_size").unwrap().as_ptr(),
+                CString::new("0").unwrap().as_ptr(),
+                0,
+            );
+            // Disable max_delay to prevent reorder queue activation.
+            av_dict_set(
+                &mut opts,
+                CString::new("max_delay").unwrap().as_ptr(),
+                CString::new("0").unwrap().as_ptr(),
+                0,
+            );
         }
 
         let e = CString::new("").unwrap();
@@ -130,11 +149,21 @@ impl RtpDemuxContext {
             unsafe { avformat_free_context(fmt_ctx) };
             anyhow::bail!("avformat_open_input: {}", crate::ffmpeg_error(ret));
         }
+        // Enable FFmpeg timestamp generation. The SDP demuxer may not set
+        // PTS/DTS on decoded frames. GENPTS tells FFmpeg to generate missing
+        // timestamps from DTS when available, preventing "non-monotonically
+        // increasing dts" errors in downstream muxers.
+        // SAFETY: fmt_ctx is a valid, initialized AVFormatContext from
+        // avformat_alloc_context() + avformat_open_input(), not aliased.
+        unsafe {
+            (*fmt_ctx).flags |= AVFMT_FLAG_GENPTS;
+        }
 
-        // 4. Build the RTP ring-buffer AVIO (read-write).
         let inner = Arc::new(Mutex::new(RtpBuf {
-            buf: BytesMut::with_capacity(256 * 1024),
-            max: 1024 * 1024,
+            packets: VecDeque::new(),
+            current: None,
+            max_bytes: 1024 * 1024,
+            probation_satisfied: false,
         }));
         let rtp_opaque = Arc::into_raw(Arc::clone(&inner)) as *mut c_void;
         let ios = 64 * 1024 + AV_INPUT_BUFFER_PADDING_SIZE as usize;
@@ -175,10 +204,32 @@ impl RtpDemuxContext {
 
     pub fn feed(&self, data: &[u8]) -> Result<()> {
         let mut inner = self._inner.lock().unwrap();
-        let to_add = data.len().min(inner.max.saturating_sub(inner.buf.len()));
-        if to_add > 0 {
-            inner.buf.extend_from_slice(&data[..to_add]);
+        // RTP sequence probation: FFmpeg drops the first two packets
+        // (requires two consecutive in-sequence packets). Duplicate the
+        // first real packet so that the third dequeued packet (real pkt2
+        // with seq = pkt1.seq + 1) passes the probation check.
+        if !inner.probation_satisfied && !inner.packets.is_empty() {
+            // First packet already queued; this is the second feed.
+            // Clone the first packet → both probation rounds consume it,
+            // then the real second packet passes.
+            let first = inner.packets[0].clone();
+            inner.packets.push_front(first);
+            inner.probation_satisfied = true;
         }
+        // Evict oldest packets until total bytes are under the cap.
+        // Recompute current_bytes each iteration — the sum changes
+        // as packets are popped.
+        loop {
+            let current_bytes: usize = inner.packets.iter().map(|p| p.len()).sum::<usize>()
+                + inner.current.as_ref().map_or(0, |(p, _)| p.len());
+            if current_bytes + data.len() <= inner.max_bytes {
+                break;
+            }
+            if inner.packets.pop_front().is_none() {
+                break;
+            }
+        }
+        inner.packets.push_back(data.to_vec());
         Ok(())
     }
 
@@ -210,6 +261,54 @@ impl RtpDemuxContext {
         Ok(Some((pkt, codec, tb)))
     }
 
+    /// Extract codec extradata (SPS+PPS for H.264, ASC for AAC) from a stream.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `self.fmt_ctx` is valid and has been opened with
+    /// `avformat_open_input`. The stream array and codecpar pointers are valid
+    /// for the lifetime of the format context.
+    pub fn extradata(&self, stream_index: usize) -> Option<bytes::Bytes> {
+        // SAFETY: fmt_ctx is a valid, opened AVFormatContext. The stream array
+        // and codecpar are owned by fmt_ctx and valid for its lifetime.
+        unsafe {
+            let nb = (*self.fmt_ctx).nb_streams as usize;
+            if stream_index >= nb {
+                return None;
+            }
+            let sp = *(*self.fmt_ctx).streams.add(stream_index);
+            let st = &*sp;
+            let par = st.codecpar.as_ref()?;
+            if par.extradata_size > 0 && !par.extradata.is_null() {
+                Some(bytes::Bytes::copy_from_slice(std::slice::from_raw_parts(
+                    par.extradata,
+                    par.extradata_size as usize,
+                )))
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Returns the codec for a given stream index.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `self.fmt_ctx` is valid and opened. The stream
+    /// array is valid for the format context's lifetime.
+    pub fn codec_for_stream(&self, stream_index: usize) -> Option<Codec> {
+        // SAFETY: fmt_ctx is owned and valid; stream array and codecpar
+        // are valid for its lifetime.
+        unsafe {
+            let nb = (*self.fmt_ctx).nb_streams as usize;
+            if stream_index >= nb {
+                return None;
+            }
+            let sp = *(*self.fmt_ctx).streams.add(stream_index);
+            let st = &*sp;
+            st.codecpar.as_ref().map(|p| codec_id_to_codec(p.codec_id))
+        }
+    }
     pub fn stream_count(&self) -> usize {
         unsafe { (*self.fmt_ctx).nb_streams as usize }
     }
@@ -221,12 +320,15 @@ extern "C" fn sdp_read(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_
     if opaque.is_null() || buf.is_null() || buf_size <= 0 {
         return AVERROR(EINVAL);
     }
+    // SAFETY: opaque was set to Box::into_raw(Box<SdpState>) in new().
+    // It is valid for the lifetime of the AVIOContext.
     let s: &mut SdpState = unsafe { &mut *(opaque as *mut SdpState) };
     let remaining = s.data.len() - s.pos;
     if remaining == 0 {
         return 0; // EOF
     }
     let n = (buf_size as usize).min(remaining);
+    // SAFETY: buf is FFmpeg-provided buffer, s.data[s.pos..] is valid.
     unsafe { std::ptr::copy_nonoverlapping(s.data.as_ptr().add(s.pos), buf, n) };
     s.pos += n;
     n as c_int
@@ -236,19 +338,41 @@ extern "C" fn rtp_read(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_
     if opaque.is_null() || buf.is_null() || buf_size <= 0 {
         return AVERROR(EINVAL);
     }
+    // SAFETY: opaque was set to Arc::into_raw(Arc<Mutex<RtpBuf>>) in new().
+    // It is valid for the lifetime of the AVIOContext.
     let b: &Mutex<RtpBuf> = unsafe { &*(opaque as *const Mutex<RtpBuf>) };
     let mut g = match b.lock() {
         Ok(g) => g,
         Err(_) => return AVERROR_EOF,
     };
-    if g.buf.is_empty() {
-        return AVERROR(EAGAIN);
+    let buf_size = buf_size as usize;
+    // Continue a partial read if one is in-flight.
+    if let Some((pkt, offset)) = &mut g.current {
+        let remaining = pkt.len() - *offset;
+        let n = buf_size.min(remaining);
+        // SAFETY: buf is a valid FFmpeg-provided buffer of buf_size bytes.
+        // pkt[offset..] is a valid slice with at least remaining bytes.
+        unsafe { std::ptr::copy_nonoverlapping(pkt[*offset..].as_ptr(), buf, n) };
+        *offset += n;
+        if *offset >= pkt.len() {
+            g.current = None;
+        }
+        return n as c_int;
     }
-    let n = (buf_size as usize).min(g.buf.len());
-    // split_to is O(1): advances an internal offset, no copy of the remaining data.
-    let chunk = g.buf.split_to(n);
-    unsafe { std::ptr::copy_nonoverlapping(chunk.as_ptr(), buf, n) };
-    n as c_int
+    // Start a new packet.
+    match g.packets.pop_front() {
+        Some(pkt) => {
+            let n = buf_size.min(pkt.len());
+            // SAFETY: buf is a valid FFmpeg-provided buffer of buf_size bytes.
+            // pkt.as_ptr() is valid for pkt.len() bytes.
+            unsafe { std::ptr::copy_nonoverlapping(pkt.as_ptr(), buf, n) };
+            if n < pkt.len() {
+                g.current = Some((pkt, n));
+            }
+            n as c_int
+        }
+        None => AVERROR(EAGAIN),
+    }
 }
 
 extern "C" fn rtp_write_discard(_o: *mut c_void, _b: *const u8, s: c_int) -> c_int {
@@ -320,6 +444,6 @@ mod tests {
     fn feed() {
         let c = RtpDemuxContext::new(SDP).unwrap();
         c.feed(&[0x80, 0x60, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
-        assert!(c._inner.lock().unwrap().buf.len() > 0);
+        assert!(!c._inner.lock().unwrap().packets.is_empty());
     }
 }

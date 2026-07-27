@@ -106,6 +106,15 @@ impl HlsOutputContext {
         res
     }
 
+    /// Prevent Drop from writing a safety-net trailer.
+    ///
+    /// Call after a successful explicit `write_trailer()` — the Drop impl
+    /// attempts to write a trailer as a safety net, but writing it twice
+    /// (or after the opaque buffer has been replaced) causes corruption.
+    pub fn disarm(&mut self) {
+        self.header_written = false;
+    }
+
     /// Write an interleaved frame into the TS muxer.
     ///
     /// The packet's timestamps must already be in the muxer's timebase

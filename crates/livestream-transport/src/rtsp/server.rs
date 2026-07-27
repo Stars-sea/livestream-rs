@@ -84,10 +84,17 @@ impl RtspServer {
                 }
 
                 msg = self.ctrl_channel.recv() => {
-                    if let Some(msg) = msg
-                        && let Err(e) = self.handle_control_message(msg).await {
-                            error!(error = %e, "Failed to handle RTSP control message");
+                    match msg {
+                        Some(msg) => {
+                            if let Err(e) = self.handle_control_message(msg).await {
+                                error!(error = %e, "Failed to handle RTSP control message");
+                            }
                         }
+                        None => {
+                            // Channel closed — sleep to avoid busy-looping.
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    }
                 }
 
                 accept_res = self.listener.accept() => {
@@ -444,22 +451,17 @@ async fn handle_connection(
     let cancel = cancel_token.child_token();
     hub.create_channel(&live_id);
 
-    let (rtp_tx, rtp_rx) = PadSender::<RtpPacket>::new_channel(256);
+    let (rtp_tx, rtp_rx) = PadSender::<RtpPacket>::new_channel(1024);
     let (source, frame_tx) =
         RtspSource::new(&live_id, codec_params.clone(), rtp_tx, cancel.clone());
+
+    // Transition lifecycle: PENDING → CONNECTING → CONNECTED.
+    lifecycle.connect().await?;
     let source = Arc::new(source);
 
-    // Spawn RTSP source
-    tokio::spawn({
-        let source = source.clone();
-        async move {
-            if let Err(e) = source.start().await {
-                error!(error = %e, "RtspSource failed");
-            }
-        }
-    });
-
-    // Build pipeline via factory (RtpDemuxProcessor → OTelProbe → SeqCacheProbe → [FlvMux→FlvSink, HlsSegmenter→MinIoSink])
+    // Build pipeline BEFORE spawning source so consumers are ready.
+    // Keep alive during RTP read loop — dropping PipelineImpl detaches
+    // JoinHandle tasks, which is fine, but we hold it for explicitness.
     let _pipeline = factory::build_rtsp_pipeline(
         &live_id,
         rtp_rx,
@@ -474,6 +476,16 @@ async fn handle_connection(
     if let Err(ref e) = _pipeline {
         warn!(live_id = %live_id, error = %e, "RTSP pipeline factory failed, stream will have no HLS output");
     }
+
+    // Spawn RTSP source AFTER pipeline is built.
+    tokio::spawn({
+        let source = source.clone();
+        async move {
+            if let Err(e) = source.start().await {
+                error!(error = %e, "RtspSource failed");
+            }
+        }
+    });
 
     let inner = reader.into_inner();
     let mut rtp_reader = RtpInterleavedReader::new(inner);

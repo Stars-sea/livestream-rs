@@ -65,8 +65,15 @@ impl FlvEgressHub {
 #[async_trait::async_trait]
 impl FlvBroadcast for FlvEgressHub {
     async fn broadcast(&self, live_id: &str, tag: FlvTag) -> Result<()> {
-        if let Some(ch) = self.channels.get(live_id) {
-            let _ = ch.broadcast(&tag);
+        match self.channels.get(live_id) {
+            Some(ch) => {
+                if let Err(e) = ch.broadcast(&tag) {
+                    tracing::debug!(live_id = %live_id, error = %e, "FlvEgressHub: no active subscribers");
+                }
+            }
+            None => {
+                tracing::debug!(live_id = %live_id, "FlvEgressHub: channel not found");
+            }
         }
         Ok(())
     }

@@ -143,9 +143,9 @@ impl Processor for FlvMux {
     }
 
     async fn process(&self, pkt: Self::Input) -> Result<Vec<Self::Output>> {
-        match pkt.codec {
-            Codec::H264 | Codec::H265 => self.mux_video(&pkt),
-            Codec::Aac => self.mux_audio(&pkt),
+        let tags = match pkt.codec {
+            Codec::H264 | Codec::H265 => self.mux_video(&pkt)?,
+            Codec::Aac => self.mux_audio(&pkt)?,
             other => {
                 metric_pipeline_error!("flv_mux.unsupported_codec");
                 tracing::warn!(
@@ -153,9 +153,10 @@ impl Processor for FlvMux {
                     codec = ?other,
                     "FlvMux received unsupported codec; dropping packet"
                 );
-                Ok(vec![])
+                return Ok(vec![]);
             }
-        }
+        };
+        Ok(tags)
     }
 }
 

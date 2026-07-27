@@ -119,9 +119,18 @@ impl Source for RtspSource {
                         data: bytes::Bytes::from(frame.rtp_data),
                     };
 
-                    if self.output_sender.send(rtp_pkt).is_err() {
-                        tracing::debug!(stream = %self.stream_id, "Output receiver closed");
-                        break;
+                    // Retry on backpressure — only break if receiver is gone.
+                    loop {
+                        match self.output_sender.send(rtp_pkt.clone()) {
+                            Ok(()) => break,
+                            Err(livestream_core::channel::SendError::Closed) => {
+                                tracing::debug!(stream = %self.stream_id, "Output receiver closed");
+                                break;
+                            }
+                            Err(livestream_core::channel::SendError::Full) => {
+                                tokio::task::yield_now().await;
+                            }
+                        }
                     }
                 }
                 _ = self.cancel.cancelled() => {

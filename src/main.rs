@@ -159,16 +159,23 @@ async fn main() -> Result<()> {
 
     // Wait for either a server error or graceful shutdown signal.
     let first_error: Option<anyhow::Error> = tokio::select! {
-        Some(e) = error_rx.recv() => {
-            error!(error = %e, "Server exited with error, shutting down...");
-            Some(e)
+        msg = error_rx.recv() => {
+            match msg {
+                Some(e) => {
+                    error!(error = %e, "Server exited with error, shutting down...");
+                    Some(e)
+                }
+                None => {
+                    info!("All server tasks completed");
+                    None
+                }
+            }
         }
         _ = cancel.cancelled() => {
             info!("Graceful shutdown initiated");
             None
         }
     };
-
     // Cancel remaining servers and wait for drain.
     cancel.cancel();
     info!("Waiting for all servers to drain...");

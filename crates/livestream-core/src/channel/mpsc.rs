@@ -39,10 +39,10 @@ impl<T> MpscSender<T> {
         match self.inner.try_send(item) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_item)) => {
-                warn!(
+                tracing::debug!(
                     queue = self.queue,
                     live_id = %self.live_id.as_deref().unwrap_or("N/A"),
-                    "MPSC sender: channel full, item dropped"
+                    "MPSC sender: channel full, retrying"
                 );
                 Err(SendError::Full)
             }
