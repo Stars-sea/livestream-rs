@@ -1,26 +1,18 @@
 //! RTSP server — TCP listener for RTSP ingest connections.
 
-use std::io::ErrorKind;
-use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
-use crate::config::ServerConfig;
 use anyhow::Result;
 use dashmap::DashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::time::sleep;
+use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::controller::ControlMessage;
-use crate::dispatcher::EndReason;
-use crate::dispatcher::EventDispatcher;
+use crate::config::ServerConfig;
 use crate::flv::hub::FlvEgressHub;
 use crate::lifecycle::HandlerLifecycle;
-use crate::registry::SessionRegistry;
-use crate::registry::state::SessionEndpoint;
+use crate::protocol_server::ProtocolServerCore;
 use crate::source::rtsp::{RawRtpFrame, RtspSource};
 use rtsp_types::Message;
 
@@ -28,182 +20,41 @@ use super::rtp::RtpInterleavedReader;
 use super::session::{self, RtspSession};
 
 use livestream_codec::{RtpPacket, SegmentConfig};
-use livestream_core::channel::MpscRx;
 use livestream_core::pad::PadSender;
 use livestream_core::traits::Source;
 use livestream_core::types::Protocol;
+
 use livestream_pipeline::factory;
 use livestream_pipeline::sink::minio::ObjectUploader;
 
 pub struct RtspServer {
-    registry: Arc<SessionRegistry>,
-    dispatcher: Arc<EventDispatcher>,
-    listener: TcpListener,
-    ctrl_channel: MpscRx<ControlMessage>,
-    flv_egress_hub: Arc<FlvEgressHub>,
-    pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
-    precreate_ttl: Duration,
-    minio: Arc<dyn ObjectUploader>,
-    segment_cfg: SegmentConfig,
-    cancel_token: CancellationToken,
+    core: ProtocolServerCore,
 }
 
 impl RtspServer {
     pub async fn create(cfg: ServerConfig) -> Result<Self> {
-        let listener = TcpListener::bind(cfg.addr).await?;
-        Ok(Self {
-            listener,
-            ctrl_channel: cfg.ctrl_channel,
-            registry: cfg.registry,
-            dispatcher: cfg.dispatcher,
-            flv_egress_hub: cfg.flv_egress_hub,
-            pending_lifecycle: Arc::new(DashMap::new()),
-            precreate_ttl: cfg.precreate_ttl,
-            minio: cfg.minio,
-            segment_cfg: cfg.segment_cfg,
-            cancel_token: cfg.cancel_token,
-        })
+        let core = ProtocolServerCore::from_config(cfg).await?;
+        Ok(Self { core })
     }
 
     pub async fn run(mut self) -> Result<()> {
-        loop {
-            tokio::select! {
-                _ = self.cancel_token.cancelled() => {
-                    debug!("RTSP server cancellation requested, shutting down");
-                    break;
-                }
+        let pending = self.core.pending_lifecycle.clone();
+        let hub = self.core.flv_egress_hub.clone();
+        let minio = self.core.minio.clone();
+        let seg_cfg = self.core.segment_cfg.clone();
 
-                msg = self.ctrl_channel.recv() => {
-                    match msg {
-                        Some(msg) => {
-                            if let Err(e) = self.handle_control_message(msg).await {
-                                error!(error = %e, "Failed to handle RTSP control message");
-                            }
-                        }
-                        None => {
-                            // Channel closed — sleep to avoid busy-looping.
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                        }
-                    }
-                }
-
-                accept_res = self.listener.accept() => {
-                    self.handle_accept_result(accept_res).await;
-                }
-            }
-        }
-
-        Ok(())
-    }
-    fn accept_client(&self, socket: TcpStream, addr: SocketAddr) {
-        debug!(client_addr = %addr, "Accepted new RTSP connection");
-
-        tokio::spawn(spawn_connection_handler(
-            socket,
-            self.pending_lifecycle.clone(),
-            self.flv_egress_hub.clone(),
-            self.minio.clone(),
-            self.segment_cfg.clone(),
-        ));
-    }
-    async fn handle_accept_result(&mut self, accept_res: std::io::Result<(TcpStream, SocketAddr)>) {
-        fn is_retryable_accept_error(err: &std::io::Error) -> bool {
-            matches!(
-                err.kind(),
-                ErrorKind::Interrupted
-                    | ErrorKind::WouldBlock
-                    | ErrorKind::TimedOut
-                    | ErrorKind::ConnectionAborted
-                    | ErrorKind::ConnectionReset
-            )
-        }
-
-        match accept_res {
-            Ok((socket, addr)) => self.accept_client(socket, addr),
-            Err(err) if is_retryable_accept_error(&err) => {
-                warn!(error = %err, kind = ?err.kind(), "Retryable RTSP accept error, server continues running");
-                sleep(Duration::from_millis(20)).await;
-            }
-            Err(err) => {
-                error!(error = %err, kind = ?err.kind(), "Non-retryable RTSP accept error, server stays alive with backoff");
-                sleep(Duration::from_millis(200)).await;
-            }
-        }
-    }
-
-    async fn handle_control_message(&mut self, msg: ControlMessage) -> Result<()> {
-        match msg {
-            ControlMessage::PrecreateStream { live_id, .. } => {
-                // Pre-create the FLV broadcast channel so subscribers can join
-                // before the publisher connects.
-                self.flv_egress_hub.create_channel(&live_id);
-
-                let session_token = self.cancel_token.child_token();
-
-                let lifecycle = HandlerLifecycle::new(
-                    live_id.clone(),
-                    Protocol::Rtsp,
-                    self.registry.clone(),
-                    self.dispatcher.clone(),
-                );
-                lifecycle
-                    .pending(SessionEndpoint::default(), session_token.clone())
-                    .await?;
-
-                self.spawn_precreate_session_ttl(live_id, lifecycle, session_token);
-
-                Ok(())
-            }
-            ControlMessage::StopStream { live_id } => {
-                if let Some(token) = self.registry.get_cancel_token(&live_id) {
-                    token.cancel();
-                }
-
-                Ok(())
-            }
-        }
-    }
-
-    fn spawn_precreate_session_ttl(
-        &mut self,
-        live_id: String,
-        lifecycle: HandlerLifecycle,
-        session_token: CancellationToken,
-    ) {
-        let pending_lifecycle = self.pending_lifecycle.clone();
-        pending_lifecycle.insert(live_id.clone(), lifecycle);
-
-        let ttl = self.precreate_ttl;
-        if ttl.is_zero() {
-            debug!(
-                "Precreate session TTL is set to 0, skipping TTL expiration for live_id {}",
-                live_id
-            );
-            return;
-        }
-
-        tokio::spawn(async move {
-            tokio::select! {
-                _ = session_token.cancelled() => { return; }
-                _ = sleep(ttl) => {}
-            }
-
-            if !pending_lifecycle.contains_key(&live_id) {
-                return;
-            }
-
-            warn!(
-                live_id = %live_id,
-                ttl_secs = ttl.as_secs(),
-                "Expired pending RTSP precreated session by TTL"
-            );
-
-            let Some((_, lifecycle)) = pending_lifecycle.remove(&live_id) else {
-                debug!(live_id = %live_id, "Pending lifecycle already removed for live_id, skipping TTL expiration");
-                return;
-            };
-            lifecycle.disconnect_with_reason(EndReason::Timeout);
-        });
+        self.core
+            .run(Protocol::Rtsp, move |socket, addr| {
+                debug!(client_addr = %addr, "Accepted new RTSP connection");
+                tokio::spawn(spawn_connection_handler(
+                    socket,
+                    pending.clone(),
+                    hub.clone(),
+                    minio.clone(),
+                    seg_cfg.clone(),
+                ));
+            })
+            .await
     }
 }
 

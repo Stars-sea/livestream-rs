@@ -9,6 +9,8 @@ pub mod dispatcher;
 pub mod flv;
 pub mod grpc;
 pub mod http_flv;
+pub(crate) mod protocol_server;
+
 pub mod lifecycle;
 pub mod registry;
 pub mod rtmp;
