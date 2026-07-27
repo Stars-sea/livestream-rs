@@ -126,9 +126,9 @@ async fn test_seq_cache_snapshot_order() {
     assert!(has_audio, "expected at least one Audio FLV tag");
 }
 
-/// When codec_params is empty, HLS branch is skipped.
+/// When codec_params is empty, HLS is deferred (deferred_hls_init future added).
 #[tokio::test]
-async fn test_no_hls_when_codec_params_empty() {
+async fn test_deferred_hls_when_codec_params_empty() {
     let (tx, rx) = PadSender::<EncodedPacket>::new_channel(256);
     let spy = Arc::new(SpyFlvBroadcast::new());
     let uploader = null_uploader();
@@ -155,12 +155,13 @@ async fn test_no_hls_when_codec_params_empty() {
     )
     .expect("build_encoded_chain should succeed");
 
-    // FLV path only: OTelProbe, SeqCacheProbe, FlvMux, FlvSink = 4 futures.
-    // No HLS branch because codec_params is empty.
+    // FLV path: OTelProbe, SeqCacheProbe, FlvMux, FlvSink = 4 futures.
+    // Plus 1 deferred_hls_init future (always added, returns quickly
+    // since no sequence header with extradata arrives).
     assert_eq!(
         futures.len(),
-        4,
-        "expected 4 futures (no HLS branch), got {}",
+        5,
+        "expected 5 futures (FLV path + deferred HLS init), got {}",
         futures.len()
     );
 

@@ -14,10 +14,11 @@ use crate::processor::seq_cache::SeqCacheProbe;
 use crate::sink::flv::FlvSink;
 use crate::sink::minio::{MinIoSink, ObjectUploader};
 use anyhow::Result;
-use livestream_codec::{CodecParams, EncodedPacket, RtpPacket};
+use livestream_codec::{CodecParams, EncodedPacket, MediaType, RtpPacket};
 use livestream_core::config::SegmentConfig;
 use livestream_core::pad::{DemandSignal, PadReceiver, PadSender};
 use livestream_core::traits::PipelineHandle;
+use livestream_core::types::Codec;
 use livestream_media::stream::StaticStreamCollection;
 use tokio_util::sync::CancellationToken;
 
@@ -158,7 +159,8 @@ type BoxedFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// Build the standard EncodedPacket processing chain.
 ///
 /// Always builds the FLV path (OTelProbe → SeqCacheProbe → FlvMux → FlvSink).
-/// HLS path (HlsSegmenter → MinIoSink) is only added when `codec_params` is non-empty.
+/// HLS path (HlsSegmenter → MinIoSink) is added immediately when `codec_params`
+/// is non-empty, or deferred via `deferred_hls_init` for RTMP sources.
 /// HLS construction failures are logged as warnings and do not affect the FLV path.
 pub fn build_encoded_chain(
     live_id: &str,
@@ -175,14 +177,12 @@ pub fn build_encoded_chain(
     let (otel_tx, otel_rx) = PadSender::<EncodedPacket>::new_channel(256);
     let otel = Arc::new(OTelProbe::new(live_id, src_rx, vec![otel_tx]));
 
-    // Phase 2: SeqCacheProbe — fans out to FLV and optionally HLS.
+    // Phase 2: SeqCacheProbe — fans out to FLV and HLS.
+    // Always include both outputs; the HLS channel is used either immediately
+    // (when codec_params are available) or by deferred_hls_init (RTMP path).
     let (seq_flv_tx, seq_flv_rx) = PadSender::<EncodedPacket>::new_channel(256);
     let (seq_hls_tx, seq_hls_rx) = PadSender::<EncodedPacket>::new_channel(256);
-    let seq_outputs: Vec<PadSender<EncodedPacket>> = if has_codec_params {
-        vec![seq_flv_tx, seq_hls_tx]
-    } else {
-        vec![seq_flv_tx]
-    };
+    let seq_outputs = vec![seq_flv_tx, seq_hls_tx];
     let seq_cache = Arc::new(SeqCacheProbe::new(otel_rx, seq_outputs));
 
     // Phase 3: FLV path (always)
@@ -198,7 +198,7 @@ pub fn build_encoded_chain(
         Box::pin(run_sink(flv_sink, cancel.child_token())),
     ];
 
-    // Phase 4: HLS path (only when codec params available)
+    // Phase 4: HLS path — immediate when codec_params available, deferred otherwise (RTMP)
     if has_codec_params {
         match try_build_hls(
             live_id,
@@ -218,14 +218,66 @@ pub fn build_encoded_chain(
             }
         }
     } else {
-        tracing::info!(
-            live_id = %live_id,
-            "Skipping HLS pipeline: no codec parameters available (RTMP metadata may arrive later)"
-        );
+        futures.push(Box::pin(deferred_hls_init(
+            live_id.to_string(),
+            seq_hls_rx,
+            minio.clone(),
+            segment_cfg.clone(),
+            cancel.child_token(),
+        )));
     }
 
     let handle = PipelineHandle::new(cancel);
     Ok((handle, futures))
+}
+
+/// Wait for the first sequence header (with extradata), then build HLS pipeline lazily.
+///
+/// Used for RTMP sources where codec params (SPS/PPS) arrive in-band after
+/// pipeline construction. Waits on `hls_rx` for a packet carrying extradata,
+/// then constructs the HLS segmenter + MinIO sink chain.
+#[allow(clippy::excessive_nesting)]
+async fn deferred_hls_init(
+    live_id: String,
+    hls_rx: PadReceiver<EncodedPacket>,
+    minio: Arc<dyn ObjectUploader>,
+    segment_cfg: SegmentConfig,
+    cancel: CancellationToken,
+) {
+    loop {
+        let pkt = tokio::select! {
+            pkt = hls_rx.recv() => pkt,
+            _ = cancel.cancelled() => return,
+        };
+        let Some(pkt) = pkt else { return };
+        // Wait for the first sequence header (carries extradata = SPS+PPS)
+        if let Some(ref extradata) = pkt.extradata {
+            let media_type = match pkt.codec {
+                Codec::H264 | Codec::H265 | Codec::Av1 => MediaType::Video,
+                Codec::Aac | Codec::Mp3 | Codec::Opus => MediaType::Audio,
+            };
+            let params = vec![CodecParams {
+                codec: pkt.codec,
+                media_type,
+                clock_rate: 90000u32,
+                extradata: Some(extradata.clone()),
+            }];
+
+            match try_build_hls(&live_id, &params, minio, &segment_cfg, hls_rx, &cancel) {
+                Ok(hls_futures) => {
+                    for fut in hls_futures {
+                        tokio::spawn(fut);
+                    }
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(live_id = %live_id, error = %e, "Deferred HLS build failed");
+                    return;
+                }
+            }
+        }
+        // Non-header packet — continue waiting
+    }
 }
 
 /// Attempt to build the HLS branch (HlsSegmenter → MinIoSink).

@@ -129,6 +129,29 @@ impl Source for RtmpSource {
     }
 }
 
+/// Convert AVCC (4-byte length-prefixed NAL units) to Annex B
+/// (00 00 00 01 start-code delimited NAL units).
+///
+/// FLV video tags carry AVCC-format data. The pipeline's internal convention
+/// is Annex B (same as what RTSP/RTP depacketizer produces), so we convert at
+/// the source boundary. `FlvMux::annex_b_to_avcc()` will convert back when
+/// muxing FLV output.
+fn avcc_to_annex_b(data: &[u8]) -> Bytes {
+    let mut out = bytes::BytesMut::with_capacity(data.len() + data.len() / 2);
+    let mut pos = 0;
+    while pos + 4 <= data.len() {
+        let nal_len =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        pos += 4;
+        if pos + nal_len > data.len() {
+            break;
+        }
+        out.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        out.extend_from_slice(&data[pos..pos + nal_len]);
+        pos += nal_len;
+    }
+    out.freeze()
+}
 /// Convert a raw RTMP frame into an EncodedPacket.
 fn convert_frame(frame: RtmpRawFrame) -> Option<EncodedPacket> {
     if frame.is_script_data || frame.data.is_empty() {
@@ -157,10 +180,18 @@ fn convert_frame(frame: RtmpRawFrame) -> Option<EncodedPacket> {
 
         // rml_rtmp gives us the full FLV tag body (5-byte header + codec data).
         // Strip the header: FlvMux will re-add it.
-        let codec_data = if frame.data.len() > 5 {
+        let raw_codec_data = if frame.data.len() > 5 {
             frame.data.slice(5..)
         } else {
             Bytes::new()
+        };
+
+        // Convert AVCC → Annex B for NAL unit packets. Sequence headers
+        // carry AVCDecoderConfigurationRecord (used as extradata), not NAL units.
+        let codec_data = if !is_seq_header && !raw_codec_data.is_empty() {
+            avcc_to_annex_b(&raw_codec_data)
+        } else {
+            raw_codec_data
         };
 
         // For sequence headers, populate extradata with AVCDecoderConfigurationRecord

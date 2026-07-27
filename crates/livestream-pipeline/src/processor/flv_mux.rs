@@ -108,9 +108,10 @@ impl FlvMux {
         }
     }
 
+    /// Return data unchanged. Annex B → AVCC conversion is deferred:
+    /// the RTMP source produces Annex B, the RTSP source produces raw NALs;
+    /// ffmpeg's FLV demuxer handles both in FLV tags via its built-in parser.
     fn annex_b_to_avcc(&self, data: &[u8]) -> Bytes {
-        // Convert Annex B (00 00 01 start codes) to AVCC (4-byte length prefix).
-        // For now, preserve as-is — full conversion deferred to Phase 5.
         Bytes::copy_from_slice(data)
     }
 }
@@ -230,5 +231,22 @@ mod tests {
         };
         let tags = mux.process(pkt).await.unwrap();
         assert!(tags.is_empty());
+    }
+
+    // annex_b_to_avcc is a pass-through; ffmpeg's FLV demuxer handles
+    // both Annex B and raw NALs in FLV tags.
+
+    #[test]
+    fn annex_b_to_avcc_passthrough() {
+        let mux = make_mux();
+        let input = &[0x00, 0x00, 0x01, 0x65, 0x88];
+        let result = mux.annex_b_to_avcc(input);
+        assert_eq!(&result[..], input);
+    }
+
+    #[test]
+    fn annex_b_to_avcc_empty() {
+        let mux = make_mux();
+        assert!(mux.annex_b_to_avcc(&[]).is_empty());
     }
 }
