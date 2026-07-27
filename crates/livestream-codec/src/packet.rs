@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use super::NalData;
 use bytes::Bytes;
 use livestream_core::types::{Codec, CodecParams, MediaPacket};
 
@@ -15,9 +16,8 @@ pub struct EncodedPacket {
 
     /// Stream index within the source (0 = first video, 1 = first audio, etc.).
     pub stream_index: usize,
-
     /// Encoded bitstream data (H.264 NAL units, AAC frames, etc.).
-    pub data: Bytes,
+    pub data: NalData,
 
     /// Presentation timestamp in milliseconds since stream start.
     pub pts_ms: Option<i64>,
@@ -39,7 +39,7 @@ pub struct EncodedPacket {
 }
 
 impl EncodedPacket {
-    /// Create from an H.264 keyframe.
+    /// Create from an H.264 keyframe (Annex B format).
     pub fn new_video_keyframe(
         data: impl Into<Bytes>,
         pts_ms: i64,
@@ -49,7 +49,7 @@ impl EncodedPacket {
         Self {
             codec: Codec::H264,
             stream_index,
-            data: data.into(),
+            data: NalData::AnnexB(data.into()),
             pts_ms: Some(pts_ms),
             dts_ms: Some(dts_ms),
             is_keyframe: true,
@@ -64,7 +64,7 @@ impl EncodedPacket {
         Self {
             codec: Codec::Aac,
             stream_index,
-            data: data.into(),
+            data: NalData::AnnexB(data.into()),
             pts_ms: Some(pts_ms),
             dts_ms: None,
             is_keyframe: false,
@@ -83,7 +83,7 @@ impl EncodedPacket {
         Self {
             codec: Codec::H264,
             stream_index,
-            data: Bytes::new(),
+            data: NalData::AnnexB(Bytes::new()),
             pts_ms: None,
             dts_ms: None,
             is_keyframe: true,
@@ -98,7 +98,7 @@ impl EncodedPacket {
         Self {
             codec: Codec::Aac,
             stream_index,
-            data: Bytes::new(),
+            data: NalData::AnnexB(Bytes::new()),
             pts_ms: None,
             dts_ms: None,
             is_keyframe: false,

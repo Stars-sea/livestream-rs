@@ -3,20 +3,20 @@
 //! `PipelineImpl` owns the tokio tasks spawned during pipeline construction
 //! and implements the `Pipeline` trait (run, shutdown, handle).
 
-use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use livestream_core::traits::{Pipeline, PipelineHandle, PipelineState};
+use parking_lot::Mutex;
 use tokio::task::JoinHandle;
-
-use crate::graph::PipelineGraph;
 
 /// Concrete `Pipeline` implementation.
 pub struct PipelineImpl {
     handle: PipelineHandle,
-    /// Task handles are behind a Mutex so `shutdown(&self)` can take them.
-    tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// Task handles behind a shareable Mutex so deferred init (HLS) can
+    /// push spawned handles without fire-and-forget.
+    tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl PipelineImpl {
@@ -24,18 +24,29 @@ impl PipelineImpl {
     pub fn new(handle: PipelineHandle, tasks: Vec<JoinHandle<()>>) -> Self {
         Self {
             handle,
-            tasks: Mutex::new(tasks),
+            tasks: Arc::new(Mutex::new(tasks)),
         }
     }
 
-    pub(crate) fn from_graph(
-        _graph: PipelineGraph,
-        cancel: tokio_util::sync::CancellationToken,
-    ) -> Result<Self> {
-        Ok(Self {
-            handle: PipelineHandle::new(cancel),
-            tasks: Mutex::new(Vec::new()),
-        })
+    /// Construct a PipelineImpl with a pre-existing shared task list.
+    /// Used when deferred init (HLS) needs write access to the task list
+    /// before the PipelineImpl is fully constructed.
+    pub fn with_shared_tasks(
+        handle: PipelineHandle,
+        tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    ) -> Self {
+        Self { handle, tasks }
+    }
+
+    /// Return a clone of the shared task list for deferred init (HLS).
+    pub fn tasks_arc(&self) -> Arc<Mutex<Vec<JoinHandle<()>>>> {
+        Arc::clone(&self.tasks)
+    }
+
+    /// Append task handles after construction.  Used by deferred HLS init
+    /// which constructs and spawns pipeline branches asynchronously.
+    pub fn push_tasks(&self, handles: Vec<JoinHandle<()>>) {
+        self.tasks.lock().extend(handles);
     }
 }
 

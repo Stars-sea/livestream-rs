@@ -43,7 +43,12 @@ impl EventDispatcher {
             }
         }
 
-        let _ = self.channel.send(event);
+        if let Err(e) = self.channel.send(event) {
+            tracing::warn!(
+                error = %e,
+                "EventDispatcher: failed to send global event (channel full/closed)"
+            );
+        }
     }
 }
 

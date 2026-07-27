@@ -7,4 +7,4 @@ pub mod api {
 mod context_propagation;
 mod server;
 
-pub use server::GrpcServer;
+pub use server::{GrpcServer, GrpcServerConfig};

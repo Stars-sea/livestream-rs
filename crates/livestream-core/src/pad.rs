@@ -162,7 +162,6 @@ impl<T> PadSender<T> {
         };
         let receiver = PadReceiver {
             inner: PadReceiverBackend::Direct,
-            demand,
         };
         (sender, receiver)
     }
@@ -180,7 +179,6 @@ impl<T> PadSender<T> {
         };
         let receiver: PadReceiver<T> = PadReceiver {
             inner: PadReceiverBackend::Channel { rx: Mutex::new(rx) },
-            demand,
         };
         (sender, receiver)
     }
@@ -230,9 +228,6 @@ enum PadReceiverBackend<T: 'static> {
 /// Receiver side of a Pad. Owned by the downstream node.
 pub struct PadReceiver<T: 'static> {
     inner: PadReceiverBackend<T>,
-    // Needed for pipeline engine lazy-processing (Phase 4.1).
-    #[allow(dead_code)]
-    demand: DemandSignal,
 }
 
 impl<T> PadReceiver<T> {

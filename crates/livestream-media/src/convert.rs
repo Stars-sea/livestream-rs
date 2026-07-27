@@ -13,7 +13,7 @@
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
-use livestream_codec::EncodedPacket;
+use livestream_codec::{EncodedPacket, NalData};
 use livestream_core::types::Codec;
 
 use crate::packet::Packet;
@@ -43,7 +43,7 @@ impl IntoAvPacket for EncodedPacket {
         // NOTE: set_data() calls av_new_packet which resets side-data fields.
         // Must set metadata AFTER copying data.
         if !self.data.is_empty() {
-            pkt.set_data(&self.data)?;
+            pkt.set_data(self.data.as_bytes())?;
         }
 
         // SAFETY: pkt is a valid AVPacket with data allocated.
@@ -81,7 +81,7 @@ impl FromAvPacket for EncodedPacket {
         Ok(EncodedPacket {
             codec,
             stream_index: pkt.stream_idx(),
-            data: bytes::Bytes::copy_from_slice(pkt.data()),
+            data: NalData::AnnexB(bytes::Bytes::copy_from_slice(pkt.data())),
             pts_ms,
             dts_ms,
             is_keyframe: pkt.is_key_frame(),
@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(roundtripped.pts_ms, Some(1000));
         assert_eq!(roundtripped.dts_ms, Some(900));
         assert!(roundtripped.is_keyframe);
-        assert_eq!(roundtripped.data, data);
+        assert_eq!(roundtripped.data.as_bytes(), data);
     }
 
     #[test]

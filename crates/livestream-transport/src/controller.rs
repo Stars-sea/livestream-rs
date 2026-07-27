@@ -76,7 +76,13 @@ impl TransportController {
             let msg = ControlMessage::StopStream {
                 live_id: live_id.clone(),
             };
-            let _ = channel.send(msg);
+            if let Err(e) = channel.send(msg) {
+                tracing::warn!(
+                    live_id = %live_id,
+                    error = %e,
+                    "TransportController: failed to send StopStream control message"
+                );
+            }
             wait_for_cleanup(&registry, &live_id, SESSION_CLEANUP_TIMEOUT).await
         });
         Ok(rx)

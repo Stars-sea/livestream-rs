@@ -52,9 +52,9 @@ impl FlvMux {
         let is_seq_header = pkt.is_sequence_header;
 
         let payload = if is_seq_header {
-            self.build_avc_sequence_header(&pkt.data, pkt.extradata.as_deref())
+            self.build_avc_sequence_header(pkt.data.as_bytes(), pkt.extradata.as_deref())
         } else {
-            self.annex_b_to_avcc(&pkt.data)
+            self.annex_b_to_avcc(pkt.data.as_bytes())
         };
 
         let frame_type: u8 = if is_keyframe { 1 } else { 2 };
@@ -93,7 +93,7 @@ impl FlvMux {
         let mut tag_payload = BytesMut::new();
         tag_payload.put_u8(sound_byte);
         tag_payload.put_u8(aac_packet_type);
-        tag_payload.extend_from_slice(&pkt.data);
+        tag_payload.extend_from_slice(pkt.data.as_bytes());
 
         let tag = FlvTag::audio(timestamp, tag_payload.freeze());
         Ok(vec![tag])
@@ -166,6 +166,7 @@ impl Processor for FlvMux {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use livestream_codec::NalData;
     use livestream_core::pad::PadSender;
 
     fn make_mux() -> FlvMux {
@@ -221,7 +222,7 @@ mod tests {
         let pkt = EncodedPacket {
             codec: Codec::Av1,
             stream_index: 0,
-            data: Bytes::from_static(&[0x00]),
+            data: NalData::AnnexB(Bytes::from_static(&[0x00])),
             pts_ms: Some(0),
             dts_ms: None,
             is_keyframe: true,

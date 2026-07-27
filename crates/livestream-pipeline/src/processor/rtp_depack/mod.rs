@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
-use livestream_codec::{EncodedPacket, RtpPacket};
+use livestream_codec::{EncodedPacket, NalData, RtpPacket};
 use livestream_core::{
     pad::{PadReceiver, PadSender},
     traits::{Node, Processor},
@@ -120,7 +120,7 @@ impl Processor for RtpDemuxProcessor {
                     let header = EncodedPacket {
                         codec,
                         stream_index: si,
-                        data: bytes::Bytes::new(),
+                        data: NalData::AnnexB(bytes::Bytes::new()),
                         pts_ms: None,
                         dts_ms: None,
                         is_keyframe: true,

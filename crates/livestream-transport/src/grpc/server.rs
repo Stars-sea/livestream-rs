@@ -26,6 +26,19 @@ const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("livestream_descriptor");
 
 #[allow(dead_code)]
+pub struct GrpcServerConfig {
+    pub port: u16,
+    pub rtmp_port: Option<u16>,
+    pub rtmp_app_name: String,
+    pub rtsp_port: Option<u16>,
+    pub http_flv_enabled: bool,
+    pub http_flv_port: u16,
+    pub control: Arc<TransportController>,
+    pub registry: Arc<SessionRegistry>,
+    pub dispatcher: Arc<EventDispatcher>,
+}
+
+#[allow(dead_code)]
 pub struct GrpcServer {
     port: u16,
     registry: Arc<SessionRegistry>,
@@ -35,34 +48,16 @@ pub struct GrpcServer {
 }
 
 impl GrpcServer {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        port: u16,
-        rtmp_port: Option<u16>,
-        rtmp_app_name: String,
-        rtsp_port: Option<u16>,
-        http_flv_enabled: bool,
-        http_flv_port: u16,
-        control: Arc<TransportController>,
-        registry: Arc<SessionRegistry>,
-        dispatcher: Arc<EventDispatcher>,
-    ) -> Result<Self> {
+    pub fn new(cfg: GrpcServerConfig) -> Result<Self> {
+        let port = cfg.port;
+        let registry = cfg.registry.clone();
+        let dispatcher = cfg.dispatcher.clone();
         Ok(Self {
             port,
             registry: registry.clone(),
             dispatcher: dispatcher.clone(),
             reflection_desc: FILE_DESCRIPTOR_SET.to_vec(),
-            service: IngestGrpcService::new(
-                control,
-                rtmp_port,
-                rtmp_app_name,
-                rtsp_port,
-                port,
-                http_flv_enabled,
-                http_flv_port,
-                registry,
-                dispatcher,
-            ),
+            service: IngestGrpcService::new(cfg, registry, dispatcher),
         })
     }
 
@@ -109,28 +104,21 @@ struct IngestGrpcService {
 }
 
 impl IngestGrpcService {
-    #[allow(clippy::too_many_arguments)]
     fn new(
-        control: Arc<TransportController>,
-        rtmp_port: Option<u16>,
-        rtmp_app_name: String,
-        rtsp_port: Option<u16>,
-        grpc_port: u16,
-        http_flv_enabled: bool,
-        http_flv_port: u16,
+        cfg: GrpcServerConfig,
         registry: Arc<SessionRegistry>,
         dispatcher: Arc<EventDispatcher>,
     ) -> Self {
         Self {
-            control,
+            control: cfg.control,
             registry,
             dispatcher,
-            rtmp_port,
-            rtmp_app_name,
-            rtsp_port,
-            grpc_port,
-            http_flv_enabled,
-            http_flv_port,
+            rtmp_port: cfg.rtmp_port,
+            rtmp_app_name: cfg.rtmp_app_name,
+            rtsp_port: cfg.rtsp_port,
+            grpc_port: cfg.port,
+            http_flv_enabled: cfg.http_flv_enabled,
+            http_flv_port: cfg.http_flv_port,
         }
     }
 

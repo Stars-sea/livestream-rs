@@ -248,6 +248,19 @@ impl RtpDemuxContext {
             anyhow::bail!("av_read_frame: {}", crate::ffmpeg_error(ret));
         }
 
+        // Validate stream_index before dereferencing.  A malformed or
+        // truncated RTP stream could cause FFmpeg to return a stream index
+        // beyond bounds.
+        let nb_streams = unsafe { (*self.fmt_ctx).nb_streams as usize };
+        if av_pkt.stream_index < 0 || av_pkt.stream_index as usize >= nb_streams {
+            unsafe { av_packet_unref(&mut av_pkt) };
+            anyhow::bail!(
+                "av_read_frame returned stream_index {} but nb_streams is {}",
+                av_pkt.stream_index,
+                nb_streams,
+            );
+        }
+
         let (codec, tb) = unsafe {
             let sp = *(*self.fmt_ctx).streams.add(av_pkt.stream_index as usize);
             let st = &*sp;

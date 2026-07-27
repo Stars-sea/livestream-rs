@@ -12,13 +12,8 @@ pub struct Scaler {
     ctx: *mut SwsContext,
     src_w: i32,
     src_h: i32,
-    // Fields retained for Transcode processor (Phase 4.1).
-    #[allow(dead_code)]
-    src_fmt: AVPixelFormat,
     dst_w: i32,
     dst_h: i32,
-    #[allow(dead_code)]
-    dst_fmt: AVPixelFormat,
 }
 
 // SAFETY: SwsContext is thread-safe for immutable operations. Mutable
@@ -61,10 +56,8 @@ impl Scaler {
             ctx,
             src_w,
             src_h,
-            src_fmt,
             dst_w,
             dst_h,
-            dst_fmt,
         })
     }
 

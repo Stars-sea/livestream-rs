@@ -2,6 +2,7 @@ use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use crate::config::ServerConfig;
 use anyhow::Result;
 use dashmap::DashMap;
 use tokio::net::{TcpListener, TcpStream};
@@ -41,33 +42,21 @@ pub struct RtmpServer {
     dispatcher: Arc<EventDispatcher>,
 }
 impl RtmpServer {
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create(
-        addr: SocketAddr,
-        appname: String,
-        precreate_ttl: Duration,
-        ctrl_channel: MpscRx<ControlMessage>,
-        flv_egress_hub: Arc<FlvEgressHub>,
-        minio: Arc<dyn livestream_pipeline::sink::minio::ObjectUploader>,
-        segment_cfg: livestream_codec::SegmentConfig,
-        cancel_token: CancellationToken,
-        registry: Arc<SessionRegistry>,
-        dispatcher: Arc<EventDispatcher>,
-    ) -> Result<Self> {
-        let listener = TcpListener::bind(addr).await?;
+    pub async fn create(cfg: ServerConfig, appname: String) -> Result<Self> {
+        let listener = TcpListener::bind(cfg.addr).await?;
 
         Ok(Self {
             listener,
             appname,
-            precreate_ttl,
-            ctrl_channel,
-            flv_egress_hub,
+            precreate_ttl: cfg.precreate_ttl,
+            ctrl_channel: cfg.ctrl_channel,
+            flv_egress_hub: cfg.flv_egress_hub,
             pending_lifecycle: Arc::new(DashMap::new()),
-            minio,
-            segment_cfg,
-            cancel_token,
-            registry,
-            dispatcher,
+            minio: cfg.minio,
+            segment_cfg: cfg.segment_cfg,
+            cancel_token: cfg.cancel_token,
+            registry: cfg.registry,
+            dispatcher: cfg.dispatcher,
         })
     }
 

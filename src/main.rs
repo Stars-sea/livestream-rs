@@ -20,8 +20,14 @@ use livestream_core::channel;
 use livestream_pipeline::factory;
 use livestream_pipeline::sink::minio::ObjectUploader;
 use livestream_transport::{
-    controller::TransportController, dispatcher::EventDispatcher, flv::FlvEgressHub,
-    grpc::GrpcServer, http_flv::HttpFlvServer, registry::SessionRegistry, rtmp::RtmpServer,
+    config::ServerConfig,
+    controller::TransportController,
+    dispatcher::EventDispatcher,
+    flv::FlvEgressHub,
+    grpc::{GrpcServer, GrpcServerConfig},
+    http_flv::HttpFlvServer,
+    registry::SessionRegistry,
+    rtmp::RtmpServer,
     rtsp::server::RtspServer,
 };
 
@@ -58,16 +64,18 @@ async fn main() -> Result<()> {
     let rtmp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", config.transport.rtmp.port))?;
     let session_ttl = Duration::from_secs(config.transport.rtmp.session_ttl_secs);
     let rtmp_server = match RtmpServer::create(
-        rtmp_addr,
+        ServerConfig {
+            addr: rtmp_addr,
+            ctrl_channel: rtmp_rx,
+            flv_egress_hub: flv_egress_hub.clone(),
+            registry: registry.clone(),
+            dispatcher: dispatcher.clone(),
+            precreate_ttl: session_ttl,
+            minio: minio.clone(),
+            segment_cfg: segment_cfg.clone(),
+            cancel_token: cancel.child_token(),
+        },
         config.transport.rtmp.app_name.clone(),
-        session_ttl,
-        rtmp_rx,
-        flv_egress_hub.clone(),
-        minio.clone(),
-        segment_cfg.clone(),
-        cancel.child_token(),
-        registry.clone(),
-        dispatcher.clone(),
     )
     .await
     {
@@ -83,17 +91,17 @@ async fn main() -> Result<()> {
     let rtsp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", config.transport.rtsp.port))?;
     let rtsp_ttl = Duration::from_secs(config.transport.rtsp.session_ttl_secs);
 
-    let rtsp_server = match RtspServer::create(
-        rtsp_addr,
-        rtsp_rx,
-        flv_egress_hub.clone(),
-        registry.clone(),
-        dispatcher.clone(),
-        rtsp_ttl,
-        minio.clone(),
-        segment_cfg.clone(),
-        cancel.child_token(),
-    )
+    let rtsp_server = match RtspServer::create(ServerConfig {
+        addr: rtsp_addr,
+        ctrl_channel: rtsp_rx,
+        flv_egress_hub: flv_egress_hub.clone(),
+        registry: registry.clone(),
+        dispatcher: dispatcher.clone(),
+        precreate_ttl: rtsp_ttl,
+        minio: minio.clone(),
+        segment_cfg: segment_cfg.clone(),
+        cancel_token: cancel.child_token(),
+    })
     .await
     {
         Ok(server) => Some(server),
@@ -106,17 +114,17 @@ async fn main() -> Result<()> {
     let controller = Arc::new(TransportController::new(registry.clone(), rtmp_tx, rtsp_tx));
 
     // 8. Create gRPC server
-    let grpc_server = GrpcServer::new(
-        config.services.grpc.port,
-        rtmp_server.as_ref().map(|_| config.transport.rtmp.port),
-        config.transport.rtmp.app_name.clone(),
-        rtsp_server.as_ref().map(|_| config.transport.rtsp.port),
-        config.services.http_flv.enabled,
-        config.services.http_flv.port,
-        controller,
-        registry.clone(),
-        dispatcher.clone(),
-    )?;
+    let grpc_server = GrpcServer::new(GrpcServerConfig {
+        port: config.services.grpc.port,
+        rtmp_port: rtmp_server.as_ref().map(|_| config.transport.rtmp.port),
+        rtmp_app_name: config.transport.rtmp.app_name.clone(),
+        rtsp_port: rtsp_server.as_ref().map(|_| config.transport.rtsp.port),
+        http_flv_enabled: config.services.http_flv.enabled,
+        http_flv_port: config.services.http_flv.port,
+        control: controller,
+        registry: registry.clone(),
+        dispatcher: dispatcher.clone(),
+    })?;
 
     // 9. Create HTTP-FLV server (optional)
     let http_flv_server = if config.services.http_flv.enabled {

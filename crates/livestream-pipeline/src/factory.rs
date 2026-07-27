@@ -5,6 +5,10 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use bytes::Bytes;
+use parking_lot::Mutex;
+use tokio::task::JoinHandle;
+
 use crate::broadcast::FlvBroadcast;
 use crate::processor::flv_mux::FlvMux;
 use crate::processor::hls_segment::HlsSegmenter;
@@ -52,23 +56,13 @@ pub fn null_uploader() -> Arc<dyn ObjectUploader> {
 /// Created once at startup and passed to protocol servers (RTMP, RTSP).
 /// Each `build_*` call produces an independent `PipelineImpl`.
 pub struct PipelineFactory {
-    #[allow(dead_code)]
-    flv_broadcast: Arc<dyn FlvBroadcast>,
     segment_cfg: SegmentConfig,
     minio: Arc<dyn ObjectUploader>,
 }
 
 impl PipelineFactory {
-    pub fn new(
-        segment_cfg: SegmentConfig,
-        minio: Arc<dyn ObjectUploader>,
-        flv_broadcast: Arc<dyn FlvBroadcast>,
-    ) -> Self {
-        Self {
-            segment_cfg,
-            minio,
-            flv_broadcast,
-        }
+    pub fn new(segment_cfg: SegmentConfig, minio: Arc<dyn ObjectUploader>) -> Self {
+        Self { segment_cfg, minio }
     }
 
     /// Access the segment configuration for protocol server construction.
@@ -97,7 +91,7 @@ pub fn build_pipeline(
     segment_cfg: &SegmentConfig,
     cancel: CancellationToken,
 ) -> Result<PipelineImpl> {
-    let (handle, futures) = build_encoded_chain(
+    let (handle, futures, deferred_tasks) = build_encoded_chain(
         live_id,
         src_rx,
         codec_params,
@@ -107,13 +101,15 @@ pub fn build_pipeline(
         cancel,
     )?;
     let tasks: Vec<_> = futures.into_iter().map(|f| tokio::spawn(f)).collect();
-    Ok(PipelineImpl::new(handle, tasks))
+    let pipeline = PipelineImpl::with_shared_tasks(handle, deferred_tasks);
+    pipeline.push_tasks(tasks);
+    Ok(pipeline)
 }
 
 /// Build a pipeline for an RTP source (RTSP path).
 ///
-/// Chains RtpDemuxProcessor before the standard EncodedPacket pipeline.
 #[allow(clippy::too_many_arguments)]
+/// Chains RtpDemuxProcessor before the standard EncodedPacket pipeline.
 pub fn build_rtsp_pipeline(
     live_id: &str,
     rtp_rx: PadReceiver<RtpPacket>,
@@ -136,7 +132,7 @@ pub fn build_rtsp_pipeline(
     let rtp_future: Pin<Box<dyn Future<Output = ()> + Send>> =
         Box::pin(run_processor(depack, cancel.child_token()));
 
-    let (handle, encoded_futures) = build_encoded_chain(
+    let (handle, encoded_futures, deferred_tasks) = build_encoded_chain(
         live_id,
         enc_rx,
         codec_params,
@@ -149,12 +145,19 @@ pub fn build_rtsp_pipeline(
     let mut all_futures = vec![rtp_future];
     all_futures.extend(encoded_futures);
     let tasks: Vec<_> = all_futures.into_iter().map(|f| tokio::spawn(f)).collect();
-    Ok(PipelineImpl::new(handle, tasks))
+    let pipeline = PipelineImpl::with_shared_tasks(handle, deferred_tasks);
+    pipeline.push_tasks(tasks);
+    Ok(pipeline)
 }
 
 // ── Private helpers ──
 
 type BoxedFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+type BuildResult = (
+    PipelineHandle,
+    Vec<BoxedFuture>,
+    Arc<Mutex<Vec<JoinHandle<()>>>>,
+);
 
 /// Build the standard EncodedPacket processing chain.
 ///
@@ -170,8 +173,9 @@ pub fn build_encoded_chain(
     minio: Arc<dyn ObjectUploader>,
     segment_cfg: &SegmentConfig,
     cancel: CancellationToken,
-) -> Result<(PipelineHandle, Vec<BoxedFuture>)> {
+) -> Result<BuildResult> {
     let has_codec_params = !codec_params.is_empty();
+    let deferred_tasks: Arc<Mutex<Vec<JoinHandle<()>>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Phase 1: OTelProbe
     let (otel_tx, otel_rx) = PadSender::<EncodedPacket>::new_channel(256);
@@ -224,14 +228,57 @@ pub fn build_encoded_chain(
             minio.clone(),
             segment_cfg.clone(),
             cancel.child_token(),
+            Arc::clone(&deferred_tasks),
         )));
     }
 
     let handle = PipelineHandle::new(cancel);
-    Ok((handle, futures))
+    Ok((handle, futures, deferred_tasks))
 }
 
-/// Wait for the first sequence header (with extradata), then build HLS pipeline lazily.
+/// Convert AVCDecoderConfigurationRecord extradata to raw SPS+PPS
+/// (concatenated, no Annex B start codes) for the MPEG-TS muxer.
+/// This prevents FFmpeg from auto-attaching h264_mp4toannexb BSF.
+/// Returns the original extradata unchanged for non-H.264 codecs.
+fn hls_extradata(codec: Codec, extradata: &[u8]) -> Vec<u8> {
+    if codec != Codec::H264 || extradata.len() < 7 {
+        return extradata.to_vec();
+    }
+    let num_sps = (extradata[5] & 0x1F) as usize;
+    let mut pos = 6usize;
+    let mut out = Vec::new();
+    for _ in 0..num_sps {
+        if pos + 2 > extradata.len() {
+            return extradata.to_vec();
+        }
+        let len = u16::from_be_bytes([extradata[pos], extradata[pos + 1]]) as usize;
+        pos += 2;
+        if pos + len > extradata.len() {
+            return extradata.to_vec();
+        }
+        out.extend_from_slice(&extradata[pos..pos + len]);
+        pos += len;
+    }
+    if pos >= extradata.len() {
+        return out;
+    }
+    let num_pps = extradata[pos] as usize;
+    pos += 1;
+    for _ in 0..num_pps {
+        if pos + 2 > extradata.len() {
+            return extradata.to_vec();
+        }
+        let len = u16::from_be_bytes([extradata[pos], extradata[pos + 1]]) as usize;
+        pos += 2;
+        if pos + len > extradata.len() {
+            return extradata.to_vec();
+        }
+        out.extend_from_slice(&extradata[pos..pos + len]);
+        pos += len;
+    }
+    out
+}
+
 ///
 /// Used for RTMP sources where codec params (SPS/PPS) arrive in-band after
 /// pipeline construction. Waits on `hls_rx` for a packet carrying extradata,
@@ -243,6 +290,7 @@ async fn deferred_hls_init(
     minio: Arc<dyn ObjectUploader>,
     segment_cfg: SegmentConfig,
     cancel: CancellationToken,
+    deferred_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
 ) {
     loop {
         let pkt = tokio::select! {
@@ -251,7 +299,7 @@ async fn deferred_hls_init(
         };
         let Some(pkt) = pkt else { return };
         // Wait for the first sequence header (carries extradata = SPS+PPS)
-        if let Some(ref extradata) = pkt.extradata {
+        if let Some(extradata) = &pkt.extradata {
             let media_type = match pkt.codec {
                 Codec::H264 | Codec::H265 | Codec::Av1 => MediaType::Video,
                 Codec::Aac | Codec::Mp3 | Codec::Opus => MediaType::Audio,
@@ -260,14 +308,14 @@ async fn deferred_hls_init(
                 codec: pkt.codec,
                 media_type,
                 clock_rate: 90000u32,
-                extradata: Some(extradata.clone()),
+                extradata: Some(Bytes::from(hls_extradata(pkt.codec, extradata))),
             }];
 
             match try_build_hls(&live_id, &params, minio, &segment_cfg, hls_rx, &cancel) {
                 Ok(hls_futures) => {
-                    for fut in hls_futures {
-                        tokio::spawn(fut);
-                    }
+                    let handles: Vec<_> =
+                        hls_futures.into_iter().map(|f| tokio::spawn(f)).collect();
+                    deferred_tasks.lock().extend(handles);
                     return;
                 }
                 Err(e) => {
@@ -276,7 +324,6 @@ async fn deferred_hls_init(
                 }
             }
         }
-        // Non-header packet — continue waiting
     }
 }
 

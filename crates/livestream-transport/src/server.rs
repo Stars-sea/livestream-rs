@@ -8,6 +8,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::config::ServerConfig;
 use crate::controller::TransportController;
 use crate::dispatcher::EventDispatcher;
 use crate::flv::FlvEgressHub;
@@ -20,6 +21,20 @@ use livestream_core::channel;
 use livestream_pipeline::factory::PipelineFactory;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
+
+/// Configuration for constructing a [`TransportServer`].
+pub struct TransportServerConfig {
+    pub rtmp_port: u16,
+    pub rtmp_app_name: String,
+    pub rtsp_port: u16,
+    pub http_flv_enabled: bool,
+    pub http_flv_port: u16,
+    pub session_ttl_secs: u64,
+    pub flv_egress_hub: Arc<FlvEgressHub>,
+    pub factory: Arc<PipelineFactory>,
+    pub cancel: CancellationToken,
+}
+
 pub struct TransportServer {
     rtmp: RtmpServer,
     rtsp: RtspServer,
@@ -31,19 +46,8 @@ pub struct TransportServer {
 }
 
 impl TransportServer {
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create(
-        rtmp_port: u16,
-        rtmp_app_name: String,
-        rtsp_port: u16,
-        http_flv_enabled: bool,
-        http_flv_port: u16,
-        session_ttl_secs: u64,
-        flv_egress_hub: Arc<FlvEgressHub>,
-        factory: Arc<PipelineFactory>,
-        cancel: CancellationToken,
-    ) -> Result<Self> {
-        let session_ttl = Duration::from_secs(session_ttl_secs);
+    pub async fn create(cfg: TransportServerConfig) -> Result<Self> {
+        let session_ttl = Duration::from_secs(cfg.session_ttl_secs);
         let registry = Arc::new(SessionRegistry::new());
         let dispatcher = Arc::new(EventDispatcher::new());
 
@@ -52,42 +56,44 @@ impl TransportServer {
 
         let controller = Arc::new(TransportController::new(registry.clone(), rtmp_tx, rtsp_tx));
 
-        let rtmp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", rtmp_port))?;
+        let rtmp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", cfg.rtmp_port))?;
         let rtmp_server = RtmpServer::create(
-            rtmp_addr,
-            rtmp_app_name,
-            session_ttl,
-            rtmp_rx,
-            flv_egress_hub.clone(),
-            factory.minio().clone(),
-            factory.segment_cfg().clone(),
-            cancel.child_token(),
-            registry.clone(),
-            dispatcher.clone(),
+            ServerConfig {
+                addr: rtmp_addr,
+                ctrl_channel: rtmp_rx,
+                flv_egress_hub: cfg.flv_egress_hub.clone(),
+                registry: registry.clone(),
+                dispatcher: dispatcher.clone(),
+                precreate_ttl: session_ttl,
+                minio: cfg.factory.minio().clone(),
+                segment_cfg: cfg.factory.segment_cfg().clone(),
+                cancel_token: cfg.cancel.child_token(),
+            },
+            cfg.rtmp_app_name,
         )
         .await?;
 
-        let rtsp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", rtsp_port))?;
-        let rtsp_server = RtspServer::create(
-            rtsp_addr,
-            rtsp_rx,
-            flv_egress_hub.clone(),
-            registry.clone(),
-            dispatcher.clone(),
-            session_ttl,
-            factory.minio().clone(),
-            factory.segment_cfg().clone(),
-            cancel.child_token(),
-        )
+        let rtsp_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", cfg.rtsp_port))?;
+        let rtsp_server = RtspServer::create(ServerConfig {
+            addr: rtsp_addr,
+            ctrl_channel: rtsp_rx,
+            flv_egress_hub: cfg.flv_egress_hub.clone(),
+            registry: registry.clone(),
+            dispatcher: dispatcher.clone(),
+            precreate_ttl: session_ttl,
+            minio: cfg.factory.minio().clone(),
+            segment_cfg: cfg.factory.segment_cfg().clone(),
+            cancel_token: cfg.cancel.child_token(),
+        })
         .await?;
 
-        let http_flv_server = if http_flv_enabled {
+        let http_flv_server = if cfg.http_flv_enabled {
             Some(
                 HttpFlvServer::create(
-                    http_flv_port,
-                    flv_egress_hub,
+                    cfg.http_flv_port,
+                    cfg.flv_egress_hub,
                     registry.clone(),
-                    cancel.child_token(),
+                    cfg.cancel.child_token(),
                 )
                 .await?,
             )
@@ -102,7 +108,7 @@ impl TransportServer {
             registry,
             dispatcher,
             controller,
-            cancel,
+            cancel: cfg.cancel,
         })
     }
 

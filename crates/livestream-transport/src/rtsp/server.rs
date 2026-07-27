@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::config::ServerConfig;
 use anyhow::Result;
 use dashmap::DashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
@@ -48,30 +49,19 @@ pub struct RtspServer {
 }
 
 impl RtspServer {
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create(
-        addr: SocketAddr,
-        ctrl_channel: MpscRx<ControlMessage>,
-        flv_egress_hub: Arc<FlvEgressHub>,
-        registry: Arc<SessionRegistry>,
-        dispatcher: Arc<EventDispatcher>,
-        precreate_ttl: Duration,
-        minio: Arc<dyn ObjectUploader>,
-        segment_cfg: SegmentConfig,
-        cancel_token: CancellationToken,
-    ) -> Result<Self> {
-        let listener = TcpListener::bind(addr).await?;
+    pub async fn create(cfg: ServerConfig) -> Result<Self> {
+        let listener = TcpListener::bind(cfg.addr).await?;
         Ok(Self {
             listener,
-            ctrl_channel,
-            registry,
-            dispatcher,
-            flv_egress_hub,
+            ctrl_channel: cfg.ctrl_channel,
+            registry: cfg.registry,
+            dispatcher: cfg.dispatcher,
+            flv_egress_hub: cfg.flv_egress_hub,
             pending_lifecycle: Arc::new(DashMap::new()),
-            precreate_ttl,
-            minio,
-            segment_cfg,
-            cancel_token,
+            precreate_ttl: cfg.precreate_ttl,
+            minio: cfg.minio,
+            segment_cfg: cfg.segment_cfg,
+            cancel_token: cfg.cancel_token,
         })
     }
 
@@ -231,8 +221,15 @@ async fn read_message(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) ->
         buf.extend_from_slice(&tmp[..n]);
 
         if let Some(pos) = find_header_end(&buf) {
-            let content_length = extract_content_length(&buf[..pos]);
-            let total = pos + 4 + content_length;
+            let content_length = extract_content_length(&buf[..pos])?;
+            let total = pos
+                .checked_add(4)
+                .and_then(|v| v.checked_add(content_length))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "RTSP message size overflow: pos={pos}, content_length={content_length}"
+                    )
+                })?;
             if buf.len() < total {
                 read_body_until(&mut buf, reader, &mut tmp, total).await?;
             }
@@ -246,9 +243,13 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
-fn extract_content_length(buf: &[u8]) -> usize {
+/// Maximum RTSP message size (headers + body). RTSP messages are small;
+/// SDP bodies rarely exceed 16 KiB. A 64 KiB cap defends against OOM.
+const MAX_RTSP_MESSAGE_SIZE: usize = 64 * 1024;
+
+fn extract_content_length(buf: &[u8]) -> Result<usize> {
     let headers = String::from_utf8_lossy(buf);
-    headers
+    let raw: usize = headers
         .lines()
         .find_map(|line| {
             if line.trim().to_lowercase().starts_with("content-length:") {
@@ -257,7 +258,15 @@ fn extract_content_length(buf: &[u8]) -> usize {
                 None
             }
         })
-        .unwrap_or(0)
+        .unwrap_or(0);
+    if raw > MAX_RTSP_MESSAGE_SIZE {
+        anyhow::bail!(
+            "RTSP Content-Length {} exceeds maximum {}",
+            raw,
+            MAX_RTSP_MESSAGE_SIZE
+        );
+    }
+    Ok(raw)
 }
 
 async fn read_body_until(
@@ -370,7 +379,8 @@ async fn run_rtsp_handshake(
                         });
                     }
                 };
-                if write_half.write_all(&resp_bytes).await.is_err() {
+                if let Err(e) = write_half.write_all(&resp_bytes).await {
+                    debug!(error = %e, "RTSP handshake: write failed (client likely disconnected)");
                     return Ok(HandshakeOutcome {
                         recording: false,
                         sdp: None,
@@ -499,7 +509,7 @@ async fn handle_connection(
                 let (channel, payload) = match result {
                     Ok(r) => r,
                     Err(e) => {
-                        error!(error = %e, "RTP read error");
+                        debug!(error = %e, "RTP read loop ended (stream teardown)");
                         break 'rtp_loop;
                     }
                 };

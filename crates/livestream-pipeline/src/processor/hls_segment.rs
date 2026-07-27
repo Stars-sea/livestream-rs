@@ -438,7 +438,9 @@ impl Processor for HlsSegmenter {
 
                 let mut playlist = self.playlist.lock();
                 playlist.push_segment(&seg.filename, seg.duration);
-                let _ = playlist.write_playlist(&self.workspace.playlist_path());
+                if let Err(e) = playlist.write_playlist(&self.workspace.playlist_path()) {
+                    tracing::warn!(error = %e, "HlsSegmenter: failed to write playlist");
+                }
                 drop(playlist);
 
                 return Ok(vec![seg]);
@@ -452,14 +454,17 @@ impl Processor for HlsSegmenter {
         let duration = self.segmenter.lock().elapsed().unwrap_or_default();
         let mut seg = self.rollover(duration)?;
         seg.is_final = true;
-
         let mut playlist = self.playlist.lock();
         playlist.push_segment(&seg.filename, seg.duration);
-        let _ = playlist.write_final_playlist(&self.workspace.playlist_path());
+        if let Err(e) = playlist.write_final_playlist(&self.workspace.playlist_path()) {
+            tracing::warn!(error = %e, "HlsSegmenter: failed to write final playlist");
+        }
         drop(playlist);
 
         for pad in &self.outputs {
-            let _ = pad.send(seg.clone());
+            if let Err(e) = pad.send(seg.clone()) {
+                tracing::warn!(error = %e, "HlsSegmenter: failed to send final segment");
+            }
         }
         Ok(())
     }

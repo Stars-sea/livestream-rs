@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use bytes::Bytes;
-use livestream_codec::EncodedPacket;
+use livestream_codec::{EncodedPacket, NalData};
 use livestream_core::{
     channel::SendError,
     pad::PadSender,
@@ -220,7 +220,7 @@ fn convert_frame(frame: RtmpRawFrame) -> Option<EncodedPacket> {
         Some(EncodedPacket {
             codec,
             stream_index: 0,
-            data: codec_data,
+            data: NalData::AnnexB(codec_data),
             pts_ms: Some(pts_ms),
             dts_ms: Some(dts_ms),
             is_keyframe,
@@ -242,7 +242,7 @@ fn convert_frame(frame: RtmpRawFrame) -> Option<EncodedPacket> {
         Some(EncodedPacket {
             codec: livestream_codec::Codec::Aac,
             stream_index: 0,
-            data: codec_data,
+            data: NalData::AnnexB(codec_data),
             pts_ms: Some(pts_ms),
             dts_ms: None,
             is_keyframe: false,

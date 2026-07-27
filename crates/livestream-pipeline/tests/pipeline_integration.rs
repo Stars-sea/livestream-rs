@@ -29,7 +29,7 @@ async fn test_flv_pipeline_one_video_keyframe() {
     .unwrap();
     drop(tx); // signal EOF
 
-    let (_handle, futures) = build_encoded_chain(
+    let (_handle, futures, _deferred_tasks) = build_encoded_chain(
         "test",
         rx,
         &[],
@@ -90,7 +90,7 @@ async fn test_seq_cache_snapshot_order() {
 
     drop(tx); // signal EOF
 
-    let (_handle, futures) = build_encoded_chain(
+    let (_handle, futures, _deferred_tasks) = build_encoded_chain(
         "test",
         rx,
         &[],
@@ -144,7 +144,7 @@ async fn test_deferred_hls_when_codec_params_empty() {
     .unwrap();
     drop(tx);
 
-    let (_handle, futures) = build_encoded_chain(
+    let (_handle, futures, _deferred_tasks) = build_encoded_chain(
         "test",
         rx,
         &[],
@@ -194,7 +194,7 @@ async fn test_pipeline_shutdown_drains() {
     .unwrap();
     drop(tx);
 
-    let (_handle, futures) = build_encoded_chain(
+    let (_handle, futures, _deferred_tasks) = build_encoded_chain(
         "test",
         rx,
         &[],
@@ -247,7 +247,7 @@ async fn test_full_pipeline_with_hls() {
         CodecParams::new_audio(Codec::Aac, 44100, None),
     ];
 
-    let (_handle, futures) = build_encoded_chain(
+    let (_handle, futures, _deferred_tasks) = build_encoded_chain(
         "full-pipe-test",
         rx,
         &codec_params,
