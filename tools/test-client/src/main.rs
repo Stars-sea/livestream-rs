@@ -17,6 +17,19 @@ use proto::{
     StartLivestreamRequest, StopLivestreamRequest,
 };
 
+macro_rules! run_test {
+    ($cond:expr, $label:expr, $failed:ident, $test:expr) => {
+        if $cond {
+            if let Err(e) = $test.await {
+                tracing::error!("{} 测试失败: {e}", $label);
+                $failed = true;
+            }
+        } else {
+            tracing::info!("=== {} 跳过 (port=0) ===", $label);
+        }
+    };
+}
+
 const GRPC_ADDR: &str = "http://127.0.0.1:50051";
 
 fn env_or(key: &str, default: &str) -> String {
@@ -56,13 +69,78 @@ fn pull_cmd(no_gui: bool, url: &str) -> Option<Child> {
     }
 }
 
-async fn stop_livestream(client: &mut LivestreamClient<tonic::transport::Channel>, live_id: &str) {
-    match client
-        .stop_livestream(StopLivestreamRequest {
+fn spawn_push(input_file: &PathBuf, format_args: &[&str], push_url: &str) -> anyhow::Result<Child> {
+    Command::new("ffmpeg")
+        .args(["-re", "-i"])
+        .arg(input_file)
+        .args(format_args)
+        .arg(push_url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("ffmpeg 推流失败")
+}
+
+async fn verify_connected(
+    client: &mut LivestreamClient<tonic::transport::Channel>,
+    live_id: &str,
+) -> anyhow::Result<()> {
+    let desc = client
+        .get_livestream_info(GetLivestreamInfoRequest {
             live_id: live_id.to_string(),
         })
         .await
-    {
+        .context("GetLivestreamInfo 失败")?
+        .into_inner()
+        .descriptor
+        .context("无 descriptor")?;
+    tracing::info!("状态: live_id={} status={}", desc.live_id, desc.status);
+    Ok(())
+}
+
+/// In auto mode: pull stream via ffmpeg for `duration`, verify video frames are received.
+async fn pull_and_verify(url: &str, label: &str, duration: Duration) -> anyhow::Result<()> {
+    let stderr_file = tempfile::NamedTempFile::new().context("创建临时日志文件失败")?;
+
+    tracing::info!(
+        "拉流验证 ({label}): {url} (duration={}s)",
+        duration.as_secs()
+    );
+
+    let mut child = Command::new("ffmpeg")
+        .args(["-i", url, "-f", "null", "/dev/null"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(stderr_file.as_file().try_clone()?)
+        .spawn()
+        .with_context(|| format!("ffmpeg 拉流 ({label}) 启动失败"))?;
+
+    tokio::time::sleep(duration).await;
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let stderr = std::fs::read_to_string(stderr_file.path()).context("读取拉流日志失败")?;
+
+    if stderr.contains("frame=") {
+        tracing::info!("拉流验证 ({label}): 成功 (检测到视频帧)");
+        Ok(())
+    } else if stderr.contains("Connection refused") || stderr.contains("Connection reset") {
+        bail!("拉流验证 ({label}) 失败: 连接被拒绝");
+    } else {
+        let preview: String = stderr.chars().take(500).collect();
+        bail!("拉流验证 ({label}) 失败: 未检测到视频帧\nstderr 前 500 字符:\n{preview}");
+    }
+}
+
+async fn stop_livestream(client: &mut LivestreamClient<tonic::transport::Channel>, live_id: &str) {
+    let resp = client
+        .stop_livestream(StopLivestreamRequest {
+            live_id: live_id.to_string(),
+        })
+        .await;
+    match resp {
         Ok(resp) => {
             tracing::info!(
                 "StopLivestream({live_id}): is_success={}",
@@ -94,11 +172,12 @@ async fn test_rtmp(
     stream_key: &str,
     input_file: &PathBuf,
     no_gui: bool,
+    auto: bool,
+    duration: Duration,
 ) -> anyhow::Result<()> {
     tracing::info!("=== RTMP 测试 (port={}) ===", ports.rtmp);
     let live_id = format!("{stream_key}-rtmp");
 
-    // StartLivestream
     let resp = client
         .start_livestream(StartLivestreamRequest {
             live_id: live_id.clone(),
@@ -122,47 +201,47 @@ async fn test_rtmp(
     );
     tracing::info!("RTMP 推流: {push_url}");
 
-    // Push
-    let mut push = Command::new("ffmpeg")
-        .args(["-re", "-i"])
-        .arg(input_file)
-        .args(["-c", "copy", "-f", "flv"])
-        .arg(&push_url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("ffmpeg RTMP 推流失败")?;
+    let mut push = spawn_push(input_file, &["-c", "copy", "-f", "flv"], &push_url)?;
     sleep(Duration::from_secs(3)).await;
+    verify_connected(client, &live_id).await?;
 
-    // Verify
-    let info = client
-        .get_livestream_info(GetLivestreamInfoRequest {
-            live_id: live_id.clone(),
-        })
-        .await
-        .context("GetLivestreamInfo 失败")?
-        .into_inner();
-    let desc = info.descriptor.context("无 descriptor")?;
-    tracing::info!("状态: live_id={} status={}", desc.live_id, desc.status);
-
-    // RTMP pull
-    let rtmp_pull = format!("rtmp://localhost:{}/lives/{}", ports.rtmp, live_id);
-    let mut rtmp_pull_proc = pull_cmd(no_gui, &rtmp_pull);
-
-    // HTTP-FLV pull
-    let mut flv_proc = if ports.http_flv > 0 {
+    if auto {
+        let rtmp_url = format!("rtmp://localhost:{}/lives/{}", ports.rtmp, live_id);
         let flv_url = format!("http://localhost:{}/lives/{}.flv", ports.http_flv, live_id);
-        pull_cmd(no_gui, &flv_url)
+
+        let rtmp_fut = pull_and_verify(&rtmp_url, "rtmp_pull", duration);
+        let flv_fut = async {
+            if ports.http_flv > 0 {
+                Some(pull_and_verify(&flv_url, "http_flv", duration).await)
+            } else {
+                None
+            }
+        };
+
+        let (rtmp_res, flv_res) = tokio::join!(rtmp_fut, flv_fut);
+        if let Err(e) = rtmp_res {
+            tracing::warn!("RTMP 拉流验证警告: {e}");
+        }
+        if let Some(Err(e)) = flv_res {
+            tracing::warn!("HTTP-FLV 拉流验证警告: {e}");
+        }
     } else {
-        None
-    };
+        let rtmp_pull_url = format!("rtmp://localhost:{}/lives/{}", ports.rtmp, live_id);
+        let mut rtmp_pull_proc = pull_cmd(no_gui, &rtmp_pull_url);
 
-    wait_enter().await;
+        let mut flv_proc = (ports.http_flv > 0)
+            .then(|| {
+                let flv_url = format!("http://localhost:{}/lives/{}.flv", ports.http_flv, live_id);
+                pull_cmd(no_gui, &flv_url)
+            })
+            .flatten();
 
-    for p in rtmp_pull_proc.iter_mut().chain(flv_proc.iter_mut()) {
-        kill_and_wait(p);
+        wait_enter().await;
+        for p in rtmp_pull_proc.iter_mut().chain(flv_proc.iter_mut()) {
+            kill_and_wait(p);
+        }
     }
+
     kill_and_wait(&mut push);
     stop_livestream(client, &live_id).await;
     Ok(())
@@ -174,6 +253,8 @@ async fn test_rtsp(
     stream_key: &str,
     input_file: &PathBuf,
     no_gui: bool,
+    auto: bool,
+    duration: Duration,
 ) -> anyhow::Result<()> {
     tracing::info!("=== RTSP 测试 (port={}) ===", ports.rtsp);
     let live_id = format!("{stream_key}-rtsp");
@@ -199,52 +280,51 @@ async fn test_rtsp(
     let push_url = format!("rtsp://localhost:{}/{path}", rtsp_ep.port);
     tracing::info!("RTSP 推流: {push_url}");
 
-    // RTSP push: ffmpeg -re -i input -c copy -f rtsp -rtsp_transport tcp url
-    let mut push = Command::new("ffmpeg")
-        .args(["-re", "-i"])
-        .arg(input_file)
-        .args(["-c", "copy", "-f", "rtsp", "-rtsp_transport", "tcp"])
-        .arg(&push_url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("ffmpeg RTSP 推流失败")?;
+    let mut push = spawn_push(
+        input_file,
+        &["-c", "copy", "-f", "rtsp", "-rtsp_transport", "tcp"],
+        &push_url,
+    )?;
     sleep(Duration::from_secs(3)).await;
-
-    // Verify
-    let info = client
-        .get_livestream_info(GetLivestreamInfoRequest {
-            live_id: live_id.clone(),
-        })
-        .await
-        .context("GetLivestreamInfo 失败")?
-        .into_inner();
-    let desc = info.descriptor.context("无 descriptor")?;
-    tracing::info!("状态: live_id={} status={}", desc.live_id, desc.status);
+    verify_connected(client, &live_id).await?;
 
     // RTSP server is ingest-only; playback via RTMP.
-    tracing::info!("RTSP 拉流跳过 (ingest-only, 通过 RTMP 拉流)");
-
-    let mut rtmp_pull_proc = if ports.rtmp > 0 {
-        let rtmp_pull = format!("rtmp://localhost:{}/lives/{}", ports.rtmp, live_id);
-        pull_cmd(no_gui, &rtmp_pull)
+    if auto {
+        if ports.rtmp > 0 {
+            let rtmp_url = format!("rtmp://localhost:{}/lives/{}", ports.rtmp, live_id);
+            if let Err(e) = pull_and_verify(&rtmp_url, "rtmp_pull_from_rtsp", duration).await {
+                tracing::warn!("RTMP 拉流验证警告 (RTSP ingest): {e}");
+            }
+        }
     } else {
-        None
-    };
-
-    wait_enter().await;
-
-    for p in rtmp_pull_proc.iter_mut() {
-        kill_and_wait(p);
+        tracing::info!("RTSP 拉流跳过 (ingest-only, 通过 RTMP 拉流)");
+        let mut rtmp_pull_proc = (ports.rtmp > 0)
+            .then(|| {
+                let url = format!("rtmp://localhost:{}/lives/{}", ports.rtmp, live_id);
+                pull_cmd(no_gui, &url)
+            })
+            .flatten();
+        wait_enter().await;
+        for p in rtmp_pull_proc.iter_mut() {
+            kill_and_wait(p);
+        }
     }
+
     kill_and_wait(&mut push);
     stop_livestream(client, &live_id).await;
     Ok(())
 }
 
+fn parse_duration(arg: &str) -> u64 {
+    arg.parse().unwrap_or_else(|e| {
+        eprintln!("无效的 --duration 值 '{arg}': {e}, 使用默认值 10");
+        10
+    })
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+#[allow(clippy::excessive_nesting)]
+async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -252,37 +332,85 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let input_file: PathBuf = env::args()
-        .nth(1)
-        .context("用法: cargo run -p test-client -- <input.mp4>")?
-        .into();
+    let args: Vec<String> = env::args().skip(1).collect();
+
+    // Parse --auto and --duration flags, collecting remaining positional args
+    let mut auto = false;
+    let mut duration_secs: u64 = 10;
+    let mut positional: Vec<String> = Vec::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--auto" => {
+                auto = true;
+                i += 1;
+            }
+            "--duration" => {
+                i += 1;
+                duration_secs = if i < args.len() {
+                    parse_duration(&args[i])
+                } else {
+                    eprintln!("--duration 缺少参数, 使用默认值 10");
+                    10
+                };
+                i += 1;
+            }
+            other => {
+                positional.push(other.to_string());
+                i += 1;
+            }
+        }
+    }
+
+    let input_file: PathBuf = if positional.is_empty() {
+        eprintln!("用法: test-client [--auto] [--duration <secs>] <input.mp4>");
+        std::process::exit(1);
+    } else {
+        positional[0].clone().into()
+    };
+
     if !input_file.exists() {
-        bail!("文件不存在: {}", input_file.display());
+        eprintln!("文件不存在: {}", input_file.display());
+        std::process::exit(1);
     }
 
     for cmd in &["ffmpeg"] {
         if Command::new("which").arg(cmd).output().is_err() {
-            bail!("缺少 {cmd}");
+            eprintln!("缺少 {cmd}");
+            std::process::exit(1);
         }
     }
 
     let stream_key = env_or("STREAM_KEY", "demo");
     let no_gui = env::var("NO_GUI").is_ok();
+    let duration = Duration::from_secs(duration_secs);
 
     // Connect
     tracing::info!("连接 gRPC: {GRPC_ADDR}");
-    let channel = Endpoint::from_shared(GRPC_ADDR.to_string())?
-        .connect()
-        .await
-        .context("gRPC 连接失败")?;
+    let channel = match Endpoint::from_shared(GRPC_ADDR.to_string()) {
+        Ok(ep) => match ep.connect().await {
+            Ok(ch) => ch,
+            Err(e) => {
+                tracing::error!("gRPC 连接失败: {e}");
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            tracing::error!("gRPC endpoint 无效: {e}");
+            std::process::exit(1);
+        }
+    };
     let mut client = LivestreamClient::new(channel);
 
     // GetServiceInfo
-    let svc = client
-        .get_service_info(GetServiceInfoRequest {})
-        .await
-        .context("GetServiceInfo 失败")?
-        .into_inner();
+    let svc = match client.get_service_info(GetServiceInfoRequest {}).await {
+        Ok(resp) => resp.into_inner(),
+        Err(e) => {
+            tracing::error!("GetServiceInfo 失败: {e}");
+            std::process::exit(1);
+        }
+    };
     let ports = ServicePorts {
         rtmp: svc.rtmp_port as u16,
         rtsp: svc.rtsp_port as u16,
@@ -296,31 +424,50 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // List
-    let list = client
-        .list_livestreams(ListLivestreamsRequest {})
-        .await
-        .context("ListLivestreams 失败")?
-        .into_inner();
-    tracing::info!("活跃流: {} 个", list.streams.len());
-
-    // RTMP
-    if ports.rtmp > 0 {
-        if let Err(e) = test_rtmp(&mut client, &ports, &stream_key, &input_file, no_gui).await {
-            tracing::error!("RTMP 测试失败: {e}");
+    match client.list_livestreams(ListLivestreamsRequest {}).await {
+        Ok(resp) => {
+            let list = resp.into_inner();
+            tracing::info!("活跃流: {} 个", list.streams.len());
         }
-    } else {
-        tracing::info!("=== RTMP 跳过 (port=0) ===");
+        Err(e) => {
+            tracing::warn!("ListLivestreams 失败: {e}");
+        }
     }
 
-    // RTSP
-    if ports.rtsp > 0 {
-        if let Err(e) = test_rtsp(&mut client, &ports, &stream_key, &input_file, no_gui).await {
-            tracing::error!("RTSP 测试失败: {e}");
-        }
-    } else {
-        tracing::info!("=== RTSP 跳过 (port=0) ===");
-    }
+    let mut failed = false;
+
+    run_test!(
+        ports.rtmp > 0,
+        "RTMP",
+        failed,
+        test_rtmp(
+            &mut client,
+            &ports,
+            &stream_key,
+            &input_file,
+            no_gui,
+            auto,
+            duration
+        )
+    );
+
+    run_test!(
+        ports.rtsp > 0,
+        "RTSP",
+        failed,
+        test_rtsp(
+            &mut client,
+            &ports,
+            &stream_key,
+            &input_file,
+            no_gui,
+            auto,
+            duration
+        )
+    );
 
     tracing::info!("测试完成");
-    Ok(())
+    if failed {
+        std::process::exit(1);
+    }
 }
