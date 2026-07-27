@@ -20,6 +20,9 @@ service Livestream {
 
   // Watch stream session lifecycle events for a given live_id.
   rpc WatchLivestream (WatchLivestreamRequest) returns (stream WatchLivestreamResponse);
+
+  // Return the listening ports for each protocol. Ports are 0 when disabled.
+  rpc GetServiceInfo (GetServiceInfoRequest) returns (GetServiceInfoResponse);
 }
 
 enum InputProtocol {
@@ -140,4 +143,13 @@ message WatchLivestreamRequest {
 message WatchLivestreamResponse {
   // Current lifecycle status for the watched stream.
   SessionStatus status = 1;
+}
+
+message GetServiceInfoRequest {}
+
+message GetServiceInfoResponse {
+  uint32 grpc_port = 1;
+  uint32 rtmp_port = 2;
+  uint32 rtsp_port = 3;
+  uint32 http_flv_port = 4;
 }

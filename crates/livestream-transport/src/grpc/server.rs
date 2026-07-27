@@ -23,42 +23,47 @@ use livestream_core::types::Protocol;
 
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("livestream_descriptor");
+
 #[allow(dead_code)]
 pub struct GrpcServer {
     port: u16,
     registry: Arc<SessionRegistry>,
     dispatcher: Arc<EventDispatcher>,
     service: IngestGrpcService,
+    reflection_desc: Vec<u8>,
 }
 
 impl GrpcServer {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         port: u16,
-        rtmp_port: u16,
+        rtmp_port: Option<u16>,
         rtmp_app_name: String,
-        rtsp_port: u16,
+        rtsp_port: Option<u16>,
         http_flv_enabled: bool,
         http_flv_port: u16,
         control: Arc<TransportController>,
         registry: Arc<SessionRegistry>,
         dispatcher: Arc<EventDispatcher>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        Ok(Self {
             port,
             registry: registry.clone(),
             dispatcher: dispatcher.clone(),
+            reflection_desc: FILE_DESCRIPTOR_SET.to_vec(),
             service: IngestGrpcService::new(
                 control,
                 rtmp_port,
                 rtmp_app_name,
                 rtsp_port,
+                port,
                 http_flv_enabled,
                 http_flv_port,
                 registry,
                 dispatcher,
             ),
-        }
+        })
     }
 
     #[instrument(
@@ -70,12 +75,18 @@ impl GrpcServer {
         let addr = format!("0.0.0.0:{}", self.port).parse()?;
         info!(address = %self.port, "gRPC Server will listen");
 
+        let reflection = tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(&self.reflection_desc)
+            .build_v1()
+            .map_err(|e| anyhow::anyhow!("Failed to build gRPC reflection descriptor: {e}"))?;
+
         let service = LivestreamServer::new(self.service);
 
         #[cfg(feature = "opentelemetry")]
         let service = OtelContextPropagationService::new(service);
 
         Server::builder()
+            .add_service(reflection)
             .add_service(service)
             .serve_with_shutdown(addr, shutdown.cancelled())
             .await?;
@@ -89,20 +100,22 @@ struct IngestGrpcService {
     control: Arc<TransportController>,
     registry: Arc<SessionRegistry>,
     dispatcher: Arc<EventDispatcher>,
-    rtmp_port: u16,
+    rtmp_port: Option<u16>,
     rtmp_app_name: String,
-    rtsp_port: u16,
+    rtsp_port: Option<u16>,
     http_flv_enabled: bool,
     http_flv_port: u16,
+    grpc_port: u16,
 }
 
 impl IngestGrpcService {
     #[allow(clippy::too_many_arguments)]
     fn new(
         control: Arc<TransportController>,
-        rtmp_port: u16,
+        rtmp_port: Option<u16>,
         rtmp_app_name: String,
-        rtsp_port: u16,
+        rtsp_port: Option<u16>,
+        grpc_port: u16,
         http_flv_enabled: bool,
         http_flv_port: u16,
         registry: Arc<SessionRegistry>,
@@ -115,6 +128,7 @@ impl IngestGrpcService {
             rtmp_port,
             rtmp_app_name,
             rtsp_port,
+            grpc_port,
             http_flv_enabled,
             http_flv_port,
         }
@@ -347,6 +361,19 @@ impl api::livestream_server::Livestream for IngestGrpcService {
 
         Ok(Response::new(Box::pin(stream)))
     }
+
+    #[instrument(name = "transport.grpc.get_service_info", err, skip(self, _request))]
+    async fn get_service_info(
+        &self,
+        _request: Request<api::GetServiceInfoRequest>,
+    ) -> Result<Response<api::GetServiceInfoResponse>, Status> {
+        Ok(Response::new(api::GetServiceInfoResponse {
+            grpc_port: self.grpc_port as u32,
+            rtmp_port: self.rtmp_port.map_or(0, |p| p as u32),
+            rtsp_port: self.rtsp_port.map_or(0, |p| p as u32),
+            http_flv_port: self.http_flv_port().unwrap_or(0),
+        }))
+    }
 }
 
 impl IngestGrpcService {
@@ -378,7 +405,7 @@ impl IngestGrpcService {
         let status = Self::session_state_to_proto(descriptor.state);
         let protocol = descriptor.protocol;
         let live_id = descriptor.id;
-        let rtmp_port = self.rtmp_port as u32;
+        let rtmp_port = self.rtmp_port.unwrap_or(0) as u32;
         let ingest_port = descriptor.endpoint.port.map(u32::from).unwrap_or(rtmp_port);
         let http_flv_port = self.http_flv_port();
         let http_flv_path = self.http_flv_path(&live_id);
@@ -408,7 +435,7 @@ impl IngestGrpcService {
         match protocol {
             Protocol::Rtmp => api::IngestEndpoints {
                 rtmp: Some(api::RtmpEndpoint {
-                    port: self.rtmp_port as u32,
+                    port: self.rtmp_port.unwrap_or(0) as u32,
                     app_name: self.rtmp_app_name.clone(),
                     stream_key: live_id.to_owned(),
                 }),
@@ -419,7 +446,7 @@ impl IngestGrpcService {
                 rtmp: None,
                 srt: None,
                 rtsp: Some(api::RtspEndpoint {
-                    port: self.rtsp_port as u32,
+                    port: self.rtsp_port.unwrap_or(0) as u32,
                     path: format!("/live/{}", live_id),
                 }),
             },
@@ -427,7 +454,7 @@ impl IngestGrpcService {
                 warn!(protocol = %other, live_id = %live_id, "Ingest endpoints requested for unsupported protocol, falling back to RTMP");
                 api::IngestEndpoints {
                     rtmp: Some(api::RtmpEndpoint {
-                        port: self.rtmp_port as u32,
+                        port: self.rtmp_port.unwrap_or(0) as u32,
                         app_name: self.rtmp_app_name.clone(),
                         stream_key: live_id.to_owned(),
                     }),

@@ -11,6 +11,7 @@ livestream-pipeline = { path = "../livestream-pipeline" }
 livestream-telemetry = { path = "../livestream-telemetry" }
 tonic.workspace = true
 tonic-prost.workspace = true
+tonic-reflection = { workspace = true }
 prost.workspace = true
 axum.workspace = true
 rtsp-types.workspace = true

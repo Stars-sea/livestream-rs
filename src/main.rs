@@ -108,15 +108,15 @@ async fn main() -> Result<()> {
     // 8. Create gRPC server
     let grpc_server = GrpcServer::new(
         config.services.grpc.port,
-        config.transport.rtmp.port,
+        rtmp_server.as_ref().map(|_| config.transport.rtmp.port),
         config.transport.rtmp.app_name.clone(),
-        config.transport.rtsp.port,
+        rtsp_server.as_ref().map(|_| config.transport.rtsp.port),
         config.services.http_flv.enabled,
         config.services.http_flv.port,
         controller,
         registry.clone(),
         dispatcher.clone(),
-    );
+    )?;
 
     // 9. Create HTTP-FLV server (optional)
     let http_flv_server = if config.services.http_flv.enabled {
