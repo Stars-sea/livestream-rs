@@ -9,6 +9,7 @@ pub mod dispatcher;
 pub mod flv;
 pub mod grpc;
 pub mod http_flv;
+pub(crate) mod play_keyframe;
 pub(crate) mod protocol_server;
 
 pub mod lifecycle;

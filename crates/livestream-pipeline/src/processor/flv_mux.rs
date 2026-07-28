@@ -7,23 +7,13 @@ use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 use livestream_codec::EncodedPacket;
 
-trait PutU24 {
-    fn put_u24(&mut self, value: u32);
-}
-
-impl PutU24 for BytesMut {
-    fn put_u24(&mut self, value: u32) {
-        self.put_u8(((value >> 16) & 0xff) as u8);
-        self.put_u8(((value >> 8) & 0xff) as u8);
-        self.put_u8((value & 0xff) as u8);
-    }
-}
 use livestream_core::{
     pad::{PadReceiver, PadSender},
     traits::{Node, Processor},
     types::{Codec, CodecParams},
 };
 use livestream_media::flv::FlvTag;
+use livestream_media::flv::put_u24;
 use livestream_telemetry::metric_pipeline_error;
 
 pub struct FlvMux {
@@ -69,10 +59,10 @@ impl FlvMux {
 
         if is_seq_header {
             tag_payload.put_u8(0); // AVCPacketType = 0
-            tag_payload.put_u24(0); // CompositionTime
+            put_u24(&mut tag_payload, 0); // CompositionTime
         } else {
             tag_payload.put_u8(1); // AVCPacketType = 1
-            tag_payload.put_u24(0); // CompositionTime
+            put_u24(&mut tag_payload, 0); // CompositionTime
         }
         tag_payload.extend_from_slice(&payload);
 

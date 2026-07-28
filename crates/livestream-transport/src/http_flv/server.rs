@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::flv::FlvEgressHub;
+use crate::play_keyframe::should_skip_while_waiting_keyframe;
 use crate::registry::SessionRegistry;
 use crate::registry::state::SessionState;
 use livestream_media::flv::{FlvTag, encode_flv_header, encode_flv_tag};
@@ -222,23 +223,6 @@ async fn handle_cors_preflight() -> Response {
     response
 }
 
-fn should_skip_while_waiting_keyframe(waiting_keyframe: &mut bool, tag: &FlvTag) -> bool {
-    if !*waiting_keyframe {
-        return false;
-    }
-
-    match tag {
-        FlvTag::Video {
-            is_keyframe: true, ..
-        } => {
-            *waiting_keyframe = false;
-            false
-        }
-        FlvTag::Video { .. } => true,
-        _ => false,
-    }
-}
-
 fn build_flv_header(cached_tags: &[FlvTag]) -> Bytes {
     let mut has_audio = false;
     let mut has_video = false;
@@ -307,8 +291,8 @@ async fn handle_stream_health(
 mod tests {
     use super::{
         ROUTE_PATH, apply_metadata_tracks, build_flv_header, parse_live_id, playback_path,
-        should_skip_while_waiting_keyframe,
     };
+    use crate::play_keyframe::should_skip_while_waiting_keyframe;
     use bytes::Bytes;
     use rml_rtmp::sessions::StreamMetadata;
 

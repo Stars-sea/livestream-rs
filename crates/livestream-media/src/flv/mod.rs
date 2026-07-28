@@ -13,7 +13,7 @@ mod tag;
 use anyhow::Result;
 use bytes::Bytes;
 
-pub use encode::{encode_flv_header, encode_flv_tag};
+pub use encode::{encode_flv_header, encode_flv_tag, put_u24};
 pub use packetizer::FlvTagPacketizer;
 pub use tag::FlvTag;
 

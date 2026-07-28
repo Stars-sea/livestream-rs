@@ -4,6 +4,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
+use crate::play_keyframe::should_skip_while_waiting_keyframe;
 use crate::rtmp::handler::HandlerTrait;
 use crate::rtmp::session::SessionGuard;
 use livestream_media::flv::FlvTag;
@@ -73,21 +74,15 @@ impl PlayHandler {
     }
 
     fn should_skip_while_waiting_keyframe(&mut self, tag: &FlvTag) -> bool {
-        if !self.waiting_keyframe {
-            return false;
+        let was_waiting = self.waiting_keyframe;
+        let result = should_skip_while_waiting_keyframe(&mut self.waiting_keyframe, tag);
+        if was_waiting && !self.waiting_keyframe {
+            warn!(
+                stream_key = %self.stream_key,
+                "Recovered RTMP play stream at next keyframe after lag"
+            );
         }
-
-        match tag {
-            FlvTag::Video {
-                is_keyframe: true, ..
-            } => {
-                self.waiting_keyframe = false;
-                warn!(stream_key = %self.stream_key, "Recovered RTMP play stream at next keyframe after lag");
-                false
-            }
-            FlvTag::Video { .. } => true,
-            _ => false,
-        }
+        result
     }
 
     async fn handle_tag_recv(

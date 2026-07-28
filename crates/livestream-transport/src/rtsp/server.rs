@@ -46,13 +46,13 @@ impl RtspServer {
         self.core
             .run(Protocol::Rtsp, move |socket, addr| {
                 debug!(client_addr = %addr, "Accepted new RTSP connection");
-                tokio::spawn(spawn_connection_handler(
+                Box::pin(spawn_connection_handler(
                     socket,
                     pending.clone(),
                     hub.clone(),
                     minio.clone(),
                     seg_cfg.clone(),
-                ));
+                ))
             })
             .await
     }

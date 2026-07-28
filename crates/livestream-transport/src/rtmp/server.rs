@@ -46,7 +46,7 @@ impl RtmpServer {
         self.core
             .run(Protocol::Rtmp, move |socket, addr| {
                 debug!(client_addr = %addr, "Accepted new RTMP connection");
-                tokio::spawn(spawn_connection_handler(
+                Box::pin(spawn_connection_handler(
                     appname.clone(),
                     socket,
                     pending.clone(),
@@ -54,7 +54,7 @@ impl RtmpServer {
                     minio.clone(),
                     seg_cfg.clone(),
                     registry.clone(),
-                ));
+                ))
             })
             .await
     }

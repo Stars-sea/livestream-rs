@@ -5,14 +5,17 @@
 //! delegates shared methods, providing protocol-specific connection
 //! handling via closures.
 
+use std::future::Future;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use dashmap::DashMap;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
@@ -40,6 +43,8 @@ pub(crate) struct ProtocolServerCore {
     pub cancel_token: CancellationToken,
     pub registry: Arc<SessionRegistry>,
     pub dispatcher: Arc<EventDispatcher>,
+    /// Tracks spawned connection handler + source tasks for graceful drain.
+    tasks: JoinSet<()>,
 }
 
 impl ProtocolServerCore {
@@ -56,6 +61,7 @@ impl ProtocolServerCore {
             cancel_token: cfg.cancel_token,
             registry: cfg.registry,
             dispatcher: cfg.dispatcher,
+            tasks: JoinSet::new(),
         })
     }
 
@@ -66,7 +72,7 @@ impl ProtocolServerCore {
     pub(crate) async fn run(
         &mut self,
         protocol: Protocol,
-        on_accept: impl Fn(TcpStream, SocketAddr),
+        on_accept: impl Fn(TcpStream, SocketAddr) -> Pin<Box<dyn Future<Output = ()> + Send>>,
     ) -> Result<()> {
         let protocol_name = match protocol {
             Protocol::Rtmp => "RTMP",
@@ -105,6 +111,13 @@ impl ProtocolServerCore {
             }
         }
 
+        debug!(
+            "{} server draining {} spawned tasks",
+            protocol_name,
+            self.tasks.len()
+        );
+        self.tasks.shutdown().await;
+
         Ok(())
     }
 
@@ -112,7 +125,9 @@ impl ProtocolServerCore {
         &mut self,
         accept_res: std::io::Result<(TcpStream, SocketAddr)>,
         protocol_name: &str,
-        on_accept: &impl Fn(TcpStream, SocketAddr),
+        on_accept: &(
+             impl Fn(TcpStream, SocketAddr) -> Pin<Box<dyn Future<Output = ()> + Send>> + ?Sized
+         ),
     ) {
         fn is_retryable_accept_error(err: &std::io::Error) -> bool {
             matches!(
@@ -126,7 +141,9 @@ impl ProtocolServerCore {
         }
 
         match accept_res {
-            Ok((socket, addr)) => on_accept(socket, addr),
+            Ok((socket, addr)) => {
+                self.tasks.spawn(on_accept(socket, addr));
+            }
             Err(err) if is_retryable_accept_error(&err) => {
                 warn!(
                     error = %err,

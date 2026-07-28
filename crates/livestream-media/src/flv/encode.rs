@@ -137,7 +137,7 @@ fn metadata_to_amf_object(metadata: &StreamMetadata) -> HashMap<String, Amf0Valu
     properties
 }
 
-fn put_u24(bytes: &mut BytesMut, value: u32) {
+pub fn put_u24(bytes: &mut BytesMut, value: u32) {
     bytes.put_u8(((value >> 16) & 0xff) as u8);
     bytes.put_u8(((value >> 8) & 0xff) as u8);
     bytes.put_u8((value & 0xff) as u8);
