@@ -26,6 +26,7 @@ bytes.workspace = true
 rml_rtmp.workspace = true
 crossfire.workspace = true
 serde.workspace = true
+parking_lot.workspace = true
 config.workspace = true
 async-stream = "0.3"
 regex = "1"

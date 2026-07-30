@@ -15,7 +15,7 @@ pub struct RtmpSource {
     stream_id: String,
     codec_params: Vec<CodecParams>,
     output_sender: PadSender<EncodedPacket>,
-    frame_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<RtmpRawFrame>>>,
+    frame_rx: parking_lot::Mutex<Option<tokio::sync::mpsc::Receiver<RtmpRawFrame>>>,
     cancel: CancellationToken,
 }
 
@@ -40,7 +40,7 @@ impl RtmpSource {
             stream_id: stream_id.into(),
             codec_params,
             output_sender,
-            frame_rx: std::sync::Mutex::new(Some(frame_rx)),
+            frame_rx: parking_lot::Mutex::new(Some(frame_rx)),
             cancel,
         };
         (source, frame_tx)
@@ -73,7 +73,6 @@ impl Source for RtmpSource {
         let mut rx = self
             .frame_rx
             .lock()
-            .unwrap()
             .take()
             .ok_or_else(|| anyhow::anyhow!("RtmpSource already started"))?;
 

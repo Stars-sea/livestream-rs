@@ -88,8 +88,8 @@ impl Sink for MinIoSink {
 mod tests {
     use super::*;
     use livestream_core::pad::PadSender;
+    use parking_lot::Mutex;
     use std::path::PathBuf;
-    use std::sync::Mutex;
     use std::time::Duration;
 
     struct MockUploader {
@@ -99,7 +99,7 @@ mod tests {
     #[async_trait::async_trait]
     impl ObjectUploader for MockUploader {
         async fn upload_file(&self, key: &str, _path: &Path) -> Result<()> {
-            self.uploaded.lock().unwrap().push(key.to_string());
+            self.uploaded.lock().push(key.to_string());
             Ok(())
         }
     }
@@ -128,7 +128,7 @@ mod tests {
         };
 
         sink.consume(seg).await.unwrap();
-        let uploaded = mock.uploaded.lock().unwrap();
+        let uploaded = mock.uploaded.lock();
         assert_eq!(uploaded.len(), 1);
         assert_eq!(uploaded[0], "hls/test-stream/segment_0000.ts");
     }

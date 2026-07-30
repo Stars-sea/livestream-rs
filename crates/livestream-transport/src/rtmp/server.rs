@@ -132,19 +132,24 @@ async fn spawn_connection_handler(
         // Spawn source
         spawn_source_task(source);
 
-        // Factory: always succeeds for FLV path (OTelProbe → SeqCacheProbe → FlvMux → FlvSink).
-        // HLS is skipped gracefully when codec params are empty (RTMP metadata arrives later).
-        let _pipeline = factory::build_pipeline(
+        // Build pipeline via PipelineFactory.
+        // Only the FLV path (OTelProbe → SeqCacheProbe → FlvMux → FlvSink) is
+        // built here; HLS is deferred until codec params arrive in-band (RTMP).
+        match factory::build_pipeline(
             &stream_key,
             src_rx,
-            &[], // codec_params — empty for RTMP; HLS branch skipped with info log
+            &[],
             flv_egress_hub.clone(),
             minio,
             &segment_cfg,
             pipeline_cancel,
-        )
-        .expect("Pipeline factory should never fail for FLV-only path");
-
+        ) {
+            Ok(_pipeline) => {}
+            Err(e) => {
+                warn!(stream_key = %stream_key, error = %e, "Pipeline construction failed");
+                return;
+            }
+        }
         builder.with_lifecycle(lifecycle).with_source_tx(frame_tx)
     } else {
         let Some((tag_stream, cached_tags)) = flv_egress_hub.subscribe(&stream_key) else {

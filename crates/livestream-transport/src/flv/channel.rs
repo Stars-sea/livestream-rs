@@ -1,6 +1,6 @@
 //! FlvLiveChannel — per-stream broadcast channel for FLV tags.
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use livestream_media::flv::FlvTag;
 use tokio::sync::broadcast;
@@ -48,18 +48,18 @@ impl FlvLiveChannel {
             FlvTag::Audio { .. } => &self.audio_seq,
             FlvTag::ScriptData(_) => &self.metadata,
         };
-        *slot.lock().unwrap() = Some(tag.clone());
+        *slot.lock() = Some(tag.clone());
     }
     pub fn subscribe(&self) -> (broadcast::Receiver<FlvTag>, Vec<FlvTag>) {
         let rx = self.sender.subscribe();
         let mut cached = Vec::new();
-        if let Some(tag) = self.metadata.lock().unwrap().clone() {
+        if let Some(tag) = self.metadata.lock().clone() {
             cached.push(tag);
         }
-        if let Some(tag) = self.video_seq.lock().unwrap().clone() {
+        if let Some(tag) = self.video_seq.lock().clone() {
             cached.push(tag);
         }
-        if let Some(tag) = self.audio_seq.lock().unwrap().clone() {
+        if let Some(tag) = self.audio_seq.lock().clone() {
             cached.push(tag);
         }
         (rx, cached)

@@ -25,7 +25,7 @@ pub struct RtspSource {
     /// Receives (channel, rtp_timestamp, marker, raw_payload) from the
     /// connection handler. Wrapped in `Mutex<Option<>>` so that `start()`
     /// can take ownership (via `&self`).
-    frame_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<RawRtpFrame>>>,
+    frame_rx: parking_lot::Mutex<Option<tokio::sync::mpsc::Receiver<RawRtpFrame>>>,
     cancel: CancellationToken,
 }
 
@@ -61,7 +61,7 @@ impl RtspSource {
             stream_id: stream_id.into(),
             codec_params,
             output_sender,
-            frame_rx: std::sync::Mutex::new(Some(frame_rx)),
+            frame_rx: parking_lot::Mutex::new(Some(frame_rx)),
             cancel,
         };
         (source, frame_tx)
@@ -94,7 +94,6 @@ impl Source for RtspSource {
         let mut rx = self
             .frame_rx
             .lock()
-            .unwrap()
             .take()
             .ok_or_else(|| anyhow::anyhow!("RtspSource already started"))?;
 

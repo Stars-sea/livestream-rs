@@ -3,7 +3,7 @@
 //! Supports **all** codecs FFmpeg's RTP demuxer supports:
 //! H.264, H.265, AAC, MJPEG, VP8, VP9, Opus, MP3, and more.
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
@@ -105,7 +105,7 @@ impl Processor for RtpDemuxProcessor {
     }
 
     async fn process(&self, input: Self::Input) -> Result<Vec<Self::Output>> {
-        let demuxer = self.demuxer.lock().unwrap();
+        let demuxer = self.demuxer.lock();
 
         // Emit codec sequence headers (SPS+PPS / ASC) on first call.
         // The RTP demuxer's stream-level codecpar holds the extradata;
