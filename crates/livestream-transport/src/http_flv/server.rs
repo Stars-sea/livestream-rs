@@ -17,6 +17,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use livestream_telemetry::metric_listener_lag;
 use crate::flv::FlvEgressHub;
 use crate::play_keyframe::should_skip_while_waiting_keyframe;
 use crate::registry::SessionRegistry;
@@ -189,6 +190,7 @@ async fn next_live_chunk(
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     *waiting_keyframe = true;
+                    metric_listener_lag!("http_flv", skipped);
                     debug!(live_id = %live_id, skipped = skipped, "HTTP-FLV subscriber lagged, dropping stale tags");
                 }
                 Err(broadcast::error::RecvError::Closed) => return None,

@@ -4,6 +4,7 @@
 //! Does not modify data.
 
 use anyhow::Result;
+use livestream_telemetry::metric_pipeline_packet;
 use livestream_codec::EncodedPacket;
 use livestream_core::{
     pad::{PadReceiver, PadSender},
@@ -72,6 +73,8 @@ impl Processor for OTelProbe {
             keyframe = pkt.is_keyframe,
             "pipeline packet"
         );
+
+        metric_pipeline_packet!("encoded", pkt.byte_size());
         Ok(vec![pkt])
     }
 }

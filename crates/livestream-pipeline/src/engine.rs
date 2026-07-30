@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use livestream_core::traits::{Pipeline, PipelineHandle, PipelineState};
+use livestream_telemetry::{metric_pipeline_stream_ended, metric_pipeline_stream_started};
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
 
@@ -22,6 +23,7 @@ pub struct PipelineImpl {
 impl PipelineImpl {
     /// Construct a PipelineImpl directly from a handle and spawned task handles.
     pub fn new(handle: PipelineHandle, tasks: Vec<JoinHandle<()>>) -> Self {
+        metric_pipeline_stream_started!();
         Self {
             handle,
             tasks: Arc::new(Mutex::new(tasks)),
@@ -30,11 +32,11 @@ impl PipelineImpl {
 
     /// Construct a PipelineImpl with a pre-existing shared task list.
     /// Used when deferred init (HLS) needs write access to the task list
-    /// before the PipelineImpl is fully constructed.
     pub fn with_shared_tasks(
         handle: PipelineHandle,
         tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     ) -> Self {
+        metric_pipeline_stream_started!();
         Self { handle, tasks }
     }
 
@@ -70,6 +72,7 @@ impl Pipeline for PipelineImpl {
         let tasks: Vec<JoinHandle<()>> = std::mem::take(&mut *self.tasks.lock());
 
         if tasks.is_empty() {
+            metric_pipeline_stream_ended!();
             self.handle.set_state(PipelineState::Terminated);
             return Ok(());
         }
@@ -89,6 +92,7 @@ impl Pipeline for PipelineImpl {
             }
         }
 
+        metric_pipeline_stream_ended!();
         self.handle.set_state(PipelineState::Terminated);
         Ok(())
     }

@@ -12,6 +12,8 @@ use livestream_media::flv::FlvTag;
 use livestream_pipeline::broadcast::FlvBroadcast;
 use tokio::sync::broadcast;
 
+use livestream_telemetry::metric_queue_drop;
+
 use super::channel::FlvLiveChannel;
 
 /// Central hub for FLV tag distribution.  Maps stream IDs to channels.
@@ -68,6 +70,7 @@ impl FlvBroadcast for FlvEgressHub {
         match self.channels.get(live_id) {
             Some(ch) => {
                 if let Err(e) = ch.broadcast(&tag) {
+                    metric_queue_drop!("flv_broadcast", "no_receivers");
                     tracing::debug!(live_id = %live_id, error = %e, "FlvEgressHub: no active subscribers");
                 }
             }

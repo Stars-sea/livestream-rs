@@ -4,6 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+
+use livestream_telemetry::{metric_minio_upload_total, metric_minio_upload_latency_ms};
 use livestream_codec::{SegmentConfig, TsSegment};
 use livestream_core::{
     pad::{DemandHandle, PadReceiver},
@@ -73,11 +75,19 @@ impl Sink for MinIoSink {
             "{}/{}/{}",
             self.segment_cfg.minio_prefix, self.live_id, seg.filename
         );
+        let start = std::time::Instant::now();
         let result = self.client.upload_file(&key, &seg.path).await;
-        if result.is_ok() {
-            // Clean up the staged segment file after successful upload.
-            if let Err(e) = std::fs::remove_file(&seg.path) {
-                tracing::warn!(path = %seg.path.display(), error = %e, "Failed to remove staged segment");
+        match &result {
+            Ok(()) => {
+                metric_minio_upload_total!("hls", "success");
+                metric_minio_upload_latency_ms!("hls", "success", start.elapsed().as_millis());
+                // Clean up the staged segment file after successful upload.
+                if let Err(e) = std::fs::remove_file(&seg.path) {
+                    tracing::warn!(path = %seg.path.display(), error = %e, "Failed to remove staged segment");
+                }
+            }
+            Err(_) => {
+                metric_minio_upload_total!("hls", "failure");
             }
         }
         result

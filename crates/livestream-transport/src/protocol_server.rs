@@ -20,6 +20,8 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
+use livestream_telemetry::{metric_connection_accepted, metric_connection_closed, metric_connection_rejected};
+
 use crate::config::ServerConfig;
 use crate::controller::ControlMessage;
 use crate::dispatcher::{EndReason, EventDispatcher};
@@ -181,10 +183,16 @@ impl ProtocolServerCore {
             drop(socket);
             return;
         }
+        // When no connection limit is configured, every connection is accepted.
+        if self.connection_semaphore.is_none() {
+            metric_connection_accepted!(protocol_name.to_string());
+        }
         let fut = on_accept(socket, addr);
+        let protocol = protocol_name.to_string();
         self.tasks.spawn(async move {
             let _permit = permit;
             fut.await;
+            metric_connection_closed!(protocol.clone());
         });
     }
 
@@ -195,8 +203,12 @@ impl ProtocolServerCore {
     ) -> Option<tokio::sync::OwnedSemaphorePermit> {
         let sem = self.connection_semaphore.as_ref()?;
         match sem.clone().try_acquire_owned() {
-            Ok(p) => Some(p),
+            Ok(p) => {
+                metric_connection_accepted!(protocol_name.to_string());
+                Some(p)
+            }
             Err(_) => {
+                metric_connection_rejected!(protocol_name.to_string());
                 warn!(
                     client_addr = %addr,
                     "{protocol_name} connection rejected: at capacity ({})",

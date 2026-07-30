@@ -15,6 +15,8 @@ mod imp {
         pub transport_queue_drops_total: Counter<u64>,
         pub transport_listener_lag_total: Counter<u64>,
         pub transport_ttl_expirations_total: Counter<u64>,
+        pub transport_connections_active: UpDownCounter<i64>,
+        pub transport_connections_rejected_total: Counter<u64>,
         pub storage_minio_uploads_total: Counter<u64>,
         pub storage_minio_upload_latency_ms: Histogram<u64>,
     }
@@ -62,6 +64,16 @@ mod imp {
                     .u64_counter("transport_ttl_expirations_total")
                     .with_description("Session cleanups triggered by precreate TTL expiration")
                     .with_unit("{session}")
+                    .build(),
+                transport_connections_active: meter
+                    .i64_up_down_counter("transport_connections_active")
+                    .with_description("Currently active TCP connections")
+                    .with_unit("{connection}")
+                    .build(),
+                transport_connections_rejected_total: meter
+                    .u64_counter("transport_connections_rejected_total")
+                    .with_description("Connection attempts rejected at capacity")
+                    .with_unit("{connection}")
                     .build(),
                 storage_minio_uploads_total: meter
                     .u64_counter("storage_minio_uploads_total")
@@ -121,7 +133,7 @@ mod imp {
                 .pipeline_middleware_latency_us
                 .record(
                     ($duration_us) as u64,
-                    &[::opentelemetry::KeyValue::new("middleware", $middleware)],
+                    &[$crate::KeyValue::new("middleware", $middleware)],
                 );
         }};
     }
@@ -134,8 +146,8 @@ mod imp {
                 .add(
                     1,
                     &[
-                        ::opentelemetry::KeyValue::new("queue", $queue),
-                        ::opentelemetry::KeyValue::new("reason", $reason),
+                        $crate::KeyValue::new("queue", $queue),
+                        $crate::KeyValue::new("reason", $reason),
                     ],
                 );
         }};
@@ -148,7 +160,7 @@ mod imp {
                 .transport_listener_lag_total
                 .add(
                     (($skipped) as u64).max(1),
-                    &[::opentelemetry::KeyValue::new("listener", $listener)],
+                    &[$crate::KeyValue::new("listener", $listener)],
                 );
         }};
     }
@@ -161,10 +173,37 @@ mod imp {
                 .add(
                     1,
                     &[
-                        ::opentelemetry::KeyValue::new("protocol", $protocol),
-                        ::opentelemetry::KeyValue::new("reason", $reason),
+                        $crate::KeyValue::new("protocol", $protocol),
+                        $crate::KeyValue::new("reason", $reason),
                     ],
                 );
+        }};
+    }
+
+    #[macro_export]
+    macro_rules! metric_connection_accepted {
+        ($protocol:expr) => {{
+            $crate::metrics::get_metrics()
+                .transport_connections_active
+                .add(1, &[$crate::KeyValue::new("protocol", $protocol)]);
+        }};
+    }
+
+
+    #[macro_export]
+    macro_rules! metric_connection_closed {
+        ($protocol:expr) => {{
+            $crate::metrics::get_metrics()
+                .transport_connections_active
+                .add(-1, &[$crate::KeyValue::new("protocol", $protocol)]);
+        }};
+    }
+    #[macro_export]
+    macro_rules! metric_connection_rejected {
+        ($protocol:expr) => {{
+            $crate::metrics::get_metrics()
+                .transport_connections_rejected_total
+                .add(1, &[$crate::KeyValue::new("protocol", $protocol)]);
         }};
     }
 
@@ -178,8 +217,8 @@ mod imp {
                 .add(
                     1,
                     &[
-                        ::opentelemetry::KeyValue::new("storage.bucket.name", bucket.to_string()),
-                        ::opentelemetry::KeyValue::new("upload.status", status),
+                        $crate::KeyValue::new("storage.bucket.name", bucket.to_string()),
+                        $crate::KeyValue::new("upload.status", status),
                     ],
                 );
         }};
@@ -195,8 +234,8 @@ mod imp {
                 .record(
                     ($duration_ms) as u64,
                     &[
-                        ::opentelemetry::KeyValue::new("storage.bucket.name", bucket.to_string()),
-                        ::opentelemetry::KeyValue::new("upload.status", status),
+                        $crate::KeyValue::new("storage.bucket.name", bucket.to_string()),
+                        $crate::KeyValue::new("upload.status", status),
                     ],
                 );
         }};
@@ -243,6 +282,18 @@ mod imp {
     #[macro_export]
     macro_rules! metric_ttl_expiration {
         ($protocol:expr, $reason:expr) => {};
+    }
+    #[macro_export]
+    macro_rules! metric_connection_closed {
+        ($protocol:expr) => {};
+    }
+    #[macro_export]
+    macro_rules! metric_connection_accepted {
+        ($protocol:expr) => {};
+    }
+    #[macro_export]
+    macro_rules! metric_connection_rejected {
+        ($protocol:expr) => {};
     }
     #[macro_export]
     macro_rules! metric_minio_upload_total {
