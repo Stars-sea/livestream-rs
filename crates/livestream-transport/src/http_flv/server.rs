@@ -305,7 +305,6 @@ async fn handle_stream_health(
     }))
 }
 #[cfg(test)]
-#[allow(unused_imports)]
 mod tests {
     use super::{
         ROUTE_PATH, apply_metadata_tracks, build_flv_header, parse_live_id, playback_path,

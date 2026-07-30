@@ -5,7 +5,7 @@
 
 mod hls_output;
 
-pub use hls_output::HlsOutputContext;
+pub use hls_output::{HlsBuffer, HlsOutputContext};
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;

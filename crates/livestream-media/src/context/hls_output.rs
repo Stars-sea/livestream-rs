@@ -20,6 +20,49 @@ use std::ptr::null_mut;
 use super::{Context, OutputContext};
 use crate::stream::StreamCollection;
 
+/// Stable-address growable buffer for FFmpeg AVIO write target.
+///
+/// Wraps `Box<Vec<u8>>` so the `Vec<u8>` struct lives at a fixed heap address.
+/// Required because `parking_lot::Mutex` stores data inline — moving the outer
+/// struct would invalidate the opaque pointer passed to FFmpeg.
+pub struct HlsBuffer {
+    #[allow(clippy::box_collection)]
+    inner: Box<Vec<u8>>,
+}
+
+impl HlsBuffer {
+    pub fn new() -> Self {
+        Self {
+            inner: Box::new(Vec::new()),
+        }
+    }
+
+    /// Returns a stable opaque pointer for `avio_alloc_context`.
+    ///
+    /// The pointer remains valid as long as `self` is not dropped.
+    /// Moving `self` is safe — the inner `Box` keeps the `Vec<u8>`
+    /// at the same heap address.
+    pub fn opaque_ptr(&mut self) -> *mut c_void {
+        &mut *self.inner as *mut Vec<u8> as *mut c_void
+    }
+
+    /// Take accumulated TS data, replacing with an empty buffer (zero-copy).
+    pub fn take(&mut self) -> Vec<u8> {
+        std::mem::take(&mut *self.inner)
+    }
+
+    /// Clear accumulated data in-place.
+    pub fn clear(&mut self) {
+        self.inner.clear();
+    }
+}
+
+impl Default for HlsBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Wraps `AVFormatContext` + custom AVIO for in-memory TS muxing.
 pub struct HlsOutputContext {
     ctx: *mut AVFormatContext,

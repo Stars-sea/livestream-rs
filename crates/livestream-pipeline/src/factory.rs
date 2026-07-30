@@ -283,7 +283,6 @@ fn hls_extradata(codec: Codec, extradata: &[u8]) -> Vec<u8> {
 /// Used for RTMP sources where codec params (SPS/PPS) arrive in-band after
 /// pipeline construction. Waits on `hls_rx` for a packet carrying extradata,
 /// then constructs the HLS segmenter + MinIO sink chain.
-#[allow(clippy::excessive_nesting)]
 async fn deferred_hls_init(
     live_id: String,
     hls_rx: PadReceiver<EncodedPacket>,
@@ -299,30 +298,52 @@ async fn deferred_hls_init(
         };
         let Some(pkt) = pkt else { return };
         // Wait for the first sequence header (carries extradata = SPS+PPS)
-        if let Some(extradata) = &pkt.extradata {
-            let media_type = match pkt.codec {
-                Codec::H264 | Codec::H265 | Codec::Av1 => MediaType::Video,
-                Codec::Aac | Codec::Mp3 | Codec::Opus => MediaType::Audio,
-            };
-            let params = vec![CodecParams {
-                codec: pkt.codec,
-                media_type,
-                clock_rate: 90000u32,
-                extradata: Some(Bytes::from(hls_extradata(pkt.codec, extradata))),
-            }];
+        if pkt.extradata.is_some() {
+            spawn_deferred_hls(
+                &live_id,
+                &pkt,
+                minio,
+                segment_cfg,
+                hls_rx,
+                cancel,
+                &deferred_tasks,
+            );
+            return;
+        }
+    }
+}
 
-            match try_build_hls(&live_id, &params, minio, &segment_cfg, hls_rx, &cancel) {
-                Ok(hls_futures) => {
-                    let handles: Vec<_> =
-                        hls_futures.into_iter().map(|f| tokio::spawn(f)).collect();
-                    deferred_tasks.lock().extend(handles);
-                    return;
-                }
-                Err(e) => {
-                    tracing::warn!(live_id = %live_id, error = %e, "Deferred HLS build failed");
-                    return;
-                }
-            }
+/// Build and spawn the HLS branch once extradata is available.
+fn spawn_deferred_hls(
+    live_id: &str,
+    pkt: &EncodedPacket,
+    minio: Arc<dyn ObjectUploader>,
+    segment_cfg: SegmentConfig,
+    hls_rx: PadReceiver<EncodedPacket>,
+    cancel: CancellationToken,
+    deferred_tasks: &Arc<Mutex<Vec<JoinHandle<()>>>>,
+) {
+    let Some(extradata) = &pkt.extradata else {
+        return;
+    };
+    let media_type = match pkt.codec {
+        Codec::H264 | Codec::H265 | Codec::Av1 => MediaType::Video,
+        Codec::Aac | Codec::Mp3 | Codec::Opus => MediaType::Audio,
+    };
+    let params = vec![CodecParams {
+        codec: pkt.codec,
+        media_type,
+        clock_rate: 90000u32,
+        extradata: Some(Bytes::from(hls_extradata(pkt.codec, extradata))),
+    }];
+
+    match try_build_hls(live_id, &params, minio, &segment_cfg, hls_rx, &cancel) {
+        Ok(hls_futures) => {
+            let handles: Vec<_> = hls_futures.into_iter().map(|f| tokio::spawn(f)).collect();
+            deferred_tasks.lock().extend(handles);
+        }
+        Err(e) => {
+            tracing::warn!(live_id = %live_id, error = %e, "Deferred HLS build failed");
         }
     }
 }

@@ -7,8 +7,8 @@ use anyhow::{Context, bail};
 use tokio::time::sleep;
 use tonic::transport::Endpoint;
 
+#[allow(clippy::excessive_nesting)]
 mod proto {
-    #![allow(clippy::excessive_nesting)]
     tonic::include_proto!("livestream");
 }
 
@@ -323,19 +323,24 @@ fn parse_duration(arg: &str) -> u64 {
     })
 }
 
-#[tokio::main]
-#[allow(clippy::excessive_nesting)]
-async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+struct ParsedArgs {
+    auto: bool,
+    duration_secs: u64,
+    input_file: PathBuf,
+}
 
+/// Parse the value following `--duration`, or return the default with a warning.
+fn parse_duration_flag(args: &[String], i: usize) -> u64 {
+    if i < args.len() {
+        parse_duration(&args[i])
+    } else {
+        eprintln!("--duration 缺少参数, 使用默认值 10");
+        10
+    }
+}
+
+fn parse_args() -> ParsedArgs {
     let args: Vec<String> = env::args().skip(1).collect();
-
-    // Parse --auto and --duration flags, collecting remaining positional args
     let mut auto = false;
     let mut duration_secs: u64 = 10;
     let mut positional: Vec<String> = Vec::new();
@@ -349,12 +354,7 @@ async fn main() {
             }
             "--duration" => {
                 i += 1;
-                duration_secs = if i < args.len() {
-                    parse_duration(&args[i])
-                } else {
-                    eprintln!("--duration 缺少参数, 使用默认值 10");
-                    10
-                };
+                duration_secs = parse_duration_flag(&args, i);
                 i += 1;
             }
             other => {
@@ -376,42 +376,37 @@ async fn main() {
         std::process::exit(1);
     }
 
-    for cmd in &["ffmpeg"] {
-        if Command::new("which").arg(cmd).output().is_err() {
-            eprintln!("缺少 {cmd}");
-            std::process::exit(1);
-        }
+    ParsedArgs {
+        auto,
+        duration_secs,
+        input_file,
     }
+}
 
-    let stream_key = env_or("STREAM_KEY", "demo");
-    let no_gui = env::var("NO_GUI").is_ok();
-    let duration = Duration::from_secs(duration_secs);
-
-    // Connect
+/// Connect to gRPC and fetch service info; exits on failure.
+async fn connect_and_get_info() -> (LivestreamClient<tonic::transport::Channel>, ServicePorts) {
     tracing::info!("连接 gRPC: {GRPC_ADDR}");
-    let channel = match Endpoint::from_shared(GRPC_ADDR.to_string()) {
-        Ok(ep) => match ep.connect().await {
-            Ok(ch) => ch,
-            Err(e) => {
-                tracing::error!("gRPC 连接失败: {e}");
-                std::process::exit(1);
-            }
-        },
-        Err(e) => {
+    let channel = Endpoint::from_shared(GRPC_ADDR.to_string())
+        .unwrap_or_else(|e| {
             tracing::error!("gRPC endpoint 无效: {e}");
             std::process::exit(1);
-        }
-    };
+        })
+        .connect()
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("gRPC 连接失败: {e}");
+            std::process::exit(1);
+        });
     let mut client = LivestreamClient::new(channel);
 
-    // GetServiceInfo
-    let svc = match client.get_service_info(GetServiceInfoRequest {}).await {
-        Ok(resp) => resp.into_inner(),
-        Err(e) => {
+    let svc = client
+        .get_service_info(GetServiceInfoRequest {})
+        .await
+        .unwrap_or_else(|e| {
             tracing::error!("GetServiceInfo 失败: {e}");
             std::process::exit(1);
-        }
-    };
+        })
+        .into_inner();
     let ports = ServicePorts {
         rtmp: svc.rtmp_port as u16,
         rtsp: svc.rtsp_port as u16,
@@ -423,6 +418,35 @@ async fn main() {
         ports.rtsp,
         ports.http_flv
     );
+
+    (client, ports)
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    let parsed = parse_args();
+    let auto = parsed.auto;
+    let duration = Duration::from_secs(parsed.duration_secs);
+    let input_file = parsed.input_file;
+
+    let stream_key = env_or("STREAM_KEY", "demo");
+    let no_gui = env::var("NO_GUI").is_ok();
+
+    for cmd in &["ffmpeg"] {
+        if Command::new("which").arg(cmd).output().is_err() {
+            eprintln!("缺少 {cmd}");
+            std::process::exit(1);
+        }
+    }
+
+    let (mut client, ports) = connect_and_get_info().await;
 
     // List
     match client.list_livestreams(ListLivestreamsRequest {}).await {

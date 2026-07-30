@@ -19,7 +19,9 @@ use livestream_core::{
 };
 use livestream_media::ffmpeg_sys_next::AVRational;
 use livestream_media::{
-    context::HlsOutputContext, convert::IntoAvPacket, stream::StaticStreamCollection,
+    context::{HlsBuffer, HlsOutputContext},
+    convert::IntoAvPacket,
+    stream::StaticStreamCollection,
 };
 use livestream_telemetry::metric_pipeline_error;
 use parking_lot::Mutex;
@@ -174,11 +176,7 @@ impl PlaylistState {
 
 struct HlsMuxerState {
     hls_ctx: Option<HlsOutputContext>,
-    // Box is REQUIRED: parking_lot::Mutex stores T inline. Without Box,
-    // Vec<u8> moves when the outer HlsSegmenter is moved (Ok(this) →
-    // Arc::new), invalidating the AVIO opaque pointer.
-    #[allow(clippy::box_collection)]
-    ts_buffer: Box<Vec<u8>>,
+    ts_buffer: HlsBuffer,
     next_sequence: u64,
     /// Last written DTS value (in 90kHz ticks). Used to enforce
     /// monotonicity across muxer context resets.
@@ -230,12 +228,8 @@ impl HlsSegmenter {
         let workspace = SegmentWorkspace::new(stream_id, cfg)?;
         let playlist = PlaylistState::new(cfg);
 
-        // Box<Vec<u8>> ensures the Vec is at a stable heap address even
-        // when the outer HlsSegmenter struct is moved (parking_lot::Mutex
-        // stores data inline). The opaque pointer is taken BEFORE Ok(this)
-        // moves the struct into Arc::new.
-        let mut ts_buffer = Box::new(Vec::new());
-        let opaque = &mut *ts_buffer as *mut Vec<u8> as *mut std::ffi::c_void;
+        let mut ts_buffer = HlsBuffer::new();
+        let opaque = ts_buffer.opaque_ptr();
 
         let mut muxer_state = HlsMuxerState {
             hls_ctx: None,
@@ -300,7 +294,7 @@ impl HlsSegmenter {
             }
 
             let seq = muxer.next_sequence;
-            let ts_data = std::mem::take(&mut muxer.ts_buffer);
+            let ts_data = muxer.ts_buffer.take();
             muxer.next_sequence += 1;
 
             // Disarm old context BEFORE creating the new one.
@@ -311,8 +305,8 @@ impl HlsSegmenter {
                 ctx.disarm();
             }
 
-            // Re-create TS muxer for the next segment (opaque pointer from Box).
-            let new_opaque = &mut *muxer.ts_buffer as *mut Vec<u8> as *mut std::ffi::c_void;
+            // Re-create TS muxer for the next segment (opaque pointer from HlsBuffer).
+            let new_opaque = muxer.ts_buffer.opaque_ptr();
             let mut new_ctx = unsafe { HlsOutputContext::create(&self.streams, new_opaque) }?;
             new_ctx.write_header()?;
             muxer.hls_ctx = Some(new_ctx);
@@ -339,7 +333,7 @@ impl HlsSegmenter {
     /// Takes `muxer` already acquired (with buffer cleared and DTS reset)
     /// and sets `muxer.hls_ctx` on success, or `None` on failure.
     fn recreate_muxer_ctx(&self, muxer: &mut HlsMuxerState, streams: &StaticStreamCollection) {
-        let new_opaque = &mut *muxer.ts_buffer as *mut Vec<u8> as *mut std::ffi::c_void;
+        let new_opaque = muxer.ts_buffer.opaque_ptr();
         match unsafe { HlsOutputContext::create(streams, new_opaque) } {
             Ok(mut new_ctx) => {
                 if let Err(e) = new_ctx.write_header() {
