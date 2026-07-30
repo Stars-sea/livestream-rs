@@ -52,11 +52,7 @@ pub(crate) struct ProtocolServerCore {
 impl ProtocolServerCore {
     pub(crate) async fn from_config(cfg: ServerConfig) -> Result<Self> {
         let listener = TcpListener::bind(cfg.addr).await?;
-        let connection_semaphore = if cfg.max_connections > 0 {
-            Some(Arc::new(tokio::sync::Semaphore::new(cfg.max_connections)))
-        } else {
-            None
-        };
+        let connection_semaphore = crate::config::make_connection_semaphore(cfg.max_connections);
         Ok(Self {
             listener,
             ctrl_channel: cfg.ctrl_channel,
@@ -69,6 +65,7 @@ impl ProtocolServerCore {
             registry: cfg.registry,
             dispatcher: cfg.dispatcher,
             tasks: JoinSet::new(),
+            connection_semaphore,
         })
     }
 
@@ -148,9 +145,7 @@ impl ProtocolServerCore {
         }
 
         match accept_res {
-            Ok((socket, addr)) => {
-                self.tasks.spawn(on_accept(socket, addr));
-            }
+            Ok((socket, addr)) => self.spawn_accepted(socket, addr, protocol_name, on_accept),
             Err(err) if is_retryable_accept_error(&err) => {
                 warn!(
                     error = %err,
@@ -168,6 +163,46 @@ impl ProtocolServerCore {
                     protocol_name,
                 );
                 sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
+
+    fn spawn_accepted(
+        &mut self,
+        socket: TcpStream,
+        addr: SocketAddr,
+        protocol_name: &str,
+        on_accept: &(
+             impl Fn(TcpStream, SocketAddr) -> Pin<Box<dyn Future<Output = ()> + Send>> + ?Sized
+         ),
+    ) {
+        let permit = self.acquire_permit(addr, protocol_name);
+        if permit.is_none() && self.connection_semaphore.is_some() {
+            drop(socket);
+            return;
+        }
+        let fut = on_accept(socket, addr);
+        self.tasks.spawn(async move {
+            let _permit = permit;
+            fut.await;
+        });
+    }
+
+    fn acquire_permit(
+        &self,
+        addr: SocketAddr,
+        protocol_name: &str,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let sem = self.connection_semaphore.as_ref()?;
+        match sem.clone().try_acquire_owned() {
+            Ok(p) => Some(p),
+            Err(_) => {
+                warn!(
+                    client_addr = %addr,
+                    "{protocol_name} connection rejected: at capacity ({})",
+                    sem.available_permits(),
+                );
+                None
             }
         }
     }

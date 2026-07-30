@@ -138,7 +138,6 @@ flowchart LR
 ### 关键组件 / Key Components
 
 **Transport 层：**
-- `TransportServer` — 聚合 RTMP/RTSP/HTTP-FLV server 统一生命周期
 - `TransportController` — 控制面命令分发（PrecreateStream / StopStream）
 - `RtmpServer` — RTMP ingest + 预创建 TTL 管理
 - `RtspServer` — RTSP ANNOUNCE/SETUP/RECORD/TEARDOWN，RTP 交错帧读取

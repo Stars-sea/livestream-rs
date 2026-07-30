@@ -194,24 +194,10 @@ async fn main() -> Result<()> {
     let drain_timeout = Duration::from_secs(10);
     let _ = tokio::time::timeout(drain_timeout, async {
         let _ = tokio::join!(
-            async {
-                if let Some(h) = rtmp_handle {
-                    let _ = h.await;
-                }
-            },
-            async {
-                let _ = grpc_handle.await;
-            },
-            async {
-                if let Some(h) = http_flv_handle {
-                    let _ = h.await;
-                }
-            },
-            async {
-                if let Some(h) = rtsp_handle {
-                    let _ = h.await;
-                }
-            },
+            drain_handle(rtmp_handle),
+            drain_handle(Some(grpc_handle)),
+            drain_handle(http_flv_handle),
+            drain_handle(rtsp_handle),
         );
     })
     .await;
@@ -235,6 +221,12 @@ fn spawn_server(
             let _ = error_tx.send(e).await;
         }
     })
+}
+
+async fn drain_handle(handle: Option<tokio::task::JoinHandle<()>>) {
+    if let Some(h) = handle {
+        let _ = h.await;
+    }
 }
 
 async fn wait_for_shutdown_signal() {

@@ -54,12 +54,7 @@ impl HttpFlvServer {
     ) -> Result<Self> {
         let addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
         let listener = TcpListener::bind(addr).await?;
-
-        let connection_semaphore = if max_connections > 0 {
-            Some(Arc::new(tokio::sync::Semaphore::new(max_connections)))
-        } else {
-            None
-        };
+        let connection_semaphore = crate::config::make_connection_semaphore(max_connections);
 
         let state = HttpFlvState {
             flv_egress_hub,
@@ -133,7 +128,7 @@ fn parse_live_id(path: &str) -> Option<&str> {
 async fn stream_response(
     state: HttpFlvState,
     live_id: String,
-    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Response {
     let Some((mut tag_stream, cached_tags)) = state.flv_egress_hub.subscribe(&live_id) else {
         return StatusCode::NOT_FOUND.into_response();
@@ -142,7 +137,7 @@ async fn stream_response(
     let cancel_token = state.cancel_token.clone();
 
     let body = Body::from_stream(stream! {
-        let _guard = _permit;
+        let _guard = permit;
         yield Ok::<Bytes, Infallible>(header_bytes);
 
         if let Some(encoded_cached_tags) = encode_cached_tags(&live_id, cached_tags) {

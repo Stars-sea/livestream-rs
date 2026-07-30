@@ -13,7 +13,6 @@ Updated 2026-07-26 for v0.5 architecture (post Spec 02-10 alignment).
 - HTTP-FLV 播放：`HttpFlvServer` 提供 `/lives/{live_id}.flv`
 - gRPC 接口：`GrpcServer` 实现 `StartLivestream` / `StopLivestream` / `ListLivestreams` / `GetLivestreamInfo` / `WatchLivestream`
 - 事件广播：`EventDispatcher` 发射 `SessionEvent`（Started / Init / Ended + EndReason）
-- 生命周期：`TransportServer` 聚合所有协议 server 的统一入口
 
 **Pipeline (`livestream-pipeline`)**:
 - 管道构建：`PipelineFactory` 持有共享依赖（MinIO、SegmentConfig、FlvBroadcast）
@@ -73,7 +72,6 @@ Pipeline 是线性 graph + branch 分支。主链：Source → OTelProbe → Seq
 
 | 组件 | 文件 | 职责 |
 |------|------|------|
-| `TransportServer` | `transport/src/server.rs` | 聚合 RTMP/RTSP/HTTP-FLV 生命周期 |
 | `TransportController` | `transport/src/controller.rs` | 控制面命令（MPSC） |
 | `RtmpServer` | `transport/src/rtmp/server.rs` | RTMP ingest，预创建 TTL |
 | `RtspServer` | `transport/src/rtsp/server.rs` | RTSP ingest（rtsp-types） |

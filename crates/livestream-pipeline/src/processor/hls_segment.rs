@@ -276,13 +276,10 @@ impl HlsSegmenter {
         // (original timebase → ms → 90kHz) loses precision; we track the
         // last DTS and force each new value to be strictly greater.
         // We set both PTS and DTS to the same value so PTS >= DTS always holds.
-        let orig_pts = unsafe { (*av_pkt.as_ptr()).pts };
+        let orig_pts = av_pkt.pts().unwrap_or(0);
         let next = orig_pts.max(muxer.last_dts + 1);
-        unsafe {
-            let ptr = av_pkt.as_mut_ptr();
-            (*ptr).pts = next;
-            (*ptr).dts = next;
-        }
+        av_pkt.set_pts(next);
+        av_pkt.set_dts(next);
         muxer.last_dts = next;
 
         let ctx = muxer
@@ -336,6 +333,27 @@ impl HlsSegmenter {
             duration,
             is_final: false,
         })
+    }
+
+    /// Recreates the HLS output context after a write error.
+    /// Takes `muxer` already acquired (with buffer cleared and DTS reset)
+    /// and sets `muxer.hls_ctx` on success, or `None` on failure.
+    fn recreate_muxer_ctx(&self, muxer: &mut HlsMuxerState, streams: &StaticStreamCollection) {
+        let new_opaque = &mut *muxer.ts_buffer as *mut Vec<u8> as *mut std::ffi::c_void;
+        match unsafe { HlsOutputContext::create(streams, new_opaque) } {
+            Ok(mut new_ctx) => {
+                if let Err(e) = new_ctx.write_header() {
+                    tracing::error!(error = %e, "Failed to write header on recreated HLS context");
+                    muxer.hls_ctx = None;
+                } else {
+                    muxer.hls_ctx = Some(new_ctx);
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to recreate HLS context after write error");
+                muxer.hls_ctx = None;
+            }
+        }
     }
 }
 
@@ -402,21 +420,7 @@ impl Processor for HlsSegmenter {
                 muxer.hls_ctx = None;
                 muxer.ts_buffer.clear();
                 muxer.last_dts = 0;
-                let new_opaque = &mut *muxer.ts_buffer as *mut Vec<u8> as *mut std::ffi::c_void;
-                match unsafe { HlsOutputContext::create(&self.streams, new_opaque) } {
-                    Ok(mut new_ctx) => {
-                        if let Err(e) = new_ctx.write_header() {
-                            tracing::error!(error = %e, "Failed to write header on recreated HLS context");
-                            muxer.hls_ctx = None;
-                        } else {
-                            muxer.hls_ctx = Some(new_ctx);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to recreate HLS context after write error");
-                        muxer.hls_ctx = None;
-                    }
-                }
+                self.recreate_muxer_ctx(&mut muxer, &self.streams);
                 return Ok(vec![]);
             }
         }

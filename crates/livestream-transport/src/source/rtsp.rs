@@ -66,6 +66,21 @@ impl RtspSource {
         };
         (source, frame_tx)
     }
+
+    async fn send_pkt_or_stop(&self, pkt: &RtpPacket) {
+        loop {
+            match self.output_sender.send(pkt.clone()) {
+                Ok(()) => return,
+                Err(livestream_core::channel::SendError::Closed) => {
+                    tracing::debug!(stream = %self.stream_id, "Output receiver closed");
+                    return;
+                }
+                Err(livestream_core::channel::SendError::Full) => {
+                    tokio::task::yield_now().await;
+                }
+            }
+        }
+    }
 }
 
 impl Node for RtspSource {
@@ -118,19 +133,7 @@ impl Source for RtspSource {
                         data: bytes::Bytes::from(frame.rtp_data),
                     };
 
-                    // Retry on backpressure — only break if receiver is gone.
-                    loop {
-                        match self.output_sender.send(rtp_pkt.clone()) {
-                            Ok(()) => break,
-                            Err(livestream_core::channel::SendError::Closed) => {
-                                tracing::debug!(stream = %self.stream_id, "Output receiver closed");
-                                break;
-                            }
-                            Err(livestream_core::channel::SendError::Full) => {
-                                tokio::task::yield_now().await;
-                            }
-                        }
-                    }
+                    self.send_pkt_or_stop(&rtp_pkt).await;
                 }
                 _ = self.cancel.cancelled() => {
                     tracing::info!(stream = %self.stream_id, "RtspSource cancelled");

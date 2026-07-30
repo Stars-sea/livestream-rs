@@ -27,3 +27,13 @@ pub struct ServerConfig {
     /// Maximum concurrent connections (0 = unlimited).
     pub max_connections: usize,
 }
+
+/// Build an optional connection-limit Semaphore from a usize limit.
+/// Returns `None` when `limit` is 0 (unlimited).
+pub(crate) fn make_connection_semaphore(limit: usize) -> Option<Arc<tokio::sync::Semaphore>> {
+    if limit > 0 {
+        Some(Arc::new(tokio::sync::Semaphore::new(limit)))
+    } else {
+        None
+    }
+}

@@ -201,15 +201,14 @@ impl SessionGuard {
 
             let events = self.handle_results(results, ct).await?;
             for event in events {
-                let handler_builder = match self
+                let builder = match self
                     .handle_connect_event(event, pending_lifecycle, ct)
                     .await?
                 {
-                    Some(builder) => builder,
+                    Some(b) => b,
                     None => continue,
                 };
-
-                let handler_builder = handler_builder
+                let handler_builder = builder
                     .with_appname(self.appname.clone())
                     .with_session(self);
                 return Ok(handler_builder);

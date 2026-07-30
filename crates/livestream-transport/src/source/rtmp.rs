@@ -45,6 +45,23 @@ impl RtmpSource {
         };
         (source, frame_tx)
     }
+
+    async fn send_pkt_or_stop(&self, pkt: &EncodedPacket) -> Result<()> {
+        loop {
+            match self.output_sender.send(pkt.clone()) {
+                Ok(()) => return Ok(()),
+                Err(SendError::Closed) => {
+                    tracing::debug!(stream = %self.stream_id, "Output receiver closed");
+                    self.cancel.cancel();
+                    break;
+                }
+                Err(SendError::Full) => {
+                    tokio::task::yield_now().await;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Node for RtmpSource {
@@ -93,22 +110,7 @@ impl Source for RtmpSource {
                         continue;
                     };
 
-                    // Retry on backpressure — transient channel-full should not
-                    // kill the source. Only break if the receiver is gone.
-                    loop {
-                        match self.output_sender.send(pkt.clone()) {
-                            Ok(()) => break,
-                            Err(SendError::Closed) => {
-                                tracing::debug!(stream = %self.stream_id, "Output receiver closed");
-                                self.cancel.cancel();
-                                return Ok(());
-                            }
-                            Err(SendError::Full) => {
-                                // Channel full — yield and retry.
-                                tokio::task::yield_now().await;
-                            }
-                        }
-                    }
+                    self.send_pkt_or_stop(&pkt).await?;
                 }
                 _ = self.cancel.cancelled() => {
                     tracing::info!(stream = %self.stream_id, "RtmpSource cancelled");
@@ -121,7 +123,6 @@ impl Source for RtmpSource {
         tracing::info!(stream = %self.stream_id, "RtmpSource stopped");
         Ok(())
     }
-
     async fn stop(&self) -> Result<()> {
         self.cancel.cancel();
         Ok(())
@@ -151,6 +152,107 @@ fn avcc_to_annex_b(data: &[u8]) -> Bytes {
     }
     out.freeze()
 }
+/// Extract CTS (Composition Time offset) from FLV video tag body bytes 2-4.
+/// Returns None if data is too short to contain the CTS field.
+fn extract_cts(data: &[u8]) -> Option<i64> {
+    if data.len() < 5 {
+        return None;
+    }
+    let cts_raw = ((data[2] as i32) << 16) | ((data[3] as i32) << 8) | (data[4] as i32);
+    let cts = if cts_raw & 0x800000 != 0 {
+        cts_raw | !0xFFFFFF
+    } else {
+        cts_raw
+    };
+    Some(cts as i64)
+}
+
+/// Convert a video RTMP frame into an EncodedPacket.
+fn convert_video_frame(data: Bytes, pts_ms: i64) -> Option<EncodedPacket> {
+    // Callers have already checked data.len() >= 2.
+    let first_byte = data[0];
+    let frame_type = (first_byte >> 4) & 0x0F; // 1=keyframe, 2=inter, 3=disposable
+    let codec_id = first_byte & 0x0F; // 7=H264, 12=H265
+    let avc_packet_type = data[1];
+
+    let codec = match codec_id {
+        7 => livestream_codec::Codec::H264,
+        12 => livestream_codec::Codec::H265,
+        _ => {
+            tracing::warn!(codec_id, "Unsupported FLV video codec");
+            return None;
+        }
+    };
+
+    let is_keyframe = frame_type == 1;
+    let is_seq_header = avc_packet_type == 0;
+
+    // rml_rtmp gives us the full FLV tag body (5-byte header + codec data).
+    // Strip the header: FlvMux will re-add it.
+    let raw_codec_data = if data.len() > 5 {
+        data.slice(5..)
+    } else {
+        Bytes::new()
+    };
+
+    // Convert AVCC → Annex B for NAL unit packets. Sequence headers
+    // carry AVCDecoderConfigurationRecord (used as extradata), not NAL units.
+    let codec_data = if !is_seq_header && !raw_codec_data.is_empty() {
+        avcc_to_annex_b(&raw_codec_data)
+    } else {
+        raw_codec_data
+    };
+
+    // For sequence headers, populate extradata with AVCDecoderConfigurationRecord
+    // so build_avc_sequence_header can use it.
+    let extradata = if is_seq_header && !codec_data.is_empty() {
+        Some(codec_data.clone())
+    } else {
+        None
+    };
+
+    // CTS = Composition Time offset (PTS - DTS). FLV tag body bytes 2-4.
+    let cts_ms = extract_cts(&data).unwrap_or(0);
+    let dts_ms = pts_ms - cts_ms;
+
+    Some(EncodedPacket {
+        codec,
+        stream_index: 0,
+        data: NalData::AnnexB(codec_data),
+        pts_ms: Some(pts_ms),
+        dts_ms: Some(dts_ms),
+        is_keyframe,
+        is_sequence_header: is_seq_header,
+        is_script_data: false,
+        extradata,
+    })
+}
+
+/// Convert an audio RTMP frame into an EncodedPacket.
+fn convert_audio_frame(data: Bytes, pts_ms: i64) -> Option<EncodedPacket> {
+    let is_aac_seq = data.len() >= 2
+        && (data[0] >> 4) == 10 // SoundFormat = AAC
+        && data[1] == 0; // AACPacketType = sequence header
+    // Strip 2-byte FLV audio tag header (SoundFormat + AACPacketType).
+    // FlvMux will re-add it.
+    let codec_data = if data.len() > 2 {
+        data.slice(2..)
+    } else {
+        Bytes::new()
+    };
+    Some(EncodedPacket {
+        codec: livestream_codec::Codec::Aac,
+        stream_index: 0,
+        data: NalData::AnnexB(codec_data),
+        pts_ms: Some(pts_ms),
+        dts_ms: None,
+        is_keyframe: false,
+        is_sequence_header: is_aac_seq,
+        is_script_data: false,
+        extradata: None,
+    })
+}
+
 /// Convert a raw RTMP frame into an EncodedPacket.
 fn convert_frame(frame: RtmpRawFrame) -> Option<EncodedPacket> {
     if frame.is_script_data || frame.data.is_empty() {
@@ -160,95 +262,9 @@ fn convert_frame(frame: RtmpRawFrame) -> Option<EncodedPacket> {
     let pts_ms = frame.timestamp as i64;
 
     if frame.is_video && frame.data.len() >= 2 {
-        let first_byte = frame.data[0];
-        let frame_type = (first_byte >> 4) & 0x0F; // 1=keyframe, 2=inter, 3=disposable
-        let codec_id = first_byte & 0x0F; // 7=H264, 12=H265
-        let avc_packet_type = frame.data[1];
-
-        let codec = match codec_id {
-            7 => livestream_codec::Codec::H264,
-            12 => livestream_codec::Codec::H265,
-            _ => {
-                tracing::warn!(codec_id, "Unsupported FLV video codec");
-                return None;
-            }
-        };
-
-        let is_keyframe = frame_type == 1;
-        let is_seq_header = avc_packet_type == 0;
-
-        // rml_rtmp gives us the full FLV tag body (5-byte header + codec data).
-        // Strip the header: FlvMux will re-add it.
-        let raw_codec_data = if frame.data.len() > 5 {
-            frame.data.slice(5..)
-        } else {
-            Bytes::new()
-        };
-
-        // Convert AVCC → Annex B for NAL unit packets. Sequence headers
-        // carry AVCDecoderConfigurationRecord (used as extradata), not NAL units.
-        let codec_data = if !is_seq_header && !raw_codec_data.is_empty() {
-            avcc_to_annex_b(&raw_codec_data)
-        } else {
-            raw_codec_data
-        };
-
-        // For sequence headers, populate extradata with AVCDecoderConfigurationRecord
-        // so build_avc_sequence_header can use it.
-        let extradata = if is_seq_header && !codec_data.is_empty() {
-            Some(codec_data.clone())
-        } else {
-            None
-        };
-
-        // CTS = Composition Time offset (PTS - DTS). FLV tag body bytes 2-4.
-        let cts_ms = if frame.data.len() >= 5 {
-            let cts_raw = ((frame.data[2] as i32) << 16)
-                | ((frame.data[3] as i32) << 8)
-                | (frame.data[4] as i32);
-            if cts_raw & 0x800000 != 0 {
-                cts_raw | !0xFFFFFF
-            } else {
-                cts_raw
-            }
-        } else {
-            0
-        };
-        let dts_ms = pts_ms - cts_ms as i64;
-
-        Some(EncodedPacket {
-            codec,
-            stream_index: 0,
-            data: NalData::AnnexB(codec_data),
-            pts_ms: Some(pts_ms),
-            dts_ms: Some(dts_ms),
-            is_keyframe,
-            is_sequence_header: is_seq_header,
-            is_script_data: false,
-            extradata,
-        })
+        convert_video_frame(frame.data, pts_ms)
     } else if frame.is_audio {
-        let is_aac_seq = frame.data.len() >= 2
-            && (frame.data[0] >> 4) == 10 // SoundFormat = AAC
-            && frame.data[1] == 0; // AACPacketType = sequence header
-        // Strip 2-byte FLV audio tag header (SoundFormat + AACPacketType).
-        // FlvMux will re-add it.
-        let codec_data = if frame.data.len() > 2 {
-            frame.data.slice(2..)
-        } else {
-            Bytes::new()
-        };
-        Some(EncodedPacket {
-            codec: livestream_codec::Codec::Aac,
-            stream_index: 0,
-            data: NalData::AnnexB(codec_data),
-            pts_ms: Some(pts_ms),
-            dts_ms: None,
-            is_keyframe: false,
-            is_sequence_header: is_aac_seq,
-            is_script_data: false,
-            extradata: None,
-        })
+        convert_audio_frame(frame.data, pts_ms)
     } else {
         None
     }
