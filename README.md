@@ -65,6 +65,9 @@ HTTP-FLV 播放地址示例：`http://127.0.0.1:8080/lives/<live_id>.flv`
 | `RTSP__PORT` | RTSP ingest 端口（默认 8554） |
 | `HTTP_FLV__ENABLED` | 启用 HTTP-FLV 播放端点 |
 | `HTTP_FLV__PORT` | HTTP-FLV 端口（默认 8080） |
+| `RTMP__MAX_CONNECTIONS` | RTMP 最大并发连接数（默认 1000，0=无限制） |
+| `RTSP__MAX_CONNECTIONS` | RTSP 最大并发连接数（默认 1000，0=无限制） |
+| `HTTP_FLV__MAX_CONNECTIONS` | HTTP-FLV 最大并发连接数（默认 2000，0=无限制） |
 | `GRPC__PORT` | gRPC 控制面端口（默认 50051） |
 | `SEGMENT__DURATION_SECS` | HLS 分段时长（秒） |
 | `SEGMENT__CACHE_DIR` | 分段暂存目录 |
@@ -74,7 +77,7 @@ HTTP-FLV 播放地址示例：`http://127.0.0.1:8080/lives/<live_id>.flv`
 | `MINIO__BUCKET` | Bucket name（必填） |
 | `QUEUE__*` | 通道容量配置 |
 
-MinIO 配置为必填，缺失时启动失败。
+MinIO 配置缺失时，服务仍可启动但 HLS 分段上传功能将静默禁用。`NullUploader` 会自动丢弃所有分段。
 
 ## gRPC API
 
