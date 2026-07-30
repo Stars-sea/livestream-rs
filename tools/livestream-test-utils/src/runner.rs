@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
-use crate::client::{connect_and_get_info, stop_livestream, verify_connected, ServicePorts};
+use crate::client::{ServicePorts, connect_and_get_info, stop_livestream, verify_connected};
 use crate::primitives::{kill_and_wait, pull_and_verify, spawn_push};
 use crate::proto::{StartLivestreamRequest, livestream_client::LivestreamClient};
 
@@ -159,7 +159,12 @@ pub async fn run_single_stream(
     }
 }
 
-fn stream_error(config: &StreamConfig, latency_ms: u64, frames: bool, errors: &[String]) -> StreamResult {
+fn stream_error(
+    config: &StreamConfig,
+    latency_ms: u64,
+    frames: bool,
+    errors: &[String],
+) -> StreamResult {
     StreamResult {
         live_id: config.live_id.clone(),
         success: false,
@@ -184,14 +189,25 @@ fn build_push_url(
     match config.protocol {
         Protocol::Rtmp => ingest
             .and_then(|i| i.rtmp.as_ref())
-            .map(|e| format!("rtmp://localhost:{}/{}/{}", e.port, e.app_name, e.stream_key))
+            .map(|e| {
+                format!(
+                    "rtmp://localhost:{}/{}/{}",
+                    e.port, e.app_name, e.stream_key
+                )
+            })
             .unwrap_or_else(|| {
                 errors.push("no RTMP ingest endpoint".into());
                 format!("rtmp://localhost:{}/lives/{}", ports.rtmp, config.live_id)
             }),
         Protocol::Rtsp => ingest
             .and_then(|i| i.rtsp.as_ref())
-            .map(|e| format!("rtsp://localhost:{}/{}", e.port, e.path.trim_start_matches('/')))
+            .map(|e| {
+                format!(
+                    "rtsp://localhost:{}/{}",
+                    e.port,
+                    e.path.trim_start_matches('/')
+                )
+            })
             .unwrap_or_else(|| {
                 errors.push("no RTSP ingest endpoint".into());
                 format!("rtsp://localhost:{}/{}", ports.rtsp, config.live_id)

@@ -58,7 +58,7 @@ trap cleanup EXIT
 log "等待 gRPC 就绪 (端口 $GRPC_PORT)..."
 READY=0
 for i in $(seq 1 30); do
-    if grpcurl -plaintext "127.0.0.1:$GRPC_PORT" livestream.Livestream/GetServiceInfo >/dev/null 2>&1; then
+    if timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$GRPC_PORT" 2>/dev/null; then
         READY=1
         break
     fi

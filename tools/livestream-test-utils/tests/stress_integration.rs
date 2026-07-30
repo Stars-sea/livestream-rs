@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use livestream_test_utils::{
-    Protocol, StreamConfig, StressConfig, env_or, run_stress_test,
-};
+use livestream_test_utils::{Protocol, StreamConfig, StressConfig, env_or, run_stress_test};
 
 /// Returns the path to the test video. Looks for `testdata/sample.mp4`
 /// relative to the workspace root, or the `SAMPLE_VIDEO` env var.
@@ -28,9 +26,7 @@ fn test_input_path() -> PathBuf {
         }
     }
 
-    panic!(
-        "test video not found. Set SAMPLE_VIDEO env var or place sample.mp4 in testdata/"
-    );
+    panic!("test video not found. Set SAMPLE_VIDEO env var or place sample.mp4 in testdata/");
 }
 
 fn grpc_addr_from_env() -> String {
@@ -56,10 +52,15 @@ async fn stress_3_streams_rtmp() {
     };
     let report = run_stress_test(config).await;
     assert_eq!(
-        report.failed, 0,
+        report.failed,
+        0,
         "all streams must succeed, but {}/{} failed:\n{:#?}",
         report.failed,
         report.total_streams,
-        report.per_stream.iter().filter(|r| !r.success).collect::<Vec<_>>()
+        report
+            .per_stream
+            .iter()
+            .filter(|r| !r.success)
+            .collect::<Vec<_>>()
     );
 }

@@ -17,12 +17,12 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use livestream_telemetry::metric_listener_lag;
 use crate::flv::FlvEgressHub;
 use crate::play_keyframe::should_skip_while_waiting_keyframe;
 use crate::registry::SessionRegistry;
 use crate::registry::state::SessionState;
 use livestream_media::flv::{FlvTag, encode_flv_header, encode_flv_tag};
+use livestream_telemetry::metric_listener_lag;
 
 const PATH_PREFIX: &str = "/lives";
 const ROUTE_PATH: &str = "/lives/{*path}";

@@ -5,7 +5,10 @@ use clap::Parser;
 use livestream_test_utils::{Protocol, StreamConfig, StressConfig, run_stress_test};
 
 #[derive(Parser, Debug)]
-#[command(name = "livestream-stress", about = "Concurrent stress test for livestream service")]
+#[command(
+    name = "livestream-stress",
+    about = "Concurrent stress test for livestream service"
+)]
 struct Args {
     /// Number of concurrent streams to test
     #[arg(long, default_value = "10")]

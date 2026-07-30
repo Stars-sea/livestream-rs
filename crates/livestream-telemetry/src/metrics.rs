@@ -189,7 +189,6 @@ mod imp {
         }};
     }
 
-
     #[macro_export]
     macro_rules! metric_connection_closed {
         ($protocol:expr) => {{

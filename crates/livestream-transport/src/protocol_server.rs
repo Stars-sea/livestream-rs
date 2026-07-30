@@ -20,7 +20,9 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
-use livestream_telemetry::{metric_connection_accepted, metric_connection_closed, metric_connection_rejected};
+use livestream_telemetry::{
+    metric_connection_accepted, metric_connection_closed, metric_connection_rejected,
+};
 
 use crate::config::ServerConfig;
 use crate::controller::ControlMessage;

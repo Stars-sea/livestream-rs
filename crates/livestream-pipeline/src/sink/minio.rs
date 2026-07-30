@@ -5,13 +5,13 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use livestream_telemetry::{metric_minio_upload_total, metric_minio_upload_latency_ms};
 use livestream_codec::{SegmentConfig, TsSegment};
 use livestream_core::{
     pad::{DemandHandle, PadReceiver},
     traits::{Node, Sink},
     types::{CodecParams, Protocol},
 };
+use livestream_telemetry::{metric_minio_upload_latency_ms, metric_minio_upload_total};
 
 #[async_trait::async_trait]
 pub trait ObjectUploader: Send + Sync {

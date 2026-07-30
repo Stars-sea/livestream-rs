@@ -4,13 +4,13 @@
 //! Does not modify data.
 
 use anyhow::Result;
-use livestream_telemetry::metric_pipeline_packet;
 use livestream_codec::EncodedPacket;
 use livestream_core::{
     pad::{PadReceiver, PadSender},
     traits::{Node, Processor},
     types::CodecParams,
 };
+use livestream_telemetry::metric_pipeline_packet;
 
 /// Observability probe.  Records per-packet metrics and passes data through
 /// unchanged.  Always active (`should_process()` returns `true`).
