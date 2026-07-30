@@ -61,7 +61,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_non_interleaved_byte_returns_fake_frame() {
-        let data: &[u8] = &[b'T']; // stray RTSP text byte
+        let data: &[u8] = b"T"; // stray RTSP text byte
         let mut reader = RtpInterleavedReader::new(data);
 
         let (channel, payload) = reader.next_frame().await.unwrap();

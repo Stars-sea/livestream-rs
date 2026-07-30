@@ -8,6 +8,7 @@ use tokio::time::sleep;
 use tonic::transport::Endpoint;
 
 mod proto {
+    #![allow(clippy::excessive_nesting)]
     tonic::include_proto!("livestream");
 }
 
