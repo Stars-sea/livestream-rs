@@ -47,7 +47,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 # Build application
 COPY . .
 RUN cargo build --release && \
-    strip target/release/livestream-rs
+    strip target/release/livestream
 
 FROM debian:trixie-slim
 
@@ -64,8 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-COPY --from=builder /app/target/release/livestream-rs ./
+COPY --from=builder /app/target/release/livestream ./
 
 ENV SRT__PORTS=4000-4100
 
@@ -93,5 +92,4 @@ ENV MINIO_SECRETKEY=miniokey
 ENV MINIO_BUCKET=videos
 
 ENV RUST_LOG=info
-
-ENTRYPOINT ["./livestream-rs"]
+ENTRYPOINT ["./livestream"]
