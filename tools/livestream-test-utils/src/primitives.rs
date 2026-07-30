@@ -61,7 +61,8 @@ pub async fn pull_and_verify(url: &str, label: &str, duration: Duration) -> anyh
     } else if stderr.contains("Connection refused") || stderr.contains("Connection reset") {
         bail!("pull ({label}) failed: connection refused")
     } else {
-        let preview: String = stderr.chars().take(500).collect();
-        bail!("pull ({label}) failed: no video frames detected\nstderr (first 500):\n{preview}")
+        // Show the tail of stderr — ffmpeg errors appear at the end.
+        let tail: String = stderr.chars().rev().take(2000).collect::<String>().chars().rev().collect();
+        bail!("pull ({label}) failed: no video frames detected\nstderr (last 2000 chars):\n{tail}")
     }
 }

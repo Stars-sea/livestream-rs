@@ -12,7 +12,7 @@ pub struct EventDispatcher {
 
 impl EventDispatcher {
     pub fn new() -> Self {
-        let (tx, _) = channel::broadcast("session_event", None, 16);
+        let (tx, _) = channel::broadcast("session_event", None, 256);
         Self {
             channel: tx,
             senders: DashMap::new(),
@@ -27,7 +27,7 @@ impl EventDispatcher {
         let live_id = live_id.into();
 
         let entry = self.senders.entry(live_id.clone()).or_insert_with(|| {
-            let (tx, _) = channel::broadcast("sub_session_event", Some(&live_id), 16);
+            let (tx, _) = channel::broadcast("sub_session_event", Some(&live_id), 256);
             tx
         });
 

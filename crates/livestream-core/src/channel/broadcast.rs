@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crossfire::{AsyncRx, mpsc};
 use tokio::sync::broadcast;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::channel::error::SendError;
 
@@ -63,7 +63,7 @@ impl<T> BroadcastSender<T> {
             Ok(n) => Ok(n),
             Err(_) => {
                 // tokio broadcast returns Err only when all receivers are gone
-                warn!("Broadcast sender: no active receivers");
+                debug!("Broadcast sender: no active receivers");
                 Err(SendError::Closed)
             }
         }
