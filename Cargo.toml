@@ -6,7 +6,7 @@ members = [
     "crates/livestream-media",
     "crates/livestream-pipeline",
     "crates/livestream-telemetry",
-    "tools/test-client",
+    "tools/livestream-test-utils",
 ]
 resolver = "3"
 
