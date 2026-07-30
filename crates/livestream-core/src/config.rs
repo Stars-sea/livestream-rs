@@ -103,6 +103,10 @@ pub struct RtmpConfig {
 
     #[serde(default = "default_rtmp_session_ttl_secs")]
     pub session_ttl_secs: u64,
+
+    /// Maximum concurrent TCP connections (0 = unlimited).
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -112,6 +116,10 @@ pub struct HttpFlvConfig {
 
     #[serde(default = "default_http_flv_port")]
     pub port: u16,
+
+    /// Maximum concurrent HTTP-FLV playback connections (0 = unlimited).
+    #[serde(default = "default_http_flv_max_connections")]
+    pub max_connections: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -121,6 +129,10 @@ pub struct RtspConfig {
 
     #[serde(default = "default_rtsp_session_ttl_secs")]
     pub session_ttl_secs: u64,
+
+    /// Maximum concurrent TCP connections (0 = unlimited).
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -200,6 +212,14 @@ fn default_event_queue_capacity() -> usize {
 
 fn default_packet_relay_queue_capacity() -> usize {
     2048
+}
+
+fn default_max_connections() -> usize {
+    1000
+}
+
+fn default_http_flv_max_connections() -> usize {
+    2000
 }
 
 // ── Validation ──
@@ -334,6 +354,7 @@ impl Default for RtmpConfig {
             port: default_rtmp_port(),
             app_name: default_rtmp_app_name(),
             session_ttl_secs: default_rtmp_session_ttl_secs(),
+            max_connections: default_max_connections(),
         }
     }
 }
@@ -343,6 +364,7 @@ impl Default for HttpFlvConfig {
         Self {
             enabled: false,
             port: default_http_flv_port(),
+            max_connections: default_http_flv_max_connections(),
         }
     }
 }
@@ -352,6 +374,7 @@ impl Default for RtspConfig {
         Self {
             port: default_rtsp_port(),
             session_ttl_secs: default_rtsp_session_ttl_secs(),
+            max_connections: default_max_connections(),
         }
     }
 }

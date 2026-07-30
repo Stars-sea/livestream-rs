@@ -24,4 +24,6 @@ pub struct ServerConfig {
     pub minio: Arc<dyn ObjectUploader>,
     pub segment_cfg: SegmentConfig,
     pub cancel_token: CancellationToken,
+    /// Maximum concurrent connections (0 = unlimited).
+    pub max_connections: usize,
 }

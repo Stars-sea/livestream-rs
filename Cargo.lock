@@ -1425,6 +1425,7 @@ dependencies = [
  "livestream-media",
  "livestream-pipeline",
  "livestream-telemetry",
+ "parking_lot",
  "prost",
  "regex",
  "rml_rtmp",

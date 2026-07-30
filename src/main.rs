@@ -74,6 +74,7 @@ async fn main() -> Result<()> {
             minio: minio.clone(),
             segment_cfg: segment_cfg.clone(),
             cancel_token: cancel.child_token(),
+            max_connections: config.transport.rtmp.max_connections,
         },
         config.transport.rtmp.app_name.clone(),
     )
@@ -101,6 +102,7 @@ async fn main() -> Result<()> {
         minio: minio.clone(),
         segment_cfg: segment_cfg.clone(),
         cancel_token: cancel.child_token(),
+        max_connections: config.transport.rtsp.max_connections,
     })
     .await
     {
@@ -131,6 +133,7 @@ async fn main() -> Result<()> {
         Some(
             HttpFlvServer::create(
                 config.services.http_flv.port,
+                config.services.http_flv.max_connections,
                 flv_egress_hub.clone(),
                 registry.clone(),
                 cancel.child_token(),

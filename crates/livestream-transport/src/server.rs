@@ -68,6 +68,7 @@ impl TransportServer {
                 minio: cfg.factory.minio().clone(),
                 segment_cfg: cfg.factory.segment_cfg().clone(),
                 cancel_token: cfg.cancel.child_token(),
+                max_connections: 0,
             },
             cfg.rtmp_app_name,
         )
@@ -84,6 +85,7 @@ impl TransportServer {
             minio: cfg.factory.minio().clone(),
             segment_cfg: cfg.factory.segment_cfg().clone(),
             cancel_token: cfg.cancel.child_token(),
+            max_connections: 0,
         })
         .await?;
 
@@ -91,6 +93,7 @@ impl TransportServer {
             Some(
                 HttpFlvServer::create(
                     cfg.http_flv_port,
+                    0,
                     cfg.flv_egress_hub,
                     registry.clone(),
                     cfg.cancel.child_token(),

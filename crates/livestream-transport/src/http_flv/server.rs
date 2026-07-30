@@ -35,6 +35,7 @@ struct HttpFlvState {
     flv_egress_hub: Arc<FlvEgressHub>,
     cancel_token: CancellationToken,
     registry: Arc<SessionRegistry>,
+    connection_semaphore: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 pub struct HttpFlvServer {
@@ -46,6 +47,7 @@ pub struct HttpFlvServer {
 impl HttpFlvServer {
     pub async fn create(
         port: u16,
+        max_connections: usize,
         flv_egress_hub: Arc<FlvEgressHub>,
         registry: Arc<SessionRegistry>,
         cancel_token: CancellationToken,
@@ -53,10 +55,17 @@ impl HttpFlvServer {
         let addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
         let listener = TcpListener::bind(addr).await?;
 
+        let connection_semaphore = if max_connections > 0 {
+            Some(Arc::new(tokio::sync::Semaphore::new(max_connections)))
+        } else {
+            None
+        };
+
         let state = HttpFlvState {
             flv_egress_hub,
             registry,
             cancel_token: cancel_token.clone(),
+            connection_semaphore,
         };
         let router = Router::new()
             .route("/alive", get(handle_alive))
@@ -93,8 +102,17 @@ async fn handle_http_flv(State(state): State<HttpFlvState>, Path(path): Path<Str
         return StatusCode::NOT_FOUND.into_response();
     };
 
+    // Check connection limit before serving.
+    let permit = match &state.connection_semaphore {
+        Some(sem) => match sem.clone().try_acquire_owned() {
+            Ok(p) => Some(p),
+            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        },
+        None => None,
+    };
+
     match state.registry.get_state(live_id).await {
-        Some(SessionState::Connected) => stream_response(state, live_id.to_owned()).await,
+        Some(SessionState::Connected) => stream_response(state, live_id.to_owned(), permit).await,
         Some(SessionState::Pending | SessionState::Connecting | SessionState::Disconnected) => {
             StatusCode::SERVICE_UNAVAILABLE.into_response()
         }
@@ -112,7 +130,11 @@ fn parse_live_id(path: &str) -> Option<&str> {
     Some(live_id)
 }
 
-async fn stream_response(state: HttpFlvState, live_id: String) -> Response {
+async fn stream_response(
+    state: HttpFlvState,
+    live_id: String,
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+) -> Response {
     let Some((mut tag_stream, cached_tags)) = state.flv_egress_hub.subscribe(&live_id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -120,6 +142,7 @@ async fn stream_response(state: HttpFlvState, live_id: String) -> Response {
     let cancel_token = state.cancel_token.clone();
 
     let body = Body::from_stream(stream! {
+        let _guard = _permit;
         yield Ok::<Bytes, Infallible>(header_bytes);
 
         if let Some(encoded_cached_tags) = encode_cached_tags(&live_id, cached_tags) {

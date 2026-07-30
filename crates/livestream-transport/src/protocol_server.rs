@@ -45,11 +45,18 @@ pub(crate) struct ProtocolServerCore {
     pub dispatcher: Arc<EventDispatcher>,
     /// Tracks spawned connection handler + source tasks for graceful drain.
     tasks: JoinSet<()>,
+    /// Optional connection limit semaphore (None = unlimited).
+    connection_semaphore: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl ProtocolServerCore {
     pub(crate) async fn from_config(cfg: ServerConfig) -> Result<Self> {
         let listener = TcpListener::bind(cfg.addr).await?;
+        let connection_semaphore = if cfg.max_connections > 0 {
+            Some(Arc::new(tokio::sync::Semaphore::new(cfg.max_connections)))
+        } else {
+            None
+        };
         Ok(Self {
             listener,
             ctrl_channel: cfg.ctrl_channel,
