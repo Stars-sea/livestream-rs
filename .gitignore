@@ -22,3 +22,6 @@ Thumbs.db
 # Environment files
 .env
 .env.local
+
+# Generated test data
+testdata/

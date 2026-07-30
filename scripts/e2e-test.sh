@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-TEST_INPUT="${TEST_INPUT:-$PROJECT_DIR/../testdata/sample.mp4}"
+TEST_INPUT="${TEST_INPUT:-$PROJECT_DIR/testdata/sample.mp4}"
 GRPC_PORT="${GRPC_PORT:-50051}"
 RTMP_PORT="${RTMP_PORT:-11935}"
 RTSP_PORT="${RTSP_PORT:-8554}"
@@ -28,8 +28,8 @@ if ! command -v cargo &>/dev/null; then
 fi
 
 # ── 1. Build ──
-log "构建 livestream 和 test-client..."
-cargo build --release -p livestream -p test-client
+log "构建 livestream 和 stress-test..."
+cargo build --release -p livestream -p livestream-test-utils
 
 # ── 2. Generate test input if missing ──
 if [ ! -f "$TEST_INPUT" ]; then
@@ -37,7 +37,7 @@ if [ ! -f "$TEST_INPUT" ]; then
     mkdir -p "$(dirname "$TEST_INPUT")"
     ffmpeg -y -f lavfi -i "testsrc=duration=30:size=1280x720:rate=30" \
            -f lavfi -i "sine=frequency=440:duration=30" \
-           -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+           -c:v libx264 -preset veryfast -g 30 -pix_fmt yuv420p \
            -c:a aac -shortest "$TEST_INPUT" 2>/dev/null
     log "测试视频生成完毕"
 fi
@@ -71,8 +71,12 @@ if [ "$READY" -eq 0 ]; then
 fi
 log "gRPC 服务就绪"
 
-# ── 5. Run automated test ──
 log "运行 E2E 测试 (duration=10s)..."
-"$PROJECT_DIR/target/release/test-client" --auto --duration 10 "$TEST_INPUT"
+"$PROJECT_DIR/target/release/livestream-test-utils" \
+  --grpc-addr "http://127.0.0.1:$GRPC_PORT" \
+  --input-file "$TEST_INPUT" \
+  --streams 1 \
+  --duration 10 \
+  --json
 
 log "E2E 测试完成"

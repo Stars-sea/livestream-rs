@@ -1,46 +1,49 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
 
 env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+    CARGO_TERM_COLOR: always
+    RUSTFLAGS: "-D warnings"
 
 jobs:
-  ci:
-    name: Lint + Test + Build
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v4
+    ci:
+        name: Lint + Test + Build
+        runs-on: ubuntu-26.04
+        steps:
+            - uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential clang libclang-dev pkg-config \
-            libssl-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
-            protobuf-compiler
+            - name: Install system dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                    build-essential clang libclang-dev pkg-config \
+                    libssl-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+                    protobuf-compiler ffmpeg grpcurl
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: rustfmt, clippy
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+            - name: Rust cache
+              uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+            - name: Check formatting
+              run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+            - name: Clippy
+              run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Run tests
-        run: cargo test --workspace
+            - name: Run tests
+              run: cargo test --workspace
 
-      - name: Build release
-        run: cargo build --release
+            - name: Build release
+              run: cargo build --release
+
+            - name: E2E test (stress)
+              run: bash scripts/e2e-test.sh
