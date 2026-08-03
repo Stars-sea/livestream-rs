@@ -88,59 +88,101 @@ mod imp {
             }
         })
     }
+}
 
-    #[macro_export]
-    macro_rules! metric_pipeline_stream_started {
-        () => {{
+#[cfg(not(feature = "opentelemetry"))]
+mod imp {
+    pub struct OTelMetrics;
+
+    pub fn get_metrics() -> &'static OTelMetrics {
+        static METRICS: OTelMetrics = OTelMetrics;
+        &METRICS
+    }
+}
+
+// Internal helper used by the exported metric macros below: it expands the
+// recording statements when the `opentelemetry` feature is enabled and
+// discards them otherwise, so each metric macro body is written exactly once
+// instead of being duplicated as a no-op variant. It is exported (rather than
+// kept module-local) so the exported macros can reach it via `$crate::` when
+// they expand in other crates.
+#[macro_export]
+#[cfg(feature = "opentelemetry")]
+macro_rules! metric_record {
+    ($($tt:tt)*) => {
+        $($tt)*
+    };
+}
+
+#[macro_export]
+#[cfg(not(feature = "opentelemetry"))]
+macro_rules! metric_record {
+    ($($tt:tt)*) => {};
+}
+
+#[macro_export]
+macro_rules! metric_pipeline_stream_started {
+    () => {
+        $crate::metric_record!({
             $crate::metrics::get_metrics()
                 .pipeline_active_streams
                 .add(1, &[]);
-        }};
-    }
+        })
+    };
+}
 
-    #[macro_export]
-    macro_rules! metric_pipeline_stream_ended {
-        () => {{
+#[macro_export]
+macro_rules! metric_pipeline_stream_ended {
+    () => {
+        $crate::metric_record!({
             $crate::metrics::get_metrics()
                 .pipeline_active_streams
                 .add(-1, &[]);
-        }};
-    }
+        })
+    };
+}
 
-    #[macro_export]
-    macro_rules! metric_pipeline_packet {
-        ($packet_kind:expr, $bytes:expr) => {{
+#[macro_export]
+macro_rules! metric_pipeline_packet {
+    ($packet_kind:expr, $bytes:expr) => {
+        $crate::metric_record!({
             let labels = [$crate::KeyValue::new("packet.kind", $packet_kind)];
             let metrics = $crate::metrics::get_metrics();
             metrics.pipeline_packets_total.add(1, &labels);
             metrics.pipeline_bytes_total.add(($bytes) as u64, &labels);
-        }};
-    }
+        })
+    };
+}
 
-    #[macro_export]
-    macro_rules! metric_pipeline_error {
-        ($stage:expr) => {{
+#[macro_export]
+macro_rules! metric_pipeline_error {
+    ($stage:expr) => {
+        $crate::metric_record!({
             $crate::metrics::get_metrics()
                 .pipeline_errors_total
                 .add(1, &[$crate::KeyValue::new("pipeline.stage", $stage)]);
-        }};
-    }
+        })
+    };
+}
 
-    #[macro_export]
-    macro_rules! metric_middleware_latency_us {
-        ($middleware:expr, $duration_us:expr) => {{
+#[macro_export]
+macro_rules! metric_middleware_latency_us {
+    ($middleware:expr, $duration_us:expr) => {
+        $crate::metric_record!({
             $crate::metrics::get_metrics()
                 .pipeline_middleware_latency_us
                 .record(
                     ($duration_us) as u64,
                     &[$crate::KeyValue::new("middleware", $middleware)],
                 );
-        }};
-    }
+        })
+    };
+}
 
-    #[macro_export]
-    macro_rules! metric_queue_drop {
-        ($queue:expr, $reason:expr) => {{
+#[macro_export]
+macro_rules! metric_queue_drop {
+    ($queue:expr, $reason:expr) => {
+        $crate::metric_record!({
             $crate::metrics::get_metrics()
                 .transport_queue_drops_total
                 .add(
@@ -150,24 +192,28 @@ mod imp {
                         $crate::KeyValue::new("reason", $reason),
                     ],
                 );
-        }};
-    }
+        })
+    };
+}
 
-    #[macro_export]
-    macro_rules! metric_listener_lag {
-        ($listener:expr, $skipped:expr) => {{
+#[macro_export]
+macro_rules! metric_listener_lag {
+    ($listener:expr, $skipped:expr) => {
+        $crate::metric_record!({
             $crate::metrics::get_metrics()
                 .transport_listener_lag_total
                 .add(
                     (($skipped) as u64).max(1),
                     &[$crate::KeyValue::new("listener", $listener)],
                 );
-        }};
-    }
+        })
+    };
+}
 
-    #[macro_export]
-    macro_rules! metric_ttl_expiration {
-        ($protocol:expr, $reason:expr) => {{
+#[macro_export]
+macro_rules! metric_ttl_expiration {
+    ($protocol:expr, $reason:expr) => {
+        $crate::metric_record!({
             $crate::metrics::get_metrics()
                 .transport_ttl_expirations_total
                 .add(
@@ -177,38 +223,47 @@ mod imp {
                         $crate::KeyValue::new("reason", $reason),
                     ],
                 );
-        }};
-    }
+        })
+    };
+}
 
-    #[macro_export]
-    macro_rules! metric_connection_accepted {
-        ($protocol:expr) => {{
+#[macro_export]
+macro_rules! metric_connection_accepted {
+    ($protocol:expr) => {
+        $crate::metric_record!({
             $crate::metrics::get_metrics()
                 .transport_connections_active
                 .add(1, &[$crate::KeyValue::new("protocol", $protocol)]);
-        }};
-    }
+        })
+    };
+}
 
-    #[macro_export]
-    macro_rules! metric_connection_closed {
-        ($protocol:expr) => {{
+#[macro_export]
+macro_rules! metric_connection_closed {
+    ($protocol:expr) => {
+        $crate::metric_record!({
             $crate::metrics::get_metrics()
                 .transport_connections_active
                 .add(-1, &[$crate::KeyValue::new("protocol", $protocol)]);
-        }};
-    }
-    #[macro_export]
-    macro_rules! metric_connection_rejected {
-        ($protocol:expr) => {{
+        })
+    };
+}
+
+#[macro_export]
+macro_rules! metric_connection_rejected {
+    ($protocol:expr) => {
+        $crate::metric_record!({
             $crate::metrics::get_metrics()
                 .transport_connections_rejected_total
                 .add(1, &[$crate::KeyValue::new("protocol", $protocol)]);
-        }};
-    }
+        })
+    };
+}
 
-    #[macro_export]
-    macro_rules! metric_minio_upload_total {
-        ($bucket:expr, $status:expr) => {{
+#[macro_export]
+macro_rules! metric_minio_upload_total {
+    ($bucket:expr, $status:expr) => {
+        $crate::metric_record!({
             let bucket = $bucket;
             let status = $status;
             $crate::metrics::get_metrics()
@@ -220,12 +275,14 @@ mod imp {
                         $crate::KeyValue::new("upload.status", status),
                     ],
                 );
-        }};
-    }
+        })
+    };
+}
 
-    #[macro_export]
-    macro_rules! metric_minio_upload_latency_ms {
-        ($bucket:expr, $status:expr, $duration_ms:expr) => {{
+#[macro_export]
+macro_rules! metric_minio_upload_latency_ms {
+    ($bucket:expr, $status:expr, $duration_ms:expr) => {
+        $crate::metric_record!({
             let bucket = $bucket;
             let status = $status;
             $crate::metrics::get_metrics()
@@ -237,71 +294,8 @@ mod imp {
                         $crate::KeyValue::new("upload.status", status),
                     ],
                 );
-        }};
-    }
-}
-
-#[cfg(not(feature = "opentelemetry"))]
-mod imp {
-    pub struct OTelMetrics;
-
-    pub fn get_metrics() -> &'static OTelMetrics {
-        static METRICS: OTelMetrics = OTelMetrics;
-        &METRICS
-    }
-
-    #[macro_export]
-    macro_rules! metric_pipeline_stream_started {
-        () => {};
-    }
-    #[macro_export]
-    macro_rules! metric_pipeline_stream_ended {
-        () => {};
-    }
-    #[macro_export]
-    macro_rules! metric_pipeline_packet {
-        ($packet_kind:expr, $bytes:expr) => {};
-    }
-    #[macro_export]
-    macro_rules! metric_pipeline_error {
-        ($stage:expr) => {};
-    }
-    #[macro_export]
-    macro_rules! metric_middleware_latency_us {
-        ($middleware:expr, $duration_us:expr) => {};
-    }
-    #[macro_export]
-    macro_rules! metric_queue_drop {
-        ($queue:expr, $reason:expr) => {};
-    }
-    #[macro_export]
-    macro_rules! metric_listener_lag {
-        ($listener:expr, $skipped:expr) => {};
-    }
-    #[macro_export]
-    macro_rules! metric_ttl_expiration {
-        ($protocol:expr, $reason:expr) => {};
-    }
-    #[macro_export]
-    macro_rules! metric_connection_closed {
-        ($protocol:expr) => {};
-    }
-    #[macro_export]
-    macro_rules! metric_connection_accepted {
-        ($protocol:expr) => {};
-    }
-    #[macro_export]
-    macro_rules! metric_connection_rejected {
-        ($protocol:expr) => {};
-    }
-    #[macro_export]
-    macro_rules! metric_minio_upload_total {
-        ($bucket:expr, $status:expr) => {};
-    }
-    #[macro_export]
-    macro_rules! metric_minio_upload_latency_ms {
-        ($bucket:expr, $status:expr, $duration_ms:expr) => {};
-    }
+        })
+    };
 }
 
 pub use imp::get_metrics;

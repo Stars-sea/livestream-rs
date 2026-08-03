@@ -17,8 +17,42 @@ use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::Subs
 
 const OTEL_SERVICE_NAME: &str = "OTEL_SERVICE_NAME";
 
+/// OTLP exporter endpoint environment variables. Setting any of these is an
+/// explicit request to export telemetry over OTLP; signals without their own
+/// endpoint fall back to `OTEL_EXPORTER_OTLP_ENDPOINT` and then to the SDK
+/// default (`localhost:4317`).
+const OTLP_ENDPOINT_ENV_VARS: &[&str] = &[
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+];
+
+/// Whether the user explicitly selected OTLP export without configuring an
+/// endpoint: per-signal `OTEL_*_EXPORTER=otlp` or a protocol override.
+/// These imply the default endpoint fallback should apply.
+fn otlp_exporter_selected() -> bool {
+    [
+        "OTEL_TRACES_EXPORTER",
+        "OTEL_METRICS_EXPORTER",
+        "OTEL_LOGS_EXPORTER",
+    ]
+    .iter()
+    .any(|key| {
+        std::env::var(key)
+            .map(|value| value.trim().eq_ignore_ascii_case("otlp"))
+            .unwrap_or(false)
+    }) || std::env::var_os("OTEL_EXPORTER_OTLP_PROTOCOL").is_some()
+}
+
+/// True only when the environment expresses an explicit OTLP export intent.
+/// Unrelated `OTEL_*` variables (e.g. just `OTEL_SERVICE_NAME`) must not
+/// enable export, which would otherwise spam a non-existent collector.
 pub fn otlp_enabled() -> bool {
-    std::env::vars_os().any(|(key, _)| key.to_string_lossy().starts_with("OTEL_"))
+    OTLP_ENDPOINT_ENV_VARS
+        .iter()
+        .any(|key| std::env::var_os(key).is_some())
+        || otlp_exporter_selected()
 }
 
 pub fn resource() -> Resource {
@@ -66,7 +100,7 @@ fn init_metrics() -> Result<SdkMeterProvider> {
 
 pub fn init_otlp() -> Result<(SdkLoggerProvider, SdkTracerProvider, SdkMeterProvider)> {
     if !otlp_enabled() {
-        anyhow::bail!("OpenTelemetry disabled: no OTEL_* environment variables found")
+        anyhow::bail!("OpenTelemetry disabled: no OTLP exporter configured")
     }
     let logger_provider = init_logs()?;
     let tracer_provider = init_tracer()?;
@@ -94,17 +128,36 @@ impl Drop for OtelGuard {
     }
 }
 
+/// Install the console-only fmt subscriber used when OTLP export is disabled
+/// or failed to initialize.
+fn install_console_logging() {
+    let fmt_layer = fmt::layer()
+        .compact()
+        .with_target(false)
+        .with_filter(EnvFilter::from_default_env());
+    tracing_subscriber::registry().with(fmt_layer).init();
+}
+
 pub fn setup_telemetry() -> Result<Option<OtelGuard>> {
     if !otlp_enabled() {
-        let fmt_layer = fmt::layer()
-            .compact()
-            .with_target(false)
-            .with_filter(EnvFilter::from_default_env());
-        tracing_subscriber::registry().with(fmt_layer).init();
+        install_console_logging();
         return Ok(None);
     }
 
-    let (logger_provider, tracer_provider, meter_provider) = init_otlp()?;
+    // Telemetry is best-effort: a misconfigured exporter (e.g. a malformed
+    // OTEL_EXPORTER_OTLP_ENDPOINT) must not prevent the service from
+    // starting. Degrade to console logging instead of propagating the error.
+    let (logger_provider, tracer_provider, meter_provider) = match init_otlp() {
+        Ok(providers) => providers,
+        Err(error) => {
+            install_console_logging();
+            tracing::warn!(
+                error = %error,
+                "OpenTelemetry export initialization failed; falling back to console logging"
+            );
+            return Ok(None);
+        }
+    };
     let tracer = tracer_provider.tracer("livestream");
 
     let fmt_layer = fmt::layer()
