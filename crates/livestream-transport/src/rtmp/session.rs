@@ -421,53 +421,25 @@ impl SessionGuard {
         pending_lifecycle: &Arc<DashMap<String, HandlerLifecycle>>,
         ct: &CancellationToken,
     ) -> Result<Option<HandlerBuilder>> {
-        // Split the stream key into live_id and optional passphrase. Without
-        // a passphrase the key is the live_id itself; with one the format is
-        // {live_id}/{passphrase} (the registry is keyed by live_id, so an
-        // exact lookup wins and the split is only a fallback).
-        let (live_id, provided_passphrase) = if self.registry.get_session(&stream_key).is_some() {
-            (stream_key, None)
-        } else {
-            match stream_key.rsplit_once('/') {
-                Some((base, candidate)) if self.registry.get_session(base).is_some() => {
-                    (base.to_string(), Some(candidate.to_string()))
-                }
-                _ => (stream_key, None),
-            }
-        };
-
-        // Passphrase check: precreated sessions that carry a passphrase
-        // require the publisher to present it in the publish stream key.
-        if let Some(descriptor) = self.registry.get_session(&live_id) {
-            let expected = descriptor.read().await.endpoint.passphrase.clone();
-            if let Some(expected) = expected
-                && provided_passphrase.as_deref() != Some(expected.as_str())
-            {
-                self.reject_request(request_id, "AccessDenied", "Invalid passphrase", ct)
-                    .await?;
-                anyhow::bail!("Invalid or missing passphrase for stream: {}", live_id);
-            }
-        }
-
-        let lifecycle = match pending_lifecycle.get(&live_id) {
+        let lifecycle = match pending_lifecycle.get(&stream_key) {
             Some(entry) => entry,
             None => {
                 anyhow::bail!(
                     "Client requested to publish to stream {} which has no pending lifecycle",
-                    live_id
+                    stream_key
                 );
             }
         };
 
-        let Some(state) = self.registry.get_state(&live_id).await else {
-            debug!(live_id = %live_id, "Client requested to publish to a stream that does not exist");
+        let Some(state) = self.registry.get_state(&stream_key).await else {
+            debug!(stream_key = %stream_key, "Client requested to publish to a stream that does not exist");
             lifecycle.disconnect();
 
             self.reject_request(request_id, "StreamNotFound", "Stream not found", ct)
                 .await?;
             anyhow::bail!(
                 "Client requested to publish to a stream that does not exist: {}",
-                live_id
+                stream_key
             );
         };
 
@@ -476,15 +448,15 @@ impl SessionGuard {
                 lifecycle.disconnect();
                 anyhow::bail!(
                     "Failed to accept publish request for stream {}: {}",
-                    live_id,
+                    stream_key,
                     e
                 );
             }
             if let Err(e) = lifecycle.connecting().await {
-                warn!(live_id = %live_id, error = %e, "Failed to emit connecting state for pending lifecycle");
+                warn!(stream_key = %stream_key, error = %e, "Failed to emit connecting state for pending lifecycle");
             }
         } else {
-            debug!(live_id = %live_id, current_state = ?state, "Client requested to publish to a stream that is not publishable");
+            debug!(stream_key = %stream_key, current_state = ?state, "Client requested to publish to a stream that is not publishable");
 
             self.reject_request(
                 request_id,
@@ -495,11 +467,11 @@ impl SessionGuard {
             .await?;
             anyhow::bail!(
                 "Client requested to publish to a stream that is already active: {}",
-                live_id
+                stream_key
             );
         }
 
-        Ok(Some(HandlerBuilder::publish(live_id)))
+        Ok(Some(HandlerBuilder::publish(stream_key)))
     }
 }
 

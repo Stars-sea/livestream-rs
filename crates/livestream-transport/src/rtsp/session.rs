@@ -29,9 +29,6 @@ pub struct RtspSession {
     video_channel: u8,
     audio_channel: u8,
     live_id: Option<String>,
-    /// Passphrase from the ANNOUNCE URI userinfo (`rtsp://{pass}@host/...`).
-    /// Compared against the precreated session's passphrase, if any.
-    provided_passphrase: Option<String>,
 }
 
 impl Default for RtspSession {
@@ -48,7 +45,6 @@ impl RtspSession {
             video_channel: 0,
             audio_channel: 2,
             live_id: None,
-            provided_passphrase: None,
         }
     }
 
@@ -95,7 +91,6 @@ impl RtspSession {
         // Extract live_id from URL path.
         // URL is e.g. rtsp://host:554/live/mystream — path is "/live/mystream"
         // or rtsp://host:554/live/mystream/track1 — take the last non-track segment.
-        // Passphrase comes from the URL userinfo: rtsp://{pass}@host/live/mystream.
         if let Some(uri) = request.request_uri() {
             let path = uri.path();
             self.live_id = path
@@ -103,12 +98,6 @@ impl RtspSession {
                 .split('/')
                 .rfind(|s| !s.is_empty() && !s.starts_with("track"))
                 .map(String::from);
-            let user = uri.username();
-            self.provided_passphrase = if user.is_empty() {
-                None
-            } else {
-                Some(user.to_string())
-            };
         }
 
         self.state = State::WaitSetup;
@@ -179,10 +168,6 @@ impl RtspSession {
         self.live_id.as_deref()
     }
 
-    pub fn provided_passphrase(&self) -> Option<&str> {
-        self.provided_passphrase.as_deref()
-    }
-
     /// Codec parameters extracted from the SDP.
     pub fn codec_params(&self) -> Option<&[livestream_core::types::CodecParams]> {
         self.parsed_sdp.as_ref().map(|p| p.codec_params.as_slice())
@@ -240,30 +225,6 @@ mod tests {
         assert!(!session.is_recording());
         assert!(session.sdp_body().is_some());
         assert!(session.codec_params().is_some());
-    }
-
-    #[test]
-    fn announce_extracts_passphrase_from_userinfo() {
-        let mut session = RtspSession::new();
-        let req = Request::builder(Method::Announce, Version::V1_0)
-            .typed_header(&CSeq::from(1u32))
-            .request_uri(rtsp_types::Url::parse("rtsp://secret@example.com/live/foo").unwrap())
-            .build(b"v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n".to_vec());
-        session.handle_request(&req).unwrap();
-        assert_eq!(session.live_id(), Some("foo"));
-        assert_eq!(session.provided_passphrase(), Some("secret"));
-    }
-
-    #[test]
-    fn announce_without_userinfo_has_no_passphrase() {
-        let mut session = RtspSession::new();
-        let req = Request::builder(Method::Announce, Version::V1_0)
-            .typed_header(&CSeq::from(1u32))
-            .request_uri(rtsp_types::Url::parse("rtsp://example.com/live/foo").unwrap())
-            .build(b"v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n".to_vec());
-        session.handle_request(&req).unwrap();
-        assert_eq!(session.live_id(), Some("foo"));
-        assert_eq!(session.provided_passphrase(), None);
     }
 
     #[test]

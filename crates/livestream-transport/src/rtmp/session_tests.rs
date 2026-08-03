@@ -35,17 +35,10 @@ async fn make_guard(registry: Arc<SessionRegistry>) -> (SessionGuard, tokio::io:
 }
 
 fn descriptor(id: &str) -> Arc<tokio::sync::RwLock<SessionDescriptor>> {
-    descriptor_with_passphrase(id, None)
-}
-
-fn descriptor_with_passphrase(
-    id: &str,
-    passphrase: Option<&str>,
-) -> Arc<tokio::sync::RwLock<SessionDescriptor>> {
     Arc::new(tokio::sync::RwLock::new(SessionDescriptor {
         id: id.to_string(),
         protocol: Protocol::Rtmp,
-        endpoint: SessionEndpoint::new(None, passphrase.map(String::from)),
+        endpoint: SessionEndpoint::new(None, None),
         state: SessionState::Pending,
     }))
 }
@@ -598,66 +591,4 @@ async fn e2e_connect_and_publish_via_client_session() {
             .any(|e| matches!(e, ClientSessionEvent::PublishRequestAccepted)),
         "client should observe the publish accepted"
     );
-}
-
-#[tokio::test]
-async fn publish_requires_passphrase_when_precreated() {
-    // registry 注册 "foo"（Pending + passphrase "secret"）
-    let ct = CancellationToken::new();
-    let registry = Arc::new(SessionRegistry::new());
-    registry
-        .register_session(
-            descriptor_with_passphrase("foo", Some("secret")),
-            ct.child_token(),
-        )
-        .await
-        .unwrap();
-    let (mut guard, mut client, mut b, pending, _ct) = connect_pair(registry).await;
-
-    // 正确 passphrase → accept
-    let builder = publish_round(&mut guard, &mut client, &mut b, &pending, &ct, "foo/secret")
-        .await
-        .expect("publish round should not error")
-        .expect("correct passphrase should produce a publish builder");
-    assert_eq!(builder.stream_key(), "foo");
-    assert_eq!(
-        guard.registry.get_state("foo").await,
-        Some(SessionState::Connecting)
-    );
-    drop((guard, client, b, pending));
-
-    // 错误 passphrase → 拒绝
-    let ct = CancellationToken::new();
-    let registry = Arc::new(SessionRegistry::new());
-    registry
-        .register_session(
-            descriptor_with_passphrase("foo", Some("secret")),
-            ct.child_token(),
-        )
-        .await
-        .unwrap();
-    let (mut guard, mut client, mut b, pending, _ct) = connect_pair(registry).await;
-    let err = expect_err(
-        publish_round(&mut guard, &mut client, &mut b, &pending, &ct, "foo/wrong").await,
-        "publish with wrong passphrase",
-    );
-    assert!(err.contains("Invalid or missing passphrase"));
-    drop((guard, client, b, pending));
-
-    // 无 passphrase → 拒绝
-    let ct = CancellationToken::new();
-    let registry = Arc::new(SessionRegistry::new());
-    registry
-        .register_session(
-            descriptor_with_passphrase("foo", Some("secret")),
-            ct.child_token(),
-        )
-        .await
-        .unwrap();
-    let (mut guard, mut client, mut b, pending, _ct) = connect_pair(registry).await;
-    let err = expect_err(
-        publish_round(&mut guard, &mut client, &mut b, &pending, &ct, "foo").await,
-        "publish without passphrase",
-    );
-    assert!(err.contains("Invalid or missing passphrase"));
 }
