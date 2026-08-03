@@ -9,7 +9,7 @@ use minio::s3::http::BaseUrl;
 use minio::s3::types::S3Api;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::debug;
 
 use crate::config::MinioConfig;
@@ -79,7 +79,30 @@ impl PersistenceClient {
 /// check-then-act window between `bucket_exists` and `create_bucket` can be
 /// raced by another process, and "already exists" errors from that race are
 /// treated as success.
+///
+/// Transient failures (MinIO still starting, network blips) are retried up
+/// to 3 attempts with 500ms/1s backoff before giving up.
 async fn ensure_bucket(client: &Client, bucket: &str) -> Result<()> {
+    let mut delay = Duration::from_millis(500);
+    for attempt in 0..3 {
+        match try_ensure_bucket(client, bucket).await {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt < 2 => {
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    error = %e,
+                    "MinIO bucket ensure failed, retrying"
+                );
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("loop always returns or exhausts retries")
+}
+
+async fn try_ensure_bucket(client: &Client, bucket: &str) -> Result<()> {
     let resp = client
         .bucket_exists(bucket)
         .send()

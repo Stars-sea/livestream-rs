@@ -78,7 +78,25 @@ impl Sink for MinIoSink {
             self.segment_cfg.minio_prefix, safe_live_id, seg.filename
         );
         let start = std::time::Instant::now();
-        let result = self.client.upload_file(&key, &seg.path).await;
+        // Transient MinIO failures are retried (200ms/500ms backoff) before
+        // the segment is given up; live segments are time-sensitive, so the
+        // retry budget stays short.
+        let mut result = self.client.upload_file(&key, &seg.path).await;
+        let mut delay = std::time::Duration::from_millis(200);
+        for attempt in 0..2 {
+            if result.is_ok() {
+                break;
+            }
+            tracing::warn!(
+                attempt = attempt + 1,
+                path = %seg.path.display(),
+                error = ?result.as_ref().err(),
+                "Segment upload failed, retrying"
+            );
+            tokio::time::sleep(delay).await;
+            delay *= 2;
+            result = self.client.upload_file(&key, &seg.path).await;
+        }
         match &result {
             Ok(()) => {
                 metric_minio_upload_total!("hls", "success");
@@ -93,10 +111,10 @@ impl Sink for MinIoSink {
             }
             Err(e) => {
                 metric_minio_upload_total!("hls", "failure");
-                // No retry mechanism exists, so a failed upload would otherwise
-                // leave the staged file on disk forever (max_staged_segments is
-                // not enforced here) — remove it to bound disk usage.
-                tracing::warn!(path = %seg.path.display(), error = %e, "Segment upload failed, removing staged file");
+                // Retries are exhausted — remove the staged file so failed
+                // uploads cannot accumulate on disk (max_staged_segments is
+                // not enforced here).
+                tracing::warn!(path = %seg.path.display(), error = %e, "Segment upload failed after retries, removing staged file");
                 if let Err(rm_err) = std::fs::remove_file(&seg.path) {
                     tracing::warn!(path = %seg.path.display(), error = %rm_err, "Failed to remove staged segment after failed upload");
                 }
