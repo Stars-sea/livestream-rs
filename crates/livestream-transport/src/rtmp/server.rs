@@ -72,7 +72,7 @@ async fn spawn_connection_handler(
     let cancel_token = CancellationToken::new();
     let _cancel_guard = cancel_token.drop_guard_ref();
 
-    let connection = RtmpConnection::new(socket);
+    let connection = RtmpConnection::new(Box::new(socket));
 
     let builder = match connection.perform_handshake(&cancel_token).await {
         Ok(builder) => builder,

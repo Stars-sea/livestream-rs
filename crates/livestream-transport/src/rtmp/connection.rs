@@ -2,18 +2,23 @@ use anyhow::Result;
 use bytes::BytesMut;
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
 use rml_rtmp::sessions::{ServerSession, ServerSessionConfig, ServerSessionResult};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 use super::session::SessionGuardBuilder;
 
+/// Object-safe I/O abstraction for the RTMP connection socket.
+///
+/// Lets tests substitute `tokio::io::duplex` streams for real `TcpStream`s.
+pub(crate) trait RtmpIo: AsyncRead + AsyncWrite + Unpin + Send + Sync {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> RtmpIo for T {}
+
 pub struct RtmpConnection {
-    socket: TcpStream,
+    socket: Box<dyn RtmpIo>,
 }
 
 impl RtmpConnection {
-    pub fn new(socket: TcpStream) -> Self {
+    pub fn new(socket: Box<dyn RtmpIo>) -> Self {
         Self { socket }
     }
 
