@@ -14,6 +14,7 @@ use crate::config::ServerConfig;
 use crate::flv::hub::FlvEgressHub;
 use crate::lifecycle::HandlerLifecycle;
 use crate::protocol_server::ProtocolServerCore;
+use crate::registry::SessionRegistry;
 use crate::source::rtsp::{RawRtpFrame, RtspSource};
 use rtsp_types::Message;
 
@@ -43,6 +44,7 @@ impl RtspServer {
         let hub = self.core.flv_egress_hub.clone();
         let minio = self.core.minio.clone();
         let seg_cfg = self.core.segment_cfg.clone();
+        let registry = self.core.registry.clone();
 
         self.core
             .run(Protocol::Rtsp, move |socket, addr| {
@@ -53,6 +55,7 @@ impl RtspServer {
                     hub.clone(),
                     minio.clone(),
                     seg_cfg.clone(),
+                    registry.clone(),
                 ))
             })
             .await
@@ -173,6 +176,7 @@ async fn spawn_connection_handler(
     hub: Arc<FlvEgressHub>,
     minio: Arc<dyn ObjectUploader>,
     segment_cfg: SegmentConfig,
+    registry: Arc<SessionRegistry>,
 ) {
     let cancel_token = CancellationToken::new();
     if let Err(e) = handle_connection(
@@ -181,6 +185,7 @@ async fn spawn_connection_handler(
         hub,
         minio,
         segment_cfg,
+        registry,
         cancel_token,
     )
     .await
@@ -205,6 +210,7 @@ struct HandshakeOutcome {
     sdp: Option<String>,
     codec_params: Vec<livestream_core::types::CodecParams>,
     live_id: Option<String>,
+    provided_passphrase: Option<String>,
 }
 
 /// Runs the RTSP handshake (OPTIONS/ANNOUNCE/SETUP/RECORD).
@@ -225,6 +231,7 @@ async fn run_rtsp_handshake(
                     sdp: None,
                     codec_params: vec![],
                     live_id: None,
+                    provided_passphrase: None,
                 });
             }
         };
@@ -239,6 +246,7 @@ async fn run_rtsp_handshake(
                     sdp: None,
                     codec_params: vec![],
                     live_id: None,
+                    provided_passphrase: None,
                 });
             }
         };
@@ -256,6 +264,7 @@ async fn run_rtsp_handshake(
                             sdp: None,
                             codec_params: vec![],
                             live_id: None,
+                            provided_passphrase: None,
                         });
                     }
                 };
@@ -266,6 +275,7 @@ async fn run_rtsp_handshake(
                         sdp: None,
                         codec_params: vec![],
                         live_id: None,
+                        provided_passphrase: None,
                     });
                 }
             }
@@ -292,6 +302,7 @@ async fn run_rtsp_handshake(
                 sdp: session.sdp_body().map(String::from),
                 codec_params: session.codec_params().unwrap_or(&[]).to_vec(),
                 live_id,
+                provided_passphrase: session.provided_passphrase().map(String::from),
             };
             return Ok(outcome);
         }
@@ -302,6 +313,7 @@ async fn run_rtsp_handshake(
         sdp: None,
         codec_params: vec![],
         live_id: None,
+        provided_passphrase: None,
     })
 }
 
@@ -313,6 +325,7 @@ async fn handle_connection(
     hub: Arc<FlvEgressHub>,
     minio: Arc<dyn ObjectUploader>,
     segment_cfg: SegmentConfig,
+    registry: Arc<SessionRegistry>,
     cancel_token: CancellationToken,
 ) -> Result<()> {
     let (read_half, mut write_half) = stream.into_split();
@@ -323,6 +336,7 @@ async fn handle_connection(
         sdp,
         codec_params,
         live_id,
+        provided_passphrase,
     } = run_rtsp_handshake(&mut reader, &mut write_half).await?;
 
     if !recording {
@@ -333,6 +347,20 @@ async fn handle_connection(
         anyhow::anyhow!("RTSP ANNOUNCE did not provide a recognizable stream path")
     })?;
     let sdp = sdp.ok_or_else(|| anyhow::anyhow!("SDP missing"))?;
+
+    // Passphrase check: if the precreated session carries a passphrase, the
+    // publisher must present it in the ANNOUNCE URI userinfo.
+    if let Some(descriptor) = registry.get_session(&live_id) {
+        let expected = descriptor.read().await.endpoint.passphrase.clone();
+        if let Some(expected) = expected
+            && provided_passphrase.as_deref() != Some(expected.as_str())
+        {
+            anyhow::bail!(
+                "RTSP publish for '{}' rejected: invalid or missing passphrase",
+                live_id
+            );
+        }
+    }
 
     let Some((_, lifecycle)) = pending_lifecycle.remove(&live_id) else {
         anyhow::bail!("No precreated session found for live_id: {}", live_id);

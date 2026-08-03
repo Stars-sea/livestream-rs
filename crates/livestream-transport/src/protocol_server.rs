@@ -227,7 +227,11 @@ impl ProtocolServerCore {
         protocol: Protocol,
     ) -> Result<()> {
         match msg {
-            ControlMessage::PrecreateStream { live_id, ack, .. } => {
+            ControlMessage::PrecreateStream {
+                live_id,
+                ack,
+                passphrase,
+            } => {
                 // Control messages are handled serially by the run loop, so
                 // this existence check is race-free: a concurrent precreate
                 // for the same live_id can never slip past it before the
@@ -259,7 +263,10 @@ impl ProtocolServerCore {
                 );
 
                 if let Err(e) = lifecycle
-                    .pending(SessionEndpoint::default(), session_token.clone())
+                    .pending(
+                        SessionEndpoint::new(None, passphrase),
+                        session_token.clone(),
+                    )
                     .await
                 {
                     warn!(
