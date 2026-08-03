@@ -79,9 +79,13 @@ fn is_video_seq_header(payload: &[u8]) -> bool {
         return false;
     }
     let first_byte = payload[0];
+    // Enhanced FLV (E-RTMP v1) video tag header: byte 0 is
+    // IsExHeader(bit 7) | FrameType(bits 6-4) | PacketType(bits 3-0),
+    // followed by the 4-byte FourCC. Require at least 2 bytes so a
+    // truncated ex-header payload cannot be misclassified.
     let is_ex_header = (first_byte & 0x80) != 0;
     if is_ex_header {
-        (first_byte & 0x0f) == FLV_PACKET_TYPE_SEQ_HEADER
+        payload.len() >= 2 && (first_byte & 0x0f) == FLV_PACKET_TYPE_SEQ_HEADER
     } else {
         let codec_id = first_byte & 0x0f;
         payload.len() >= 2
@@ -115,7 +119,9 @@ pub(super) fn parse_script_data_metadata(payload: Bytes) -> Result<StreamMetadat
 
 fn is_video_keyframe(payload: &Bytes) -> bool {
     if let Some(&first_byte) = payload.first() {
-        // FrameType is bits 4-6 (mask 0x70)
+        // FrameType is bits 4-6 (mask 0x70) for both classic and enhanced
+        // (E-RTMP v1) video tag headers — the IsExHeader flag (bit 7) is
+        // orthogonal. KeyFrame == 1.
         let frame_type = (first_byte & 0x70) >> 4;
         return frame_type == 1;
     }

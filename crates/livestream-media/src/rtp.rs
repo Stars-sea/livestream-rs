@@ -34,14 +34,42 @@ pub struct RtpDemuxContext {
     _inner: Arc<Mutex<RtpBuf>>,
 }
 
+// SAFETY: RtpDemuxContext is the sole owner of its raw FFmpeg pointers
+// (fmt_ctx, rtp_io) and the associated AVFormatContext/AVIOContext, so moving
+// it across threads is safe.
+// Sync is deliberately NOT implemented: &self methods mutate FFmpeg state
+// (e.g. av_read_frame), so concurrent &self calls from multiple threads are
+// not safe. Callers must serialize access (the pipeline wraps this type in a
+// Mutex — see RtpDemuxProcessor).
 unsafe impl Send for RtpDemuxContext {}
-unsafe impl Sync for RtpDemuxContext {}
 
 // ── SDP-serving state ──
 
 struct SdpState {
     data: Vec<u8>,
     pos: usize,
+}
+
+/// Release an SDP-serving AVIO context together with its internal buffer and
+/// opaque `SdpState`.
+///
+/// # Safety
+///
+/// `sdp_io` must be a valid `AVIOContext` returned by `avio_alloc_context()`
+/// whose buffer and opaque state have not yet been released. Note that
+/// `avio_context_free()` on a read-only (write_flag == 0) AVIO does NOT free
+/// the internal buffer, so the buffer is freed here.
+unsafe fn free_sdp_io(mut sdp_io: *mut AVIOContext) {
+    let opaque = unsafe { (*sdp_io).opaque };
+    let internal_buf = unsafe { (*sdp_io).buffer };
+    unsafe { avio_context_free(&mut sdp_io) };
+    // avio_context_free may have NULL'd the buffer; free what we captured.
+    if !internal_buf.is_null() {
+        unsafe { av_free(internal_buf as *mut c_void) };
+    }
+    if !opaque.is_null() {
+        let _ = unsafe { Box::from_raw(opaque as *mut SdpState) };
+    }
 }
 
 impl RtpDemuxContext {
@@ -79,7 +107,7 @@ impl RtpDemuxContext {
         // 2. Allocate format context, attach AVIO, force "sdp" format.
         let mut fmt_ctx = unsafe { avformat_alloc_context() };
         if fmt_ctx.is_null() {
-            unsafe { avio_context_free(&mut sdp_io) };
+            unsafe { free_sdp_io(sdp_io) };
             anyhow::bail!("avformat_alloc_context");
         }
         unsafe {
@@ -126,29 +154,25 @@ impl RtpDemuxContext {
         let ret = unsafe { avformat_open_input(&mut fmt_ctx, e.as_ptr(), iformat, &mut opts) };
         unsafe { av_dict_free(&mut opts) };
 
-        // SDP AVIO + state no longer needed.
+        if ret < 0 {
+            // On failure avformat_open_input() frees the context and writes
+            // NULL into *ps (i.e. fmt_ctx) — so fmt_ctx must NOT be touched or
+            // freed here. However, because we attach the SDP AVIO with
+            // AVFMT_FLAG_CUSTOM_IO, FFmpeg does not close it on the failure
+            // path (and avformat_free_context never frees pb), so the SDP
+            // AVIO, its buffer, and its opaque SdpState are still owned by us
+            // and must be released.
+            unsafe { free_sdp_io(sdp_io) };
+            anyhow::bail!("avformat_open_input: {}", crate::ffmpeg_error(ret));
+        }
+
+        // Success: SDP AVIO + state no longer needed.
         // avio_context_free(write_flag=0) does NOT free the internal buffer
         // (only write_flag=1 AVIOs free the buffer on close). Free buf separately.
-        unsafe {
-            let opaque = (*sdp_io).opaque;
-            let internal_buf = (*sdp_io).buffer;
-            avio_context_free(&mut sdp_io);
-            // avio_context_free may have NULL'd the buffer; free what we captured.
-            if !internal_buf.is_null() {
-                av_free(internal_buf as *mut c_void);
-            }
-            if !opaque.is_null() {
-                let _ = Box::from_raw(opaque as *mut SdpState);
-            }
-        }
+        unsafe { free_sdp_io(sdp_io) };
         // Detach freed SDP AVIO from fmt_ctx to prevent dangling pointer.
         unsafe {
             (*fmt_ctx).pb = null_mut();
-        }
-
-        if ret < 0 {
-            unsafe { avformat_free_context(fmt_ctx) };
-            anyhow::bail!("avformat_open_input: {}", crate::ffmpeg_error(ret));
         }
         // Enable FFmpeg timestamp generation. The SDP demuxer may not set
         // PTS/DTS on decoded frames. GENPTS tells FFmpeg to generate missing
@@ -429,16 +453,27 @@ impl Drop for RtpDemuxContext {
                 avformat_close_input(&mut self.fmt_ctx);
                 self.fmt_ctx = null_mut();
             }
-            if !self.rtp_io.is_null() {
-                let o = (*self.rtp_io).opaque;
-                if !o.is_null() {
-                    let _ = Arc::from_raw(o as *const Mutex<RtpBuf>);
-                }
-                avio_context_free(&mut self.rtp_io);
-                self.rtp_io = null_mut();
-            }
+            free_rtp_io(&mut self.rtp_io);
         }
     }
+}
+
+/// Release an RTP demux AVIO context and the `Arc<Mutex<RtpBuf>>` stored in
+/// its opaque field.
+///
+/// # Safety
+///
+/// `rtp_io` must be a valid `AVIOContext` created by this module whose opaque
+/// pointer is a `Box`-ed `Arc<Mutex<RtpBuf>>` (or null).
+unsafe fn free_rtp_io(rtp_io: &mut *mut AVIOContext) {
+    if rtp_io.is_null() {
+        return;
+    }
+    let opaque = unsafe { (**rtp_io).opaque };
+    if !opaque.is_null() {
+        let _ = unsafe { Arc::from_raw(opaque as *const Mutex<RtpBuf>) };
+    }
+    unsafe { avio_context_free(rtp_io) };
 }
 
 #[cfg(test)]

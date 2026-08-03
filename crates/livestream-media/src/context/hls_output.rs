@@ -69,8 +69,12 @@ pub struct HlsOutputContext {
     header_written: bool,
 }
 
-// SAFETY: AVFormatContext is thread-safe for write operations.
-// The opaque pointer (Vec<u8>) is owned by the caller, not this context.
+// SAFETY: AVFormatContext is NOT thread-safe — all FFmpeg muxing calls
+// (av_interleaved_write_frame, av_write_trailer, ...) and Drop mutate shared
+// C state and must not race. This impl is sound only because the sole caller
+// (HlsSegmenter) serializes every access to this context under a Mutex and
+// preserves drop order (the opaque Vec<u8> outlives this context, so the
+// AVIO write callback never touches a freed buffer).
 unsafe impl Send for HlsOutputContext {}
 
 impl HlsOutputContext {
@@ -151,9 +155,17 @@ impl HlsOutputContext {
 
     /// Prevent Drop from writing a safety-net trailer.
     ///
-    /// Call after a successful explicit `write_trailer()` — the Drop impl
-    /// attempts to write a trailer as a safety net, but writing it twice
-    /// (or after the opaque buffer has been replaced) causes corruption.
+    /// Call after a successful explicit `write_trailer()`. The Drop impl
+    /// writes a trailer into the caller's opaque `Vec<u8>` as a safety net,
+    /// but writing it twice (or after the buffer has been cleared/taken)
+    /// causes corruption.
+    ///
+    /// # Warning
+    ///
+    /// If the context is dropped WITHOUT `disarm()` (e.g. on an error path),
+    /// Drop appends a trailer to the opaque `Vec<u8>`. The caller must not
+    /// clear, take, or reuse that buffer until the context is gone — drop
+    /// order (buffer outliving this context) is a hard precondition.
     pub fn disarm(&mut self) {
         self.header_written = false;
     }
@@ -210,8 +222,15 @@ impl Drop for HlsOutputContext {
             return;
         }
 
-        // Write trailer as safety net (normal path: HlsSegmenter calls
-        // write_trailer() during rollover).
+        // Safety-net trailer: if the caller never disarmed (i.e. no explicit
+        // write_trailer() was called), append a TS trailer to the caller's
+        // opaque Vec<u8> so the segment stays valid.
+        //
+        // WARNING: this writes into the caller's buffer. The caller MUST call
+        // disarm() after an explicit write_trailer() and BEFORE the buffer is
+        // cleared, taken, or reused — otherwise a stale/garbage trailer is
+        // appended to the buffer while it is still owned by the caller, and
+        // drop order (buffer outliving this context) is violated.
         if self.header_written
             && let Err(e) = self.write_trailer()
         {

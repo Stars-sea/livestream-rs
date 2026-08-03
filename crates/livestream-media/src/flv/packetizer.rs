@@ -23,6 +23,10 @@ pub struct FlvTagPacketizer {
     avc_config_raw: Option<Vec<u8>>,
     aac_asc_raw: Option<Vec<u8>>,
     h264_bsf: Option<H264Mp4ToAnnexb>,
+    /// FLV → stream index/timebase mapping. Invariant for the context
+    /// lifetime, so it is built once (on the first `packetize` call) and
+    /// reused for every tag instead of being rebuilt per packet.
+    mapping: Option<FlvStreamMapping>,
 }
 
 impl FlvTagPacketizer {
@@ -39,9 +43,16 @@ impl FlvTagPacketizer {
         tag: &FlvTag,
         streams: &dyn StreamCollection,
     ) -> Result<Vec<Packet>> {
-        let mapping = FlvStreamMapping::from_streams(streams);
+        // The mapping is invariant for this context's lifetime — compute it
+        // at most once and cache it (streams must not change between calls).
+        // Take it out so the match below can borrow `self` mutably, then
+        // restore it for the next call.
+        let mapping = self
+            .mapping
+            .take()
+            .unwrap_or_else(|| FlvStreamMapping::from_streams(streams));
 
-        match tag {
+        let packets = match tag {
             FlvTag::Audio { timestamp, payload } => {
                 self.packetize_audio(*timestamp, payload, &mapping)
             }
@@ -51,7 +62,11 @@ impl FlvTagPacketizer {
                 is_keyframe,
             } => self.packetize_video(*timestamp, payload, *is_keyframe, &mapping),
             FlvTag::ScriptData(_) => Ok(Vec::new()),
-        }
+        };
+
+        // Restore the cached mapping for subsequent calls.
+        self.mapping = Some(mapping);
+        packets
     }
 
     /// Apply cached codec extradata to an output context.
@@ -96,9 +111,7 @@ impl FlvTagPacketizer {
                 Ok(Vec::new())
             }
             1 => {
-                let (video_stream_idx, video_time_base) = mapping.video.ok_or_else(|| {
-                    anyhow::anyhow!("Video stream not found in stream collection")
-                })?;
+                let (video_stream_idx, video_time_base) = get_video_stream(mapping)?;
                 let packet = make_packet(
                     avc_payload,
                     timestamp,
@@ -107,9 +120,9 @@ impl FlvTagPacketizer {
                     video_stream_idx,
                 )?;
 
-                let bsf = self.h264_bsf.as_mut().ok_or_else(|| {
-                    anyhow::anyhow!("AVC sequence header missing before video frame")
-                })?;
+                let bsf = self.h264_bsf.as_mut().ok_or(anyhow::anyhow!(
+                    "AVC sequence header missing before video frame"
+                ))?;
                 bsf.filter(packet)
             }
             2 => Ok(Vec::new()), // AVC end-of-sequence
@@ -129,46 +142,50 @@ impl FlvTagPacketizer {
 
         let sound_format = payload[0] >> 4;
         if sound_format == 10 {
-            // AAC
-            let aac_packet_type = payload[1];
-            let aac_payload = &payload[2..];
+            return self.packetize_aac(timestamp, payload[1], &payload[2..], mapping);
+        }
 
-            match aac_packet_type {
-                0 => {
-                    validate_aac_audio_config(aac_payload)?;
-                    self.aac_asc_raw = Some(aac_payload.to_vec());
-                    Ok(Vec::new())
-                }
-                1 if self.aac_asc_raw.is_none() => {
-                    anyhow::bail!("AAC sequence header missing before raw frame");
-                }
-                1 => {
-                    let (audio_stream_idx, audio_time_base) = get_audio_stream(mapping)?;
-                    let packet = make_packet(
-                        aac_payload,
-                        timestamp,
-                        audio_time_base,
-                        false,
-                        audio_stream_idx,
-                    )?;
-                    Ok(vec![packet])
-                }
-                x => anyhow::bail!("Unsupported AAC packet type: {}", x),
+        // Non-AAC audio (MP3, PCM, etc.)
+        let (audio_stream_idx, audio_time_base) = get_audio_stream(mapping)?;
+        let raw_audio = &payload[1..];
+        let packet = make_packet(
+            raw_audio,
+            timestamp,
+            audio_time_base,
+            false,
+            audio_stream_idx,
+        )?;
+        Ok(vec![packet])
+    }
+
+    fn packetize_aac(
+        &mut self,
+        timestamp: u32,
+        aac_packet_type: u8,
+        aac_payload: &[u8],
+        mapping: &FlvStreamMapping,
+    ) -> Result<Vec<Packet>> {
+        match aac_packet_type {
+            0 => {
+                validate_aac_audio_config(aac_payload)?;
+                self.aac_asc_raw = Some(aac_payload.to_vec());
+                Ok(Vec::new())
             }
-        } else {
-            // Non-AAC audio (MP3, PCM, etc.)
-            let (audio_stream_idx, audio_time_base) = mapping
-                .audio
-                .ok_or_else(|| anyhow::anyhow!("Audio stream not found in stream collection"))?;
-            let raw_audio = &payload[1..];
-            let packet = make_packet(
-                raw_audio,
-                timestamp,
-                audio_time_base,
-                false,
-                audio_stream_idx,
-            )?;
-            Ok(vec![packet])
+            1 if self.aac_asc_raw.is_none() => {
+                anyhow::bail!("AAC sequence header missing before raw frame");
+            }
+            1 => {
+                let (audio_stream_idx, audio_time_base) = get_audio_stream(mapping)?;
+                let packet = make_packet(
+                    aac_payload,
+                    timestamp,
+                    audio_time_base,
+                    false,
+                    audio_stream_idx,
+                )?;
+                Ok(vec![packet])
+            }
+            x => anyhow::bail!("Unsupported AAC packet type: {}", x),
         }
     }
 }
@@ -253,4 +270,10 @@ fn get_audio_stream(mapping: &FlvStreamMapping) -> Result<(usize, ffmpeg_sys_nex
     mapping
         .audio
         .ok_or_else(|| anyhow::anyhow!("Audio stream not found in stream collection"))
+}
+
+fn get_video_stream(mapping: &FlvStreamMapping) -> Result<(usize, ffmpeg_sys_next::AVRational)> {
+    mapping
+        .video
+        .ok_or_else(|| anyhow::anyhow!("Video stream not found in stream collection"))
 }

@@ -50,6 +50,17 @@ pub fn encode_flv_tag(tag: &FlvTag) -> Result<Bytes> {
     };
 
     let payload_len = payload.len();
+    // FLV stores the tag payload size in a 24-bit field (DataSize); larger
+    // payloads would be silently truncated by put_u24. Reject them with an
+    // error instead of emitting a corrupt tag. This bound also keeps the
+    // 32-bit PreviousTagSize computation overflow-free, since
+    // FLV_TAG_HEADER_LEN + payload_len < 2^32 for payload_len <= 0xFFFFFF.
+    if payload_len > 0x00FF_FFFF {
+        anyhow::bail!(
+            "FLV tag payload too large: {} bytes exceeds the 24-bit DataSize limit (16777215)",
+            payload_len
+        );
+    }
     let tag_len = FLV_TAG_HEADER_LEN + payload_len + FLV_PREVIOUS_TAG_SIZE_LEN;
     let mut bytes = BytesMut::with_capacity(tag_len);
 
