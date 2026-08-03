@@ -31,9 +31,6 @@ config.workspace = true
 async-stream = "0.3"
 regex = "1"
 
-[features]
-opentelemetry = []
-
 [build-dependencies]
 tonic-prost-build.workspace = true
 

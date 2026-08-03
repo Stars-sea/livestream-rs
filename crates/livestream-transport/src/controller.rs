@@ -3,21 +3,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossfire::oneshot::{RxOneshot, oneshot};
+use crossfire::oneshot::{RxOneshot, TxOneshot, oneshot};
 use livestream_core::channel::{MpscTx, SendError};
 use livestream_core::types::Protocol;
 
 use crate::registry::SessionRegistry;
 use crate::registry::state::SessionDescriptor;
 
-const DESCRIPTOR_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const SESSION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 
-#[derive(Debug, Clone)]
 pub enum ControlMessage {
     PrecreateStream {
         live_id: String,
         passphrase: Option<String>,
+        /// Resolved by the protocol server with the outcome of the session
+        /// registration (descriptor on success, error on failure), so the
+        /// caller learns the authoritative result instead of polling the
+        /// registry (which could observe a concurrent winner's descriptor).
+        ack: TxOneshot<Result<SessionDescriptor>>,
     },
 
     StopStream {
@@ -95,20 +98,19 @@ impl TransportController {
         live_id: String,
         passphrase: Option<String>,
     ) -> Result<RxOneshot<Result<SessionDescriptor>>> {
-        let live_id_clone = live_id.clone();
-        let registry = self.registry.clone();
-        let rx = Self::spawn_waiter(async move {
-            wait_for_descriptor(&registry, &live_id_clone, DESCRIPTOR_READY_TIMEOUT).await
-        });
+        // The protocol server resolves this oneshot with the registration
+        // result; the caller no longer polls the registry for a descriptor.
+        let (ack_tx, ack_rx) = oneshot::<Result<SessionDescriptor>>();
 
         let channel = channel.with_live_id(live_id.clone());
         let msg = ControlMessage::PrecreateStream {
             live_id,
             passphrase,
+            ack: ack_tx,
         };
 
         match channel.send(msg) {
-            Ok(()) => Ok(rx),
+            Ok(()) => Ok(ack_rx),
             Err(err) => Err(Self::map_control_send_error(transport_name, err)),
         }
     }
@@ -131,26 +133,6 @@ impl TransportController {
             SendError::Full => anyhow::anyhow!("{transport_name} control queue is full"),
             SendError::Closed => anyhow::anyhow!("{transport_name} control queue is disconnected"),
         }
-    }
-}
-
-async fn wait_for_descriptor(
-    registry: &SessionRegistry,
-    live_id: &str,
-    timeout: Duration,
-) -> Result<SessionDescriptor> {
-    let live_id = live_id.to_owned();
-    tokio::time::timeout(timeout, poll_descriptor(registry, &live_id))
-        .await
-        .map_err(|_| anyhow::anyhow!("Timeout while waiting for stream descriptor"))
-}
-
-async fn poll_descriptor(registry: &SessionRegistry, live_id: &str) -> SessionDescriptor {
-    loop {
-        if let Some(descriptor) = registry.get_descriptor(live_id).await {
-            return descriptor;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 

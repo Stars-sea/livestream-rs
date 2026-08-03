@@ -5,14 +5,13 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 use tonic::codegen::tokio_stream;
+use tonic::service::InterceptorLayer;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use tracing::{info, instrument, warn};
 
 use super::api;
 use super::api::livestream_server::LivestreamServer;
-#[cfg(feature = "opentelemetry")]
-use super::context_propagation::OtelContextPropagationService;
 use crate::controller::TransportController;
 use crate::dispatcher::{EventDispatcher, SessionEvent};
 use crate::http_flv::playback_path;
@@ -22,6 +21,11 @@ use livestream_core::channel::BroadcastRx;
 use livestream_core::types::Protocol;
 
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Upper bound for waiting on the precreate registration ack. The ack is
+/// resolved by the transport's control loop as soon as the message is
+/// processed; this only guards against a wedged or shutting-down server.
+const PRECREATE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("livestream_descriptor");
 
@@ -77,10 +81,35 @@ impl GrpcServer {
 
         let service = LivestreamServer::new(self.service);
 
-        #[cfg(feature = "opentelemetry")]
-        let service = OtelContextPropagationService::new(service);
+        // Optional bearer-token auth for the control plane. When the
+        // GRPC__AUTH_TOKEN env var is set, every request (including
+        // reflection) must carry `authorization: Bearer <token>`; requests
+        // without it are rejected with UNAUTHENTICATED. When unset the
+        // server keeps its current open behavior.
+        let auth_token: Option<String> = std::env::var("GRPC__AUTH_TOKEN")
+            .ok()
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty());
+        let auth_layer = InterceptorLayer::new(move |req: Request<()>| {
+            let Some(token) = auth_token.as_deref() else {
+                return Ok(req);
+            };
+            let expected = format!("Bearer {token}");
+            let provided = req
+                .metadata()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("")
+                .trim();
+            if provided == expected {
+                Ok(req)
+            } else {
+                Err(Status::unauthenticated("missing or invalid bearer token"))
+            }
+        });
 
         Server::builder()
+            .layer(auth_layer)
             .add_service(reflection)
             .add_service(service)
             .serve_with_shutdown(addr, shutdown.cancelled())
@@ -138,14 +167,22 @@ impl IngestGrpcService {
     async fn await_precreate_ack(
         ack: crossfire::oneshot::RxOneshot<Result<SessionDescriptor>>,
     ) -> Result<SessionDescriptor, Status> {
-        let res = ack.recv_async().await.map_err(|_| {
-            Status::internal("failed to receive acknowledgment from transport controller")
-        })?;
+        let res = tokio::time::timeout(PRECREATE_ACK_TIMEOUT, ack.recv_async())
+            .await
+            .map_err(|_| Status::internal("timed out waiting for precreate acknowledgment"))?
+            .map_err(|_| {
+                Status::internal("failed to receive acknowledgment from transport controller")
+            })?;
 
         res.map_err(|e| {
-            Status::internal(format!(
-                "transport controller failed to precreate session: {e}"
-            ))
+            let message = e.to_string();
+            if message.contains("already in use") {
+                Status::already_exists("stream already exists")
+            } else {
+                Status::internal(format!(
+                    "transport controller failed to precreate session: {message}"
+                ))
+            }
         })
     }
 

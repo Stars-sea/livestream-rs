@@ -48,8 +48,11 @@ impl FlvEgressHub {
     }
 
     /// Remove a stream's channel (on stream end).
+    /// Also removes the demand signal so both maps stop growing for
+    /// stopped/expired streams.
     pub fn remove_channel(&self, live_id: &str) {
         self.channels.remove(live_id);
+        self.demand_signals.remove(live_id);
     }
 
     /// Subscribe to a stream. Returns the broadcast receiver and cached

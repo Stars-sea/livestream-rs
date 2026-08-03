@@ -17,6 +17,13 @@ use crate::lifecycle::HandlerLifecycle;
 use crate::registry::{SessionRegistry, state::*};
 use livestream_media::flv::FlvTag;
 
+/// Maximum inbound chunk size (16 MiB). Client-requested chunk sizes are
+/// clamped to this to bound per-read allocations (rml_rtmp allows up to
+/// 2^31-1, which would allow an OOM DoS via SetChunkSize).
+const MAX_CHUNK_SIZE: u32 = 16 * 1024 * 1024;
+/// Minimum inbound chunk size (128 bytes).
+const MIN_CHUNK_SIZE: u32 = 128;
+
 pub struct SessionGuard {
     connection: RtmpConnection,
     session: ServerSession,
@@ -49,14 +56,25 @@ impl SessionGuard {
     }
 
     pub(super) fn set_chunk_size(&mut self, new_chunk_size: u32) {
-        self.chunk_size = new_chunk_size;
+        if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&new_chunk_size) {
+            warn!(
+                chunk_size = new_chunk_size,
+                min = MIN_CHUNK_SIZE,
+                max = MAX_CHUNK_SIZE,
+                "Clamping client RTMP chunk size"
+            );
+        }
+        self.chunk_size = new_chunk_size.clamp(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);
     }
 
     pub(super) async fn read_result(
         &mut self,
         ct: &CancellationToken,
     ) -> Result<Vec<ServerSessionResult>> {
-        let mut buffer = BytesMut::with_capacity(self.chunk_size as usize);
+        // Defensive floor: never allocate an empty buffer, even if the chunk
+        // size somehow ends up zero (set_chunk_size already clamps).
+        let chunk_size = self.chunk_size.max(MIN_CHUNK_SIZE);
+        let mut buffer = BytesMut::with_capacity(chunk_size as usize);
 
         let length = self.connection.read(&mut buffer, ct).await?;
         if length == 0 {

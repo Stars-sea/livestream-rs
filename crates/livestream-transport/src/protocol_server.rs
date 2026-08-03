@@ -227,7 +227,24 @@ impl ProtocolServerCore {
         protocol: Protocol,
     ) -> Result<()> {
         match msg {
-            ControlMessage::PrecreateStream { live_id, .. } => {
+            ControlMessage::PrecreateStream { live_id, ack, .. } => {
+                // Control messages are handled serially by the run loop, so
+                // this existence check is race-free: a concurrent precreate
+                // for the same live_id can never slip past it before the
+                // registration below. Resolving the ack here makes the
+                // registration outcome authoritative (the caller gets
+                // already_exists instead of observing a concurrent winner's
+                // descriptor). Rejecting up front also avoids creating a
+                // HandlerLifecycle that would tear down the existing session
+                // on drop.
+                if self.registry.get_session(&live_id).is_some() {
+                    ack.send(Err(anyhow::anyhow!(
+                        "Stream key {} is already in use",
+                        live_id
+                    )));
+                    return Ok(());
+                }
+
                 // Pre-create the FLV broadcast channel so subscribers can join
                 // before the publisher connects.
                 self.flv_egress_hub.create_channel(&live_id);
@@ -240,9 +257,30 @@ impl ProtocolServerCore {
                     self.registry.clone(),
                     self.dispatcher.clone(),
                 );
-                lifecycle
+
+                if let Err(e) = lifecycle
                     .pending(SessionEndpoint::default(), session_token.clone())
-                    .await?;
+                    .await
+                {
+                    warn!(
+                        live_id = %live_id,
+                        error = %e,
+                        "Failed to precreate session, resolving ack with failure",
+                    );
+                    ack.send(Err(e));
+                    return Ok(());
+                }
+
+                let descriptor = match self.registry.get_descriptor(&live_id).await {
+                    Some(descriptor) => descriptor,
+                    None => {
+                        ack.send(Err(anyhow::anyhow!(
+                            "precreate succeeded but no session descriptor found"
+                        )));
+                        return Ok(());
+                    }
+                };
+                ack.send(Ok(descriptor));
 
                 let protocol_name = match protocol {
                     Protocol::Rtmp => "RTMP",
@@ -258,6 +296,11 @@ impl ProtocolServerCore {
                     token.cancel();
                 }
 
+                // Drop the FLV channel (and its demand signal) so stopped
+                // streams don't leak hub state or serve stale cached sequence
+                // headers to a same-named stream later.
+                self.flv_egress_hub.remove_channel(&live_id);
+
                 Ok(())
             }
         }
@@ -271,6 +314,7 @@ impl ProtocolServerCore {
         protocol_name: &str,
     ) {
         let pending_lifecycle = self.pending_lifecycle.clone();
+        let flv_egress_hub = self.flv_egress_hub.clone();
         pending_lifecycle.insert(live_id.clone(), lifecycle);
 
         let ttl = self.precreate_ttl;
@@ -305,6 +349,10 @@ impl ProtocolServerCore {
                 return;
             };
             lifecycle.disconnect_with_reason(EndReason::Timeout);
+            // The precreated session is gone for good; drop the FLV channel
+            // and its demand signal so hub state doesn't leak and a
+            // same-named stream starts without stale cached seq headers.
+            flv_egress_hub.remove_channel(&live_id);
         });
     }
 }

@@ -1,5 +1,7 @@
 //! RtmpSource — Source implementation for RTMP ingest.
 
+use std::time::Duration;
+
 use anyhow::Result;
 use bytes::Bytes;
 use livestream_codec::{EncodedPacket, NalData};
@@ -56,7 +58,11 @@ impl RtmpSource {
                     break;
                 }
                 Err(SendError::Full) => {
-                    tokio::task::yield_now().await;
+                    // Channel is backpressured. Sleep briefly instead of
+                    // yield_now, which would spin at ~100% CPU. Retrying is
+                    // intentional: live data must not be dropped here —
+                    // dropping happens in the pads.
+                    tokio::time::sleep(Duration::from_millis(1)).await;
                 }
             }
         }

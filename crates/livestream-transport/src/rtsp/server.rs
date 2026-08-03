@@ -1,6 +1,7 @@
 //! RTSP server — TCP listener for RTSP ingest connections.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use dashmap::DashMap;
@@ -65,9 +66,25 @@ async fn read_message(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) ->
     let mut tmp = [0u8; 4096];
 
     loop {
-        let n = reader.read(&mut tmp).await?;
+        let n = match tokio::time::timeout(IDLE_TIMEOUT, reader.read(&mut tmp)).await {
+            Err(_) => {
+                anyhow::bail!(
+                    "RTSP idle timeout: no data received for {}s",
+                    IDLE_TIMEOUT.as_secs()
+                )
+            }
+            Ok(res) => res?,
+        };
         if n == 0 {
             anyhow::bail!("RTSP connection closed by client before complete request");
+        }
+        // Cap header growth: a client that never sends \r\n\r\n must not be
+        // able to grow `buf` without bound (OOM DoS).
+        if buf.len().saturating_add(n) > MAX_RTSP_MESSAGE_SIZE {
+            anyhow::bail!(
+                "RTSP message header exceeds maximum size {} bytes",
+                MAX_RTSP_MESSAGE_SIZE
+            );
         }
         buf.extend_from_slice(&tmp[..n]);
 
@@ -98,6 +115,10 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 /// SDP bodies rarely exceed 16 KiB. A 64 KiB cap defends against OOM.
 const MAX_RTSP_MESSAGE_SIZE: usize = 64 * 1024;
 
+/// Idle timeout for RTSP connections: a client that sends no data for this
+/// long is dropped, defending against slowloris-style slot exhaustion.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn extract_content_length(buf: &[u8]) -> Result<usize> {
     let headers = String::from_utf8_lossy(buf);
     let raw: usize = headers
@@ -127,7 +148,15 @@ async fn read_body_until(
     total: usize,
 ) -> Result<()> {
     while buf.len() < total {
-        let n = reader.read(tmp).await?;
+        let n = match tokio::time::timeout(IDLE_TIMEOUT, reader.read(tmp)).await {
+            Err(_) => {
+                anyhow::bail!(
+                    "RTSP idle timeout: no data received for {}s",
+                    IDLE_TIMEOUT.as_secs()
+                )
+            }
+            Ok(res) => res?,
+        };
         if n == 0 {
             anyhow::bail!("RTSP connection closed before complete body");
         }
@@ -317,7 +346,13 @@ async fn handle_connection(
         RtspSource::new(&live_id, codec_params.clone(), rtp_tx, cancel.clone());
 
     // Transition lifecycle: PENDING → CONNECTING → CONNECTED.
-    lifecycle.connect().await?;
+    if let Err(e) = lifecycle.connect().await {
+        // Cleanup must run on every exit path so the FLV channel and cancel
+        // token do not leak when the connect fails.
+        cancel.cancel();
+        hub.remove_channel(&live_id);
+        return Err(e);
+    }
     let source = Arc::new(source);
 
     // Build pipeline BEFORE spawning source so consumers are ready.
@@ -353,10 +388,14 @@ async fn handle_connection(
 
     info!(live_id = %live_id, "Reading RTP interleaved frames");
     let read_cancel = cancel.clone();
+    let idle = tokio::time::sleep(IDLE_TIMEOUT);
+    tokio::pin!(idle);
     'rtp_loop: loop {
         tokio::select! {
+            biased;
             _ = read_cancel.cancelled() => break 'rtp_loop,
             result = rtp_reader.next_frame() => {
+                idle.as_mut().reset(tokio::time::Instant::now() + IDLE_TIMEOUT);
                 let (channel, payload) = match result {
                     Ok(r) => r,
                     Err(e) => {
@@ -370,24 +409,31 @@ async fn handle_connection(
                     continue;
                 }
 
-                match livestream_codec::rtp::parse_rtp_header(&payload) {
-                    Some(hdr) => {
-                        let frame = RawRtpFrame {
-                            channel,
-                            payload_type: hdr.payload_type,
-                            rtp_timestamp: hdr.rtp_timestamp,
-                            marker: hdr.marker,
-                            sequence_number: hdr.sequence_number,
-                            ssrc: hdr.ssrc,
-                            rtp_data: payload,
-                        };
-                        if frame_tx.send(frame).await.is_err() {
-                            warn!(live_id = %live_id, "Frame receiver closed");
-                            break 'rtp_loop;
-                        }
-                    }
-                    None => warn!(live_id = %live_id, "RTP header parse failed"),
+                let Some(hdr) = livestream_codec::rtp::parse_rtp_header(&payload) else {
+                    warn!(live_id = %live_id, "RTP header parse failed");
+                    continue;
+                };
+                let frame = RawRtpFrame {
+                    channel,
+                    payload_type: hdr.payload_type,
+                    rtp_timestamp: hdr.rtp_timestamp,
+                    marker: hdr.marker,
+                    sequence_number: hdr.sequence_number,
+                    ssrc: hdr.ssrc,
+                    rtp_data: payload,
+                };
+                if frame_tx.send(frame).await.is_err() {
+                    warn!(live_id = %live_id, "Frame receiver closed");
+                    break 'rtp_loop;
                 }
+            }
+            _ = &mut idle => {
+                warn!(
+                    live_id = %live_id,
+                    "RTSP idle timeout: no data received for {}s, disconnecting",
+                    IDLE_TIMEOUT.as_secs()
+                );
+                break 'rtp_loop;
             }
         }
     }

@@ -174,17 +174,23 @@ async fn spawn_connection_handler(
         }
     }
 
-    // Cancel the pipeline before removing the FLV channel so buffered
-    // FlvTags drain to subscribers before the channel is destroyed.
-    cancel_token.cancel();
+    // Publish path only: the registry token is the STREAM-LEVEL token shared
+    // by the publisher and every viewer. A play (viewer) connection exiting
+    // must NOT cancel it or remove the FLV channel — that would tear down the
+    // publisher's pipeline and disconnect all other viewers.
+    if is_publish {
+        // Cancel the pipeline before removing the FLV channel so buffered
+        // FlvTags drain to subscribers before the channel is destroyed.
+        cancel_token.cancel();
 
-    // Allow buffered pipeline data to drain before removing the channel.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+        // Allow buffered pipeline data to drain before removing the channel.
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
-    flv_egress_hub.remove_channel(&stream_key);
+        flv_egress_hub.remove_channel(&stream_key);
 
-    // Ensure registry token is cancelled for publish sessions.
-    drop(publish_token);
+        // Ensure registry token is cancelled for publish sessions.
+        drop(publish_token);
+    }
 }
 
 fn spawn_source_task(source: Arc<RtmpSource>) {
