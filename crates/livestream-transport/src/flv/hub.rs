@@ -91,3 +91,91 @@ impl FlvBroadcast for FlvEgressHub {
             .new_handle()
     }
 }
+
+// ── Tests ──
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use livestream_core::pad::DemandHandle;
+
+    fn sample_tag() -> FlvTag {
+        FlvTag::video(0, Bytes::from_static(&[0x17, 0x00, 0, 0, 0, 0x01]))
+    }
+
+    #[test]
+    fn create_channel_creates_and_reuses() {
+        let hub = FlvEgressHub::new();
+        let a = hub.create_channel("stream-a");
+        let a_again = hub.create_channel("stream-a");
+        let b = hub.create_channel("stream-b");
+        assert!(Arc::ptr_eq(&a, &a_again), "same stream reuses the channel");
+        assert!(
+            !Arc::ptr_eq(&a, &b),
+            "different streams get distinct channels"
+        );
+    }
+
+    #[test]
+    fn subscribe_returns_channel_only_after_create() {
+        let hub = FlvEgressHub::new();
+        assert!(hub.subscribe("missing").is_none());
+        hub.create_channel("present");
+        let (rx, _cached) = hub
+            .subscribe("present")
+            .expect("created stream should be subscribable");
+        drop(rx);
+    }
+
+    #[test]
+    fn remove_channel_cleans_up() {
+        let hub = FlvEgressHub::new();
+        hub.create_channel("ephemeral");
+        assert!(hub.subscribe("ephemeral").is_some());
+        hub.remove_channel("ephemeral");
+        assert!(hub.subscribe("ephemeral").is_none());
+        // 重新 create 得到新 channel
+        let fresh = hub.create_channel("ephemeral");
+        assert!(
+            fresh.subscribe().0.try_recv().is_err(),
+            "fresh channel has no cached tags"
+        );
+    }
+
+    #[tokio::test]
+    async fn broadcast_delivers_to_subscriber() {
+        let hub = FlvEgressHub::new();
+        hub.create_channel("stream-a");
+        let (mut rx, _cached) = hub.subscribe("stream-a").unwrap();
+        let tag = sample_tag();
+        hub.broadcast("stream-a", tag.clone()).await.unwrap();
+        let received = rx.recv().await.expect("subscriber should receive the tag");
+        assert_eq!(received.payload_size(), tag.payload_size());
+    }
+
+    #[tokio::test]
+    async fn broadcast_without_channel_is_ok() {
+        let hub = FlvEgressHub::new();
+        let result = hub.broadcast("nowhere", sample_tag()).await;
+        assert!(result.is_ok(), "missing channel is not an error");
+    }
+
+    #[tokio::test]
+    async fn broadcast_without_receivers_is_ok() {
+        let hub = FlvEgressHub::new();
+        hub.create_channel("silent");
+        let result = hub.broadcast("silent", sample_tag()).await;
+        assert!(result.is_ok(), "no subscribers is not an error");
+    }
+
+    #[test]
+    fn demand_handle_subscribe() {
+        let hub = FlvEgressHub::new();
+        let handle: DemandHandle = FlvBroadcast::subscribe(&hub, "stream-a");
+        // 句柄可 clone/drop，不依赖 channel 存在
+        let cloned = handle.clone();
+        drop(cloned);
+        drop(handle);
+    }
+}

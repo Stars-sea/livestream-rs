@@ -277,3 +277,304 @@ fn get_video_stream(mapping: &FlvStreamMapping) -> Result<(usize, ffmpeg_sys_nex
         .video
         .ok_or_else(|| anyhow::anyhow!("Video stream not found in stream collection"))
 }
+
+// ── Tests ──
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::OwnedCodecParams;
+    use crate::stream::StaticStreamCollection;
+    use ffmpeg_sys_next::AVCodecID;
+    use rml_rtmp::sessions::StreamMetadata;
+
+    /// AVCDecoderConfigurationRecord：version=1, profile=0x42, SPS 67 42 00 1E, PPS 68 CE 3C 80
+    const AVCC: &[u8] = &[
+        0x01, 0x42, 0x00, 0x1E, 0xFF, 0xE1, 0x00, 0x04, 0x67, 0x42, 0x00, 0x1E, 0x01, 0x00, 0x04,
+        0x68, 0xCE, 0x3C, 0x80,
+    ];
+    /// AAC-LC AudioSpecificConfig（AOT=2, 44100）
+    const ASC: &[u8] = &[0x12, 0x10];
+    /// 视频帧 AVCC 长度前缀 NAL（IDR）
+    const NAL_FRAME: &[u8] = &[0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x84, 0x01, 0x2C];
+
+    fn make_streams() -> StaticStreamCollection {
+        let video =
+            OwnedCodecParams::create_dummy_video(AVCodecID::AV_CODEC_ID_H264, 640, 360, 30.0)
+                .unwrap();
+        let audio =
+            OwnedCodecParams::create_dummy_audio(AVCodecID::AV_CODEC_ID_AAC, 44100, 2).unwrap();
+        StaticStreamCollection::from_owned_params(vec![
+            (0, AVRational { num: 1, den: 90000 }, video),
+            (1, AVRational { num: 1, den: 44100 }, audio),
+        ])
+    }
+
+    fn video_tag(prefix: &[u8], body: &[u8]) -> FlvTag {
+        let mut payload = prefix.to_vec();
+        payload.extend_from_slice(body);
+        FlvTag::video(0, Bytes::from(payload))
+    }
+
+    fn video_seq_tag() -> FlvTag {
+        video_tag(&[0x17, 0x00, 0, 0, 0], AVCC)
+    }
+
+    fn video_frame_tag(prefix: u8, timestamp: u32) -> FlvTag {
+        let mut payload = vec![prefix, 0x01, 0, 0, 0];
+        payload.extend_from_slice(NAL_FRAME);
+        FlvTag::video(timestamp, Bytes::from(payload))
+    }
+
+    fn audio_seq_tag() -> FlvTag {
+        let mut payload = vec![0xAF, 0x00];
+        payload.extend_from_slice(ASC);
+        FlvTag::audio(0, Bytes::from(payload))
+    }
+
+    fn audio_frame_tag(prefix: u8, timestamp: u32) -> FlvTag {
+        let mut payload = vec![prefix, 0x01];
+        payload.extend_from_slice(&[0x21, 0x00, 0x1F, 0xFC]);
+        FlvTag::audio(timestamp, Bytes::from(payload))
+    }
+
+    #[test]
+    fn video_seq_header_caches_config() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        let packets = packetizer.packetize(&video_seq_tag(), &streams).unwrap();
+        assert!(packets.is_empty());
+        assert!(packetizer.avc_config_raw.is_some());
+        assert!(packetizer.h264_bsf.is_some());
+    }
+
+    #[test]
+    fn video_frame_goes_through_bsf() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        packetizer.packetize(&video_seq_tag(), &streams).unwrap();
+        let packets = packetizer
+            .packetize(&video_frame_tag(0x27, 0), &streams)
+            .unwrap();
+        assert_eq!(packets.len(), 1);
+        let data = packets[0].data();
+        // Annex B 起始码
+        assert!(data.starts_with(&[0x00, 0x00, 0x00, 0x01]));
+        // 不再含长度前缀
+        assert!(!data.windows(4).any(|w| w == [0x00, 0x00, 0x00, 0x05]));
+        assert_eq!(packets[0].stream_idx(), 0);
+        assert!(!packets[0].is_key_frame());
+    }
+
+    #[test]
+    fn video_keyframe_flag_propagates() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        packetizer.packetize(&video_seq_tag(), &streams).unwrap();
+        let packets = packetizer
+            .packetize(&video_frame_tag(0x17, 0), &streams)
+            .unwrap();
+        assert_eq!(packets.len(), 1);
+        assert!(packets[0].is_key_frame());
+    }
+
+    #[test]
+    fn video_frame_without_seq_header_errors() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        let err = packetizer
+            .packetize(&video_frame_tag(0x27, 0), &streams)
+            .unwrap_err();
+        assert!(err.to_string().contains("AVC sequence header missing"));
+    }
+
+    #[test]
+    fn video_unsupported_codec_errors() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        let err = packetizer
+            .packetize(
+                &video_tag(&[0x1C, 0x01, 0, 0, 0], &[0x00, 0x00, 0x00, 0x01]),
+                &streams,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("Unsupported FLV video codec id"));
+    }
+
+    #[test]
+    fn video_short_payload_errors() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        let err = packetizer
+            .packetize(
+                &FlvTag::video(0, Bytes::from_static(&[0x17, 0x00])),
+                &streams,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("Invalid FLV video payload size"));
+    }
+
+    #[test]
+    fn video_eos_returns_empty() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        packetizer.packetize(&video_seq_tag(), &streams).unwrap();
+        let packets = packetizer
+            .packetize(&video_tag(&[0x27, 0x02, 0, 0, 0], &[0x00]), &streams)
+            .unwrap();
+        assert!(packets.is_empty());
+        // 未知 AVC packet type
+        let err = packetizer
+            .packetize(&video_tag(&[0x27, 0x03, 0, 0, 0], &[0x00]), &streams)
+            .unwrap_err();
+        assert!(err.to_string().contains("Unsupported AVC packet type"));
+    }
+
+    #[test]
+    fn audio_seq_header_caches_asc() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        let packets = packetizer.packetize(&audio_seq_tag(), &streams).unwrap();
+        assert!(packets.is_empty());
+        assert_eq!(packetizer.aac_asc_raw.as_deref(), Some(ASC));
+    }
+
+    #[test]
+    fn audio_frame_packetized() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        packetizer.packetize(&audio_seq_tag(), &streams).unwrap();
+        let packets = packetizer
+            .packetize(&audio_frame_tag(0xAF, 0), &streams)
+            .unwrap();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].stream_idx(), 1);
+        assert!(!packets[0].is_key_frame());
+    }
+
+    #[test]
+    fn audio_frame_without_seq_header_errors() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        let err = packetizer
+            .packetize(&audio_frame_tag(0xAF, 0), &streams)
+            .unwrap_err();
+        assert!(err.to_string().contains("AAC sequence header missing"));
+    }
+
+    #[test]
+    fn audio_invalid_asc_errors() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        // AOT=0
+        let err = packetizer
+            .packetize(
+                &FlvTag::audio(0, Bytes::from_static(&[0xAF, 0x00, 0x00, 0x10])),
+                &streams,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("Invalid AAC audio object type"));
+        // 过短
+        let err = packetizer
+            .packetize(
+                &FlvTag::audio(0, Bytes::from_static(&[0xAF, 0x00, 0x12])),
+                &streams,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("too short"));
+    }
+
+    #[test]
+    fn audio_unsupported_packet_type_errors() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        packetizer.packetize(&audio_seq_tag(), &streams).unwrap();
+        let err = packetizer
+            .packetize(
+                &FlvTag::audio(0, Bytes::from_static(&[0xAF, 0x02, 0x21])),
+                &streams,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("Unsupported AAC packet type"));
+    }
+
+    #[test]
+    fn mp3_audio_passes_through() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        let packets = packetizer
+            .packetize(
+                &FlvTag::audio(0, Bytes::from_static(&[0x20, 0xFF, 0xFB, 0x90, 0x64])),
+                &streams,
+            )
+            .unwrap();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].stream_idx(), 1);
+        assert_eq!(packets[0].data(), &[0xFF, 0xFB, 0x90, 0x64]);
+    }
+
+    #[test]
+    fn pts_rescaled_to_stream_timebase() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        packetizer.packetize(&video_seq_tag(), &streams).unwrap();
+        packetizer.packetize(&audio_seq_tag(), &streams).unwrap();
+        // 1000ms 视频帧 → 1/90000 timebase
+        let packets = packetizer
+            .packetize(&video_frame_tag(0x27, 1000), &streams)
+            .unwrap();
+        assert_eq!(packets[0].pts(), Some(90000));
+        // 1000ms 音频帧 → 1/44100 timebase
+        let packets = packetizer
+            .packetize(&audio_frame_tag(0xAF, 1000), &streams)
+            .unwrap();
+        assert_eq!(packets[0].pts(), Some(44100));
+    }
+
+    #[test]
+    fn script_data_returns_empty() {
+        let mut packetizer = FlvTagPacketizer::new();
+        let streams = make_streams();
+        let packets = packetizer
+            .packetize(&FlvTag::ScriptData(StreamMetadata::new()), &streams)
+            .unwrap();
+        assert!(packets.is_empty());
+    }
+
+    #[test]
+    fn missing_video_stream_errors() {
+        let audio =
+            OwnedCodecParams::create_dummy_audio(AVCodecID::AV_CODEC_ID_AAC, 44100, 2).unwrap();
+        let streams = StaticStreamCollection::from_owned_params(vec![(
+            1,
+            AVRational { num: 1, den: 44100 },
+            audio,
+        )]);
+        let mut packetizer = FlvTagPacketizer::new();
+        packetizer.packetize(&video_seq_tag(), &streams).unwrap();
+        let err = packetizer
+            .packetize(&video_frame_tag(0x27, 0), &streams)
+            .unwrap_err();
+        assert!(err.to_string().contains("Video stream not found"));
+    }
+
+    #[test]
+    fn missing_audio_stream_errors() {
+        let video =
+            OwnedCodecParams::create_dummy_video(AVCodecID::AV_CODEC_ID_H264, 640, 360, 30.0)
+                .unwrap();
+        let streams = StaticStreamCollection::from_owned_params(vec![(
+            0,
+            AVRational { num: 1, den: 90000 },
+            video,
+        )]);
+        let mut packetizer = FlvTagPacketizer::new();
+        let err = packetizer
+            .packetize(
+                &FlvTag::audio(0, Bytes::from_static(&[0x20, 0xFF, 0xFB, 0x90, 0x64])),
+                &streams,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("Audio stream not found"));
+    }
+}

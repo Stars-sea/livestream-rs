@@ -162,3 +162,39 @@ impl Drop for H264Mp4ToAnnexb {
         }
     }
 }
+
+// ── Tests ──
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AVCDecoderConfigurationRecord：version=1, profile=0x42, SPS 67 42 00 1E, PPS 68 CE 3C 80
+    const AVCC: &[u8] = &[
+        0x01, 0x42, 0x00, 0x1E, 0xFF, 0xE1, 0x00, 0x04, 0x67, 0x42, 0x00, 0x1E, 0x01, 0x00, 0x04,
+        0x68, 0xCE, 0x3C, 0x80,
+    ];
+
+    fn make_packet_with_data(data: &[u8]) -> Packet {
+        let mut pkt = Packet::alloc().unwrap();
+        pkt.set_data(data).unwrap();
+        pkt
+    }
+
+    #[test]
+    fn new_accepts_valid_avcc() {
+        assert!(H264Mp4ToAnnexb::new(AVCC).is_ok());
+    }
+
+    #[test]
+    fn filter_converts_to_annex_b() {
+        let mut bsf = H264Mp4ToAnnexb::new(AVCC).unwrap();
+        let input = make_packet_with_data(&[0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x84, 0x01, 0x2C]);
+        let out = bsf.filter(input).unwrap();
+        assert_eq!(out.len(), 1);
+        let data = out[0].data();
+        // Annex B 起始码，不再含长度前缀
+        assert!(data.starts_with(&[0x00, 0x00, 0x00, 0x01]));
+        assert!(!data.windows(4).any(|w| w == [0x00, 0x00, 0x00, 0x05]));
+    }
+}
