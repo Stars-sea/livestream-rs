@@ -464,12 +464,10 @@ impl IngestGrpcService {
                     app_name: self.rtmp_app_name.clone(),
                     stream_key: live_id.to_owned(),
                 }),
-                srt: None,
                 rtsp: None,
             },
             Protocol::Rtsp => api::IngestEndpoints {
                 rtmp: None,
-                srt: None,
                 rtsp: Some(api::RtspEndpoint {
                     port: self.rtsp_port.unwrap_or(0) as u32,
                     path: format!("/live/{}", live_id),
@@ -483,7 +481,6 @@ impl IngestGrpcService {
                         app_name: self.rtmp_app_name.clone(),
                         stream_key: live_id.to_owned(),
                     }),
-                    srt: None,
                     rtsp: None,
                 }
             }

@@ -58,7 +58,6 @@ message StreamEndpoints {
 
 message IngestEndpoints {
   optional RtmpEndpoint rtmp = 1;
-  optional SrtIngestEndpoint srt = 2;
   optional RtspEndpoint rtsp = 3;
 }
 
@@ -74,13 +73,6 @@ message RtmpEndpoint {
   uint32 port = 1;
   string app_name = 2;
   string stream_key = 3;
-}
-
-// SRT ingest URI components.
-message SrtIngestEndpoint {
-  uint32 port = 1;
-  string live_id = 2;
-  optional string passphrase = 3;
 }
 
 // RTSP ingest URI components, for example:
