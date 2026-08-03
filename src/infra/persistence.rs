@@ -1,9 +1,10 @@
 //! MinIO/S3 client for uploading stream segments.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use minio::s3::Client;
 use minio::s3::builders::ObjectContent;
 use minio::s3::creds::{Provider, StaticProvider};
+use minio::s3::error::{Error as MinioError, ErrorCode};
 use minio::s3::http::BaseUrl;
 use minio::s3::types::S3Api;
 use std::path::Path;
@@ -37,21 +38,9 @@ impl PersistenceClient {
         let provider: Box<dyn Provider + Send + Sync + 'static> = Box::new(static_provider);
 
         let client = Client::new(base_url, Some(provider), None, None)
-            .map_err(|e| anyhow::anyhow!("Failed to create MinIO client: {}", e))?;
+            .with_context(|| "Failed to create MinIO client")?;
 
-        let resp = client
-            .bucket_exists(&config.bucket)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to check bucket existence: {}", e))?;
-
-        if !resp.exists {
-            client
-                .create_bucket(&config.bucket)
-                .send()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create bucket: {}", e))?;
-        }
+        ensure_bucket(&client, &config.bucket).await?;
 
         Ok(Self {
             bucket: config.bucket.clone(),
@@ -69,7 +58,7 @@ impl PersistenceClient {
             .put_object_content(&self.bucket, filename, content)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to upload file: {}", e))?;
+            .with_context(|| format!("Failed to upload file '{}'", filename))?;
 
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
@@ -82,4 +71,41 @@ impl PersistenceClient {
         );
         Ok(())
     }
+}
+
+/// Ensure the target bucket exists, creating it when missing.
+///
+/// Bucket creation is intentionally tolerant of concurrent instances: the
+/// check-then-act window between `bucket_exists` and `create_bucket` can be
+/// raced by another process, and "already exists" errors from that race are
+/// treated as success.
+async fn ensure_bucket(client: &Client, bucket: &str) -> Result<()> {
+    let resp = client
+        .bucket_exists(bucket)
+        .send()
+        .await
+        .with_context(|| format!("Failed to check existence of bucket '{bucket}'"))?;
+    if resp.exists {
+        return Ok(());
+    }
+
+    match client.create_bucket(bucket).send().await {
+        Ok(_) => Ok(()),
+        Err(e) if is_bucket_already_exists(&e) => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("Failed to create bucket '{bucket}'")),
+    }
+}
+
+/// Whether a bucket-creation error means the bucket already exists (a benign
+/// race with a concurrent instance, not a real failure).
+fn is_bucket_already_exists(err: &MinioError) -> bool {
+    if let MinioError::S3Error(e) = err {
+        return e.code == ErrorCode::BucketAlreadyOwnedByYou
+            || matches!(
+                &e.code,
+                ErrorCode::OtherError(code)
+                    if code.eq_ignore_ascii_case("BucketAlreadyExists")
+            );
+    }
+    false
 }

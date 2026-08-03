@@ -115,7 +115,9 @@ async fn main() -> Result<()> {
 
     let controller = Arc::new(TransportController::new(registry.clone(), rtmp_tx, rtsp_tx));
 
-    // 8. Create gRPC server
+    // 8. Create gRPC server. Failure here stays fatal (propagated with `?`):
+    // gRPC is the control plane that configures/observes the transports, so
+    // the process cannot operate usefully without it.
     let grpc_server = GrpcServer::new(GrpcServerConfig {
         port: config.services.grpc.port,
         rtmp_port: rtmp_server.as_ref().map(|_| config.transport.rtmp.port),
@@ -128,18 +130,28 @@ async fn main() -> Result<()> {
         dispatcher: dispatcher.clone(),
     })?;
 
-    // 9. Create HTTP-FLV server (optional)
+    // 9. Create HTTP-FLV server (optional). Like RTMP/RTSP, a bind failure
+    // degrades to a warning and the server stays disabled rather than
+    // aborting the process. (gRPC, by contrast, stays fatal: see step 8.)
     let http_flv_server = if config.services.http_flv.enabled {
-        Some(
-            HttpFlvServer::create(
-                config.services.http_flv.port,
-                config.services.http_flv.max_connections,
-                flv_egress_hub.clone(),
-                registry.clone(),
-                cancel.child_token(),
-            )
-            .await?,
+        match HttpFlvServer::create(
+            config.services.http_flv.port,
+            config.services.http_flv.max_connections,
+            flv_egress_hub.clone(),
+            registry.clone(),
+            cancel.child_token(),
         )
+        .await
+        {
+            Ok(server) => Some(server),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "HTTP-FLV server failed to start, HTTP-FLV playback disabled"
+                );
+                None
+            }
+        }
     } else {
         None
     };
@@ -191,22 +203,45 @@ async fn main() -> Result<()> {
     cancel.cancel();
     info!("Waiting for all servers to drain...");
 
+    let started_count = usize::from(rtmp_handle.is_some())
+        + 1 // gRPC is always started
+        + usize::from(http_flv_handle.is_some())
+        + usize::from(rtsp_handle.is_some());
+
     let drain_timeout = Duration::from_secs(10);
-    let _ = tokio::time::timeout(drain_timeout, async {
-        let _ = tokio::join!(
-            drain_handle(rtmp_handle),
-            drain_handle(Some(grpc_handle)),
-            drain_handle(http_flv_handle),
-            drain_handle(rtsp_handle),
+    let (rtmp_drained, grpc_drained, http_flv_drained, rtsp_drained) =
+        tokio::time::timeout(drain_timeout, async {
+            tokio::join!(
+                drain_handle(rtmp_handle),
+                drain_handle(Some(grpc_handle)),
+                drain_handle(http_flv_handle),
+                drain_handle(rtsp_handle),
+            )
+        })
+        .await
+        .unwrap_or((false, false, false, false));
+
+    let drained_count = usize::from(rtmp_drained)
+        + usize::from(grpc_drained)
+        + usize::from(http_flv_drained)
+        + usize::from(rtsp_drained);
+    let not_drained = started_count.saturating_sub(drained_count);
+
+    if not_drained > 0 {
+        tracing::warn!(
+            not_drained = %not_drained,
+            timeout_secs = drain_timeout.as_secs(),
+            "Server(s) did not stop within the drain timeout; handles dropped"
         );
-    })
-    .await;
+    }
 
     if let Some(e) = first_error {
         return Err(anyhow::anyhow!("Server shut down with error: {}", e));
     }
 
-    info!("All servers shut down gracefully");
+    if not_drained == 0 {
+        info!("All servers shut down gracefully");
+    }
     Ok(())
 }
 
@@ -218,14 +253,26 @@ fn spawn_server(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if let Err(e) = fut.await {
-            let _ = error_tx.send(e).await;
+            // The error channel has capacity 1 and the main loop stops polling
+            // it after the first error, so a second failure would block on
+            // `.send().await` forever. Report best-effort and log locally if
+            // the channel is full or closed.
+            if let Err(send_err) = error_tx.try_send(e) {
+                error!(
+                    error = %send_err.into_inner(),
+                    "Failed to report server error (error channel full or closed)"
+                );
+            }
         }
     })
 }
 
-async fn drain_handle(handle: Option<tokio::task::JoinHandle<()>>) {
-    if let Some(h) = handle {
-        let _ = h.await;
+/// Awaits a server handle; returns `true` if the task finished (or there was
+/// no task to await), `false` if it did not complete cleanly.
+async fn drain_handle(handle: Option<tokio::task::JoinHandle<()>>) -> bool {
+    match handle {
+        Some(h) => h.await.is_ok(),
+        None => true,
     }
 }
 
