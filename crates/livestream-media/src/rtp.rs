@@ -228,7 +228,9 @@ impl RtpDemuxContext {
     }
 
     pub fn feed(&self, data: &[u8]) -> Result<()> {
-        let mut inner = self._inner.lock().unwrap();
+        // Poisoned-lock recovery: a panic inside the guard must not kill
+        // the ingest task on the next packet (RTP hot path).
+        let mut inner = self._inner.lock().unwrap_or_else(|e| e.into_inner());
         // RTP sequence probation: FFmpeg drops the first two packets
         // (requires two consecutive in-sequence packets). Duplicate the
         // first real packet so that the third dequeued packet (real pkt2
