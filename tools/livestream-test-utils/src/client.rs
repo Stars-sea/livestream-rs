@@ -4,7 +4,7 @@ use anyhow::Context;
 use tonic::transport::Endpoint;
 
 use crate::proto::{
-    GetLivestreamInfoRequest, GetServiceInfoRequest, StopLivestreamRequest,
+    GetLivestreamInfoRequest, GetServiceInfoRequest, SessionStatus, StopLivestreamRequest,
     livestream_client::LivestreamClient,
 };
 
@@ -57,6 +57,13 @@ pub async fn verify_connected(
         .into_inner()
         .descriptor
         .context("no descriptor")?;
+    if desc.status != SessionStatus::Connected as i32 {
+        anyhow::bail!(
+            "stream {live_id} is not connected: status = {} (expected {} = CONNECTED)",
+            desc.status,
+            SessionStatus::Connected as i32,
+        );
+    }
     tracing::info!(live_id = %live_id, status = desc.status, "stream verified");
     Ok(())
 }

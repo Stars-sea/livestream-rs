@@ -6,6 +6,13 @@ on:
     pull_request:
         branches: [main]
 
+permissions:
+    contents: read
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
 env:
     CARGO_TERM_COLOR: always
     RUSTFLAGS: "-D warnings"
@@ -14,6 +21,7 @@ jobs:
     ci:
         name: Lint + Test + Build
         runs-on: ubuntu-26.04
+        timeout-minutes: 60
         steps:
             - uses: actions/checkout@v4
 
@@ -26,12 +34,14 @@ jobs:
                     protobuf-compiler ffmpeg
 
             - name: Install Rust toolchain
-              uses: dtolnay/rust-toolchain@stable
+              # pinned to the stable branch tip (dtolnay/rust-toolchain@stable)
+              uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
               with:
                   components: rustfmt, clippy
 
             - name: Rust cache
-              uses: Swatinem/rust-cache@v2
+              # pinned to the v2 tag (Swatinem/rust-cache@v2)
+              uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
             - name: Check formatting
               run: cargo fmt --all -- --check

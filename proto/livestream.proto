@@ -42,7 +42,7 @@ enum SessionStatus {
 message StartLivestreamRequest {
   // Business stream identifier.
   string live_id = 1;
-  // Optional for RTMP, required for SRT according to server-side validation.
+  // Optional for RTMP, required for RTSP according to server-side validation.
   optional string passphrase = 2;
   // Ingest protocol expected by this stream.
   InputProtocol input_protocol = 3;

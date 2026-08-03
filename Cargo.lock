@@ -1449,7 +1449,7 @@ dependencies = [
 
 [[package]]
 name = "livestream-test-utils"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",

@@ -9,6 +9,15 @@ RTMP_PORT="${RTMP_PORT:-11935}"
 RTSP_PORT="${RTSP_PORT:-8554}"
 HTTP_FLV_PORT="${HTTP_FLV_PORT:-8080}"
 
+# The server reads its ports through the config crate's "__" separator
+# convention (RTMP__PORT -> rtmp.port), so export the double-underscore names
+# for the background process below. The plain *_PORT variables above stay
+# script-local for probing and for the test client's --grpc-addr.
+export GRPC__PORT="$GRPC_PORT"
+export RTMP__PORT="$RTMP_PORT"
+export RTSP__PORT="$RTSP_PORT"
+export HTTP_FLV__PORT="$HTTP_FLV_PORT"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m'
@@ -69,6 +78,9 @@ if [ "$READY" -eq 0 ]; then
     err "gRPC 服务在 30s 内未就绪"
     exit 1
 fi
+# The TCP probe only proves a socket is listening. Service identity is
+# confirmed by GetServiceInfo (via connect_and_get_info) inside the test run
+# below, which fails the run if the ports/identity don't match the server.
 log "gRPC 服务就绪"
 
 log "运行 E2E 测试 (duration=10s)..."

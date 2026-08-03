@@ -66,10 +66,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=builder /app/target/release/livestream ./
 
-ENV SRT__PORTS=4000-4100
-
-ENV PERSISTENCE__DURATION=10
-ENV PERSISTENCE__CACHE_DIR=
+# HLS segment production (replaces the removed SRT/persistence config sections).
+# AppConfig flattens `storage`, so the keys are SEGMENT__*, not STORAGE__SEGMENT__*.
+ENV SEGMENT__DURATION_SECS=10
+ENV SEGMENT__CACHE_DIR=/tmp/hls-segments
 
 ENV GRPC__PORT=50051
 

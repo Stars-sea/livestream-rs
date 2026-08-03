@@ -1,20 +1,20 @@
 [package]
 name = "livestream-test-utils"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
+tokio = { workspace = true, features = ["full"] }
+anyhow.workspace = true
+serde.workspace = true
 serde_json = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
-tonic = "0.14"
-tonic-prost = "0.14"
-prost = "0.14"
-tempfile = "3"
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+tempfile.workspace = true
 
 [build-dependencies]
-tonic-prost-build = "0.14"
+tonic-prost-build.workspace = true
