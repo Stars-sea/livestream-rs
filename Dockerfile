@@ -1,4 +1,7 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+# cargo-chef has no prebuilt image for rust 1.97 (v0.1.77 predates it), so
+# install the pinned cargo-chef version into the official rust image instead.
+FROM rust:1.97-slim AS chef
+RUN cargo install cargo-chef --locked --version 0.1.77
 WORKDIR /app
 
 FROM chef AS planner
@@ -9,10 +12,10 @@ FROM chef AS builder
 
 ARG USE_MIRROR=true
 
-# Conditionally configure mirrors
+# Conditionally configure CN mirrors (build-time only; CI builds with
+# USE_MIRROR=false against official sources).
 RUN if [ "$USE_MIRROR" = "true" ]; then \
     sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
-    sed -i 's/bookworm/trixie/g' /etc/apt/sources.list.d/debian.sources && \
     mkdir -p ~/.cargo && \
     echo "[source.crates-io]" > ~/.cargo/config.toml && \
     echo "replace-with = 'tuna'" >> ~/.cargo/config.toml && \
@@ -35,6 +38,7 @@ RUN apt-get update && apt-get install -y \
     libavcodec-dev \
     libavformat-dev \
     libavutil-dev \
+    libswscale-dev \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
@@ -60,8 +64,10 @@ RUN if [ "$USE_MIRROR" = "true" ]; then \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
+    curl \
     ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 livestream
 
 WORKDIR /app
 COPY --from=builder /app/target/release/livestream ./
@@ -86,10 +92,18 @@ ENV QUEUE__PACKET_RELAY=2048
 ENV QUEUE__CONTROL=1024
 ENV QUEUE__EVENT=4096
 
-ENV MINIO_URI=http://localhost:9000
-ENV MINIO_ACCESSKEY=minioadmin
-ENV MINIO_SECRETKEY=miniokey
-ENV MINIO_BUCKET=videos
-
 ENV RUST_LOG=info
+
+# No MINIO_* defaults: storage credentials must be provided explicitly by
+# the operator (missing config degrades to FLV-only with a warning log).
+# GRPC__AUTH_TOKEN is also intentionally unset — set a strong token for any
+# deployment that exposes port 50051.
+
+USER livestream
+
+EXPOSE 1935 8554 8080 50051
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8080/alive > /dev/null || exit 1
+
 ENTRYPOINT ["./livestream"]

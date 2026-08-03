@@ -55,5 +55,8 @@ jobs:
             - name: Build release
               run: cargo build --release
 
+            - name: Build Docker image (official sources)
+              run: docker build --build-arg USE_MIRROR=false -t livestream-rs:ci .
+
             - name: E2E test (stress)
               run: bash scripts/e2e-test.sh
