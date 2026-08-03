@@ -6,22 +6,23 @@
 //!
 //! Always active (`should_process()` returns `true`).
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use livestream_codec::{EncodedPacket, SegmentConfig, TsSegment};
+use livestream_codec::{Codec, EncodedPacket, SegmentConfig, TsSegment};
 use livestream_core::{
     pad::{PadReceiver, PadSender},
     traits::{Node, Processor},
     types::CodecParams,
 };
-use livestream_media::ffmpeg_sys_next::AVRational;
+use livestream_media::ffmpeg_sys_next::{AVCodecID, AVRational};
 use livestream_media::{
     context::{HlsBuffer, HlsOutputContext},
     convert::IntoAvPacket,
-    stream::StaticStreamCollection,
+    stream::{StaticStreamCollection, StreamCollection},
 };
 use livestream_telemetry::metric_pipeline_error;
 use parking_lot::Mutex;
@@ -41,6 +42,10 @@ pub struct SegmentWorkspace {
 
 impl SegmentWorkspace {
     pub fn new(stream_id: &str, cfg: &SegmentConfig) -> Result<Self> {
+        // stream_id is externally controlled — sanitize before it touches the
+        // filesystem (path traversal, hidden files, whitespace, length).
+        let safe_stream_id = crate::sanitize::sanitize_stream_id(stream_id);
+
         let cache_root = if cfg.cache_dir.trim().is_empty() {
             std::env::temp_dir()
         } else {
@@ -49,10 +54,12 @@ impl SegmentWorkspace {
         fs::create_dir_all(&cache_root)?;
 
         let segment_dir = tempfile::Builder::new()
-            .prefix(&format!("livestream-rs-segment-{}-", stream_id))
+            .prefix(&format!("livestream-rs-segment-{}-", safe_stream_id))
             .tempdir_in(&cache_root)?;
 
-        let upload_dir = cache_root.join("livestream-rs-artifacts").join(stream_id);
+        let upload_dir = cache_root
+            .join("livestream-rs-artifacts")
+            .join(&safe_stream_id);
         fs::create_dir_all(&upload_dir)?;
 
         Ok(Self {
@@ -185,6 +192,9 @@ struct HlsMuxerState {
 struct SegmentState {
     first_pts: Option<i64>,
     last_pts: Option<i64>,
+    /// Whether the current segment contains a keyframe (video). Audio-only
+    /// streams never set this; they roll over by elapsed time instead.
+    has_keyframe: bool,
 }
 
 impl SegmentState {
@@ -200,6 +210,24 @@ impl SegmentState {
     fn reset(&mut self) {
         self.first_pts = None;
         self.last_pts = None;
+        self.has_keyframe = false;
+    }
+}
+
+/// Maps an FFmpeg `AVCodecID` to our `Codec` enum. Mirrors the private
+/// helper in `livestream_media::rtp` (not exported, so duplicated here).
+fn av_codec_id_to_codec(id: AVCodecID) -> Codec {
+    match id {
+        AVCodecID::AV_CODEC_ID_H264 => Codec::H264,
+        AVCodecID::AV_CODEC_ID_HEVC => Codec::H265,
+        AVCodecID::AV_CODEC_ID_AAC => Codec::Aac,
+        AVCodecID::AV_CODEC_ID_MP3 => Codec::Mp3,
+        AVCodecID::AV_CODEC_ID_OPUS => Codec::Opus,
+        AVCodecID::AV_CODEC_ID_AV1 => Codec::Av1,
+        other => {
+            tracing::warn!(codec_id = ?other, "Unknown codec id, mapping to H264");
+            Codec::H264
+        }
     }
 }
 
@@ -208,6 +236,11 @@ impl SegmentState {
 pub struct HlsSegmenter {
     stream_id: String,
     streams: StaticStreamCollection,
+    /// Maps packet codec → TS muxer stream index. The muxer creates one
+    /// stream per collection entry in order (video=0, audio=1...), but RTMP
+    /// sources deliver video and audio EncodedPackets with stream_index=0,
+    /// so packets must be routed by codec instead of stream index.
+    codec_stream_index: HashMap<Codec, usize>,
     segment_duration: Duration,
     muxer: Mutex<HlsMuxerState>,
     segmenter: Mutex<SegmentState>,
@@ -228,6 +261,21 @@ impl HlsSegmenter {
         let workspace = SegmentWorkspace::new(stream_id, cfg)?;
         let playlist = PlaylistState::new(cfg);
 
+        // Muxer stream indices follow collection order (video=0, audio=1...);
+        // map each stream's codec id to its position for packet routing.
+        let mut codec_stream_index = HashMap::new();
+        for index in 0..streams.stream_count() {
+            if let Some(stream) = streams.stream(index) {
+                // SAFETY: codec_params_ptr() is valid for the lifetime of the
+                // collection (OwnedCodecParams heap storage); we read it
+                // immediately while the collection is alive.
+                let params = unsafe { &*stream.codec_params_ptr() };
+                codec_stream_index
+                    .entry(av_codec_id_to_codec(params.codec_id))
+                    .or_insert(index);
+            }
+        }
+
         let mut ts_buffer = HlsBuffer::new();
         let opaque = ts_buffer.opaque_ptr();
 
@@ -237,18 +285,25 @@ impl HlsSegmenter {
             next_sequence: 0,
             last_dts: 0,
         };
+        // SAFETY: `opaque` points at `ts_buffer`'s Vec<u8>, which lives in the
+        // same struct as `hls_ctx` and outlives it (declared before it, so
+        // dropped after it). The context is disarmed on rollover before the
+        // buffer is reused, preventing a safety-net trailer from corrupting
+        // the next segment.
         let mut hls_ctx = unsafe { HlsOutputContext::create(&streams, opaque) }?;
         hls_ctx.write_header()?;
         muxer_state.hls_ctx = Some(hls_ctx);
 
         Ok(Self {
             stream_id: stream_id.into(),
-            segment_duration: Duration::from_secs(cfg.duration_secs),
             streams,
+            codec_stream_index,
+            segment_duration: Duration::from_secs(cfg.duration_secs),
             muxer: Mutex::new(muxer_state),
             segmenter: Mutex::new(SegmentState {
                 first_pts: None,
                 last_pts: None,
+                has_keyframe: false,
             }),
             playlist: Mutex::new(playlist),
             workspace,
@@ -259,6 +314,22 @@ impl HlsSegmenter {
 
     fn write_packet(&self, pkt: &EncodedPacket) -> Result<()> {
         let mut av_pkt = pkt.to_av_packet()?;
+
+        // RTMP sources deliver video and audio with stream_index=0; route the
+        // packet to the muxer stream that matches its codec.
+        let muxer_idx = match self.codec_stream_index.get(&pkt.codec) {
+            Some(&idx) => idx,
+            None => {
+                tracing::debug!(
+                    stream = %self.stream_id,
+                    codec = ?pkt.codec,
+                    "Skipping packet: no TS muxer stream for codec"
+                );
+                return Ok(());
+            }
+        };
+        av_pkt.set_stream_idx(muxer_idx as i32);
+
         av_pkt.rescale_ts(
             AVRational { num: 1, den: 1000 },
             AVRational { num: 1, den: 90000 },
@@ -307,6 +378,10 @@ impl HlsSegmenter {
 
             // Re-create TS muxer for the next segment (opaque pointer from HlsBuffer).
             let new_opaque = muxer.ts_buffer.opaque_ptr();
+            // SAFETY: `new_opaque` points at `ts_buffer`'s Vec<u8>, which lives
+            // in this struct and outlives the new context (drop order). The old
+            // context was disarmed above so it cannot write a safety-net
+            // trailer into the fresh buffer.
             let mut new_ctx = unsafe { HlsOutputContext::create(&self.streams, new_opaque) }?;
             new_ctx.write_header()?;
             muxer.hls_ctx = Some(new_ctx);
@@ -329,23 +404,45 @@ impl HlsSegmenter {
         })
     }
 
+    /// Recovers from a muxer write failure: drop the broken context, clear
+    /// the buffer, and recreate a fresh context. Locks segmenter first to
+    /// preserve consistent lock ordering (segmenter before muxer).
+    fn reset_after_write_error(&self) {
+        self.segmenter.lock().reset();
+        let mut muxer = self.muxer.lock();
+        // Explicitly drop broken context before clearing buffer
+        muxer.hls_ctx = None;
+        muxer.ts_buffer.clear();
+        muxer.last_dts = 0;
+        self.recreate_muxer_ctx(&mut muxer, &self.streams);
+    }
+
     /// Recreates the HLS output context after a write error.
     /// Takes `muxer` already acquired (with buffer cleared and DTS reset)
     /// and sets `muxer.hls_ctx` on success, or `None` on failure.
     fn recreate_muxer_ctx(&self, muxer: &mut HlsMuxerState, streams: &StaticStreamCollection) {
         let new_opaque = muxer.ts_buffer.opaque_ptr();
+        // SAFETY: `new_opaque` points at `ts_buffer`'s Vec<u8>, which lives
+        // in this struct and outlives the new context (drop order). The
+        // broken context is dropped (muxer.hls_ctx = None) before the buffer
+        // is cleared, so its Drop cannot corrupt the fresh buffer.
         match unsafe { HlsOutputContext::create(streams, new_opaque) } {
-            Ok(mut new_ctx) => {
-                if let Err(e) = new_ctx.write_header() {
-                    tracing::error!(error = %e, "Failed to write header on recreated HLS context");
-                    muxer.hls_ctx = None;
-                } else {
-                    muxer.hls_ctx = Some(new_ctx);
-                }
-            }
+            Ok(new_ctx) => muxer.hls_ctx = Self::init_header(new_ctx),
             Err(e) => {
                 tracing::error!(error = %e, "Failed to recreate HLS context after write error");
                 muxer.hls_ctx = None;
+            }
+        }
+    }
+
+    /// Write the TS header into a freshly created context. Returns `None`
+    /// (after logging) when the header write fails.
+    fn init_header(mut new_ctx: HlsOutputContext) -> Option<HlsOutputContext> {
+        match new_ctx.write_header() {
+            Ok(()) => Some(new_ctx),
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to write header on recreated HLS context");
+                None
             }
         }
     }
@@ -354,6 +451,22 @@ impl HlsSegmenter {
 impl Node for HlsSegmenter {
     fn name(&self) -> &str {
         "hls-segmenter"
+    }
+}
+
+impl HlsSegmenter {
+    /// Write a packet to the TS muxer; on failure, log, record the metric,
+    /// and reset the muxer context so the next packet starts clean.
+    fn write_packet_or_reset(&self, pkt: &EncodedPacket) {
+        if let Err(e) = self.write_packet(pkt) {
+            metric_pipeline_error!("hls_muxer");
+            tracing::warn!(
+                stream = %self.stream_id,
+                error = %e,
+                "TS muxer write failed, resetting segment"
+            );
+            self.reset_after_write_error();
+        }
     }
 }
 
@@ -388,62 +501,56 @@ impl Processor for HlsSegmenter {
         if pkt.is_sequence_header {
             return Ok(vec![]);
         }
-        {
+
+        // Update segment state and evaluate rollover BEFORE writing: the
+        // triggering packet must start the next segment, not end the current
+        // one. Video rolls over on keyframes only; audio-only streams (and
+        // video before their first keyframe) roll over by elapsed time.
+        let (should_rollover, elapsed) = {
             let mut state = self.segmenter.lock();
             if state.first_pts.is_none() {
                 state.first_pts = pkt.pts_ms;
             }
             state.last_pts = pkt.pts_ms;
-        }
-
-        // Write packet to TS muxer (in-memory buffer)
-        match self.write_packet(&pkt) {
-            Ok(()) => {}
-            Err(e) => {
-                metric_pipeline_error!("hls_muxer");
-                tracing::warn!(
-                    stream = %self.stream_id,
-                    error = %e,
-                    "TS muxer write failed, resetting segment"
-                );
-                // Error recovery: drop broken context, clear buffer, recreate.
-                // Lock segmenter first to preserve consistent lock ordering.
-                self.segmenter.lock().reset();
-                let mut muxer = self.muxer.lock();
-                // Explicitly drop broken context before clearing buffer
-                muxer.hls_ctx = None;
-                muxer.ts_buffer.clear();
-                muxer.last_dts = 0;
-                self.recreate_muxer_ctx(&mut muxer, &self.streams);
-                return Ok(vec![]);
+            if pkt.is_keyframe {
+                state.has_keyframe = true;
             }
-        }
+            let elapsed = state.elapsed().unwrap_or_default();
+            let should_rollover =
+                elapsed >= self.segment_duration && (pkt.is_keyframe || !state.has_keyframe);
+            (should_rollover, elapsed)
+        };
 
-        {
-            let state = self.segmenter.lock();
-            if pkt.is_keyframe && state.elapsed().unwrap_or_default() >= self.segment_duration {
-                let duration = state.elapsed().unwrap_or_default();
-                drop(state);
-                let seg = self.rollover(duration)?;
+        if should_rollover {
+            let seg = self.rollover(elapsed)?;
 
-                // Single lock acquisition for all segmenter state updates
-                {
-                    let mut s = self.segmenter.lock();
-                    s.reset();
-                    s.first_pts = pkt.pts_ms;
-                    s.last_pts = pkt.pts_ms;
-                }
-
-                let mut playlist = self.playlist.lock();
-                playlist.push_segment(&seg.filename, seg.duration);
-                if let Err(e) = playlist.write_playlist(&self.workspace.playlist_path()) {
-                    tracing::warn!(error = %e, "HlsSegmenter: failed to write playlist");
-                }
-                drop(playlist);
-
-                return Ok(vec![seg]);
+            // Reset state so this packet becomes the first frame of the new
+            // segment (a keyframe for video, any frame for audio-only).
+            {
+                let mut s = self.segmenter.lock();
+                s.reset();
+                s.first_pts = pkt.pts_ms;
+                s.last_pts = pkt.pts_ms;
+                s.has_keyframe = pkt.is_keyframe;
             }
+
+            let mut playlist = self.playlist.lock();
+            playlist.push_segment(&seg.filename, seg.duration);
+            if let Err(e) = playlist.write_playlist(&self.workspace.playlist_path()) {
+                tracing::warn!(error = %e, "HlsSegmenter: failed to write playlist");
+            }
+            drop(playlist);
+
+            // Write the triggering packet into the fresh muxer context. The
+            // segment itself is already complete and staged; a failure here
+            // only poisons the new context, which we recover below.
+            self.write_packet_or_reset(&pkt);
+
+            return Ok(vec![seg]);
         }
+
+        // Normal path: write packet to TS muxer (in-memory buffer)
+        self.write_packet_or_reset(&pkt);
 
         Ok(vec![])
     }

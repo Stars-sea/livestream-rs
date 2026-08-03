@@ -280,9 +280,12 @@ fn hls_extradata(codec: Codec, extradata: &[u8]) -> Vec<u8> {
 }
 
 ///
-/// Used for RTMP sources where codec params (SPS/PPS) arrive in-band after
-/// pipeline construction. Waits on `hls_rx` for a packet carrying extradata,
-/// then constructs the HLS segmenter + MinIO sink chain.
+/// Used for RTMP sources where codec params (SPS/PPS, ASC) arrive in-band
+/// after pipeline construction. Collects one CodecParams per codec (video +
+/// audio) from sequence-header packets, then constructs the HLS segmenter +
+/// MinIO sink chain once both codecs are known, or once media packets start
+/// arriving with at least one param collected (audio-only / video-only
+/// streams send a single sequence header and must still start).
 async fn deferred_hls_init(
     live_id: String,
     hls_rx: PadReceiver<EncodedPacket>,
@@ -291,17 +294,53 @@ async fn deferred_hls_init(
     cancel: CancellationToken,
     deferred_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
 ) {
+    // At most one param per codec; kept in deterministic order video, audio.
+    let mut video_params: Option<CodecParams> = None;
+    let mut audio_params: Option<CodecParams> = None;
+
     loop {
         let pkt = tokio::select! {
             pkt = hls_rx.recv() => pkt,
             _ = cancel.cancelled() => return,
         };
         let Some(pkt) = pkt else { return };
-        // Wait for the first sequence header (carries extradata = SPS+PPS)
-        if pkt.extradata.is_some() {
+
+        // Sequence headers carry the codec initialization data (SPS+PPS for
+        // H.264 via `extradata`, AudioSpecificConfig for AAC via `data`).
+        if pkt.is_sequence_header {
+            if record_sequence_header(&pkt, &mut video_params, &mut audio_params) {
+                // Both codecs known — build the HLS chain with all params.
+                let params: Vec<CodecParams> = video_params
+                    .take()
+                    .into_iter()
+                    .chain(audio_params.take())
+                    .collect();
+                spawn_deferred_hls(
+                    &live_id,
+                    params,
+                    minio,
+                    segment_cfg,
+                    hls_rx,
+                    cancel,
+                    &deferred_tasks,
+                );
+                return;
+            }
+            continue;
+        }
+
+        // Non-sequence-header media packet: start HLS with whatever params
+        // have been collected so far (single-codec streams never send a
+        // second sequence header).
+        if video_params.is_some() || audio_params.is_some() {
+            let params: Vec<CodecParams> = video_params
+                .take()
+                .into_iter()
+                .chain(audio_params.take())
+                .collect();
             spawn_deferred_hls(
                 &live_id,
-                &pkt,
+                params,
                 minio,
                 segment_cfg,
                 hls_rx,
@@ -313,29 +352,61 @@ async fn deferred_hls_init(
     }
 }
 
-/// Build and spawn the HLS branch once extradata is available.
+/// Record a sequence-header packet's codec params (at most one per codec).
+/// Returns `true` once both a video and an audio param are known.
+fn record_sequence_header(
+    pkt: &EncodedPacket,
+    video_params: &mut Option<CodecParams>,
+    audio_params: &mut Option<CodecParams>,
+) -> bool {
+    let Some((media_type, params)) = codec_params_from_sequence_header(pkt) else {
+        return false;
+    };
+    match media_type {
+        MediaType::Video => {
+            video_params.get_or_insert(params);
+        }
+        MediaType::Audio => {
+            audio_params.get_or_insert(params);
+        }
+    }
+    video_params.is_some() && audio_params.is_some()
+}
+
+/// Build a `CodecParams` from a sequence-header packet, or `None` when the
+/// packet carries no codec initialization data.
+fn codec_params_from_sequence_header(pkt: &EncodedPacket) -> Option<(MediaType, CodecParams)> {
+    let extradata = match (&pkt.extradata, pkt.data.as_bytes()) {
+        (Some(ext), _) if !ext.is_empty() => ext.clone(),
+        (_, data) if !data.is_empty() => Bytes::copy_from_slice(data),
+        _ => return None,
+    };
+    let media_type = match pkt.codec {
+        Codec::H264 | Codec::H265 | Codec::Av1 => MediaType::Video,
+        Codec::Aac | Codec::Mp3 | Codec::Opus => MediaType::Audio,
+    };
+    let params = CodecParams {
+        codec: pkt.codec,
+        media_type,
+        clock_rate: 90000u32,
+        extradata: Some(Bytes::from(hls_extradata(pkt.codec, &extradata))),
+    };
+    Some((media_type, params))
+}
+
+/// Build and spawn the HLS branch once codec params are available.
 fn spawn_deferred_hls(
     live_id: &str,
-    pkt: &EncodedPacket,
+    params: Vec<CodecParams>,
     minio: Arc<dyn ObjectUploader>,
     segment_cfg: SegmentConfig,
     hls_rx: PadReceiver<EncodedPacket>,
     cancel: CancellationToken,
     deferred_tasks: &Arc<Mutex<Vec<JoinHandle<()>>>>,
 ) {
-    let Some(extradata) = &pkt.extradata else {
+    if params.is_empty() {
         return;
-    };
-    let media_type = match pkt.codec {
-        Codec::H264 | Codec::H265 | Codec::Av1 => MediaType::Video,
-        Codec::Aac | Codec::Mp3 | Codec::Opus => MediaType::Audio,
-    };
-    let params = vec![CodecParams {
-        codec: pkt.codec,
-        media_type,
-        clock_rate: 90000u32,
-        extradata: Some(Bytes::from(hls_extradata(pkt.codec, extradata))),
-    }];
+    }
 
     match try_build_hls(live_id, &params, minio, &segment_cfg, hls_rx, &cancel) {
         Ok(hls_futures) => {

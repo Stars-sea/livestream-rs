@@ -78,18 +78,28 @@ impl Pipeline for PipelineImpl {
         }
 
         let task_count = tasks.len();
-        let drain = drain_all(tasks);
-        match tokio::time::timeout(SHUTDOWN_TIMEOUT, drain).await {
-            Ok(()) => {
-                tracing::info!(task_count, "All pipeline tasks drained successfully");
-            }
-            Err(_) => {
-                tracing::warn!(
-                    task_count,
-                    timeout_secs = SHUTDOWN_TIMEOUT.as_secs(),
-                    "Pipeline shutdown timed out — some tasks may have been aborted"
-                );
-            }
+        let (finished, aborted) = drain_all(tasks, SHUTDOWN_TIMEOUT).await;
+        if aborted > 0 {
+            tracing::warn!(
+                task_count,
+                finished,
+                aborted,
+                timeout_secs = SHUTDOWN_TIMEOUT.as_secs(),
+                "{aborted} tasks aborted after drain timeout"
+            );
+        } else {
+            tracing::info!(task_count, "All pipeline tasks drained successfully");
+        }
+
+        // 3. Abort any task handles registered after the initial take
+        //    (deferred HLS init can push handles while the drain runs).
+        let late: Vec<JoinHandle<()>> = std::mem::take(&mut *self.tasks.lock());
+        let late_count = late.len();
+        for handle in late {
+            handle.abort();
+        }
+        if late_count > 0 {
+            tracing::warn!(late_count, "Aborted late-registered tasks during shutdown");
         }
 
         metric_pipeline_stream_ended!();
@@ -102,15 +112,38 @@ impl Pipeline for PipelineImpl {
     }
 }
 
-/// Wait for all task handles to complete, logging panics.
-async fn drain_all(tasks: Vec<JoinHandle<()>>) {
-    for (i, task) in tasks.into_iter().enumerate() {
-        if let Err(e) = task.await {
-            tracing::warn!(
-                task_index = i,
-                error = %e,
-                "Pipeline task panicked during shutdown"
-            );
+/// Wait for all task handles to complete within `timeout`, logging panics.
+/// Tasks that do not finish by the deadline are aborted.
+/// Returns `(finished, aborted)` counts.
+async fn drain_all(tasks: Vec<JoinHandle<()>>, timeout: Duration) -> (usize, usize) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut finished = 0usize;
+    let mut aborted = 0usize;
+    for (i, mut task) in tasks.into_iter().enumerate() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            // Deadline already exceeded; abort instead of waiting further.
+            task.abort();
+            aborted += 1;
+            continue;
+        }
+        match tokio::time::timeout(remaining, &mut task).await {
+            Ok(Ok(())) => finished += 1,
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    task_index = i,
+                    error = %e,
+                    "Pipeline task panicked during shutdown"
+                );
+                finished += 1;
+            }
+            Err(_) => {
+                // Timed out waiting for this task: abort it so it cannot
+                // linger after shutdown.
+                task.abort();
+                aborted += 1;
+            }
         }
     }
+    (finished, aborted)
 }

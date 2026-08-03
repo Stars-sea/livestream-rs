@@ -12,5 +12,6 @@ pub mod broadcast;
 pub mod engine;
 pub mod factory;
 pub mod processor;
+pub mod sanitize;
 pub mod sink;
 pub mod task;

@@ -36,8 +36,16 @@ impl FlvMux {
     }
 
     fn mux_video(&self, pkt: &EncodedPacket) -> Result<Vec<FlvTag>> {
-        // Clamp negative PTS to 0 and cap at u32::MAX
-        let timestamp = (pkt.pts_ms.unwrap_or(0).max(0) as u64).min(u32::MAX as u64) as u32;
+        // FLV video tag timestamp must be the decode timestamp (DTS), with
+        // CompositionTime carrying PTS - DTS so players can reconstruct PTS.
+        // Audio (which has no B-frames) keeps using PTS in mux_audio.
+        let pts_ms = pkt.pts_ms.unwrap_or(0).max(0) as u64;
+        // Fall back to PTS when DTS is unavailable.
+        let dts_ms = (pkt.dts_ms.unwrap_or(pts_ms as i64)).max(0) as u64;
+        // Clamp negative timestamps to 0 and cap at u32::MAX.
+        let timestamp = dts_ms.min(u32::MAX as u64) as u32;
+        // CompositionTime is 24-bit: PTS - DTS, clamped to [0, 0xFFFFFF].
+        let composition_time = pts_ms.saturating_sub(dts_ms).min(0xFFFFFF) as u32;
         let is_keyframe = pkt.is_keyframe;
         let is_seq_header = pkt.is_sequence_header;
 
@@ -59,10 +67,10 @@ impl FlvMux {
 
         if is_seq_header {
             tag_payload.put_u8(0); // AVCPacketType = 0
-            put_u24(&mut tag_payload, 0); // CompositionTime
+            put_u24(&mut tag_payload, 0); // CompositionTime (0 for headers)
         } else {
             tag_payload.put_u8(1); // AVCPacketType = 1
-            put_u24(&mut tag_payload, 0); // CompositionTime
+            put_u24(&mut tag_payload, composition_time); // CompositionTime = PTS - DTS
         }
         tag_payload.extend_from_slice(&payload);
 
@@ -177,12 +185,35 @@ mod tests {
                 payload,
                 is_keyframe,
             } => {
-                assert_eq!(*timestamp, 1000);
+                // Tag timestamp is DTS (900), not PTS (1000).
+                assert_eq!(*timestamp, 900);
                 assert!(*is_keyframe);
                 // First byte should be FrameType=1(keyframe) | CodecID=7(AVC) = 0x17
                 assert_eq!(payload[0], 0x17);
                 // Second byte should be AVCPacketType=1 (NAL unit)
                 assert_eq!(payload[1], 0x01);
+                // Next three bytes: CompositionTime = PTS - DTS = 100
+                assert_eq!(&payload[2..5], &[0x00u8, 0x00, 0x64]);
+            }
+            _ => panic!("expected video tag"),
+        }
+    }
+
+    #[test]
+    fn mux_video_uses_pts_when_dts_missing() {
+        let mux = make_mux();
+        let mut pkt =
+            EncodedPacket::new_video_keyframe(&[0x00, 0x00, 0x01, 0x65, 0x88][..], 1000, 900, 0);
+        pkt.dts_ms = None;
+        let tags = mux.mux_video(&pkt).unwrap();
+        assert_eq!(tags.len(), 1);
+        match &tags[0] {
+            FlvTag::Video {
+                timestamp, payload, ..
+            } => {
+                // Falls back to PTS; CompositionTime becomes 0.
+                assert_eq!(*timestamp, 1000);
+                assert_eq!(&payload[2..5], &[0x00u8, 0x00, 0x00]);
             }
             _ => panic!("expected video tag"),
         }

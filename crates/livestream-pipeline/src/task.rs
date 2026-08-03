@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use livestream_core::channel::SendError;
 use livestream_core::traits::{Processor, Sink};
 use livestream_telemetry::metric_pipeline_error;
 use tokio_util::sync::CancellationToken;
@@ -26,22 +27,7 @@ where
         tokio::select! {
             pkt = processor.input().recv() => {
                 let Some(pkt) = pkt else { break };
-
-                match processor.process(pkt).await {
-                    Ok(results) => {
-                        for item in results {
-                            for out_pad in processor.outputs() {
-                                if out_pad.send(item.clone()).is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        metric_pipeline_error!(processor.name().to_string());
-                        tracing::warn!(processor=%processor.name(), error=%e, "drop");
-                    }
-                }
+                process_one(&processor, pkt).await;
             }
             _ = cancel.cancelled() => break,
         }
@@ -50,6 +36,73 @@ where
         tracing::warn!(processor = %processor.name(), error = %e, "close error");
     }
     tracing::debug!(processor = %processor.name(), "Processor loop ended");
+}
+
+/// Run one packet through the processor and fan its results out to the
+/// output pads. Processing errors are counted and logged, then dropped.
+async fn process_one<P>(processor: &Arc<P>, pkt: P::Input)
+where
+    P: Processor + 'static,
+    P::Output: Clone,
+{
+    match processor.process(pkt).await {
+        Ok(results) => fan_out(processor, results),
+        Err(e) => {
+            metric_pipeline_error!(processor.name().to_string());
+            tracing::warn!(processor=%processor.name(), error=%e, "drop");
+        }
+    }
+}
+
+/// Deliver one batch of processor results to every output pad.
+///
+/// A `Full` pad drops its copy (backpressure) without affecting the other
+/// outputs; a `Closed` pad is dead and stops receiving.
+fn fan_out<P>(processor: &Arc<P>, results: Vec<P::Output>)
+where
+    P: Processor + 'static,
+    P::Output: Clone,
+{
+    for item in results {
+        for out_pad in processor.outputs() {
+            if !deliver_to_pad(processor, out_pad, &item) {
+                break;
+            }
+        }
+    }
+}
+
+/// Deliver one item to one output pad. Returns `false` when the pad is
+/// closed, so the caller can skip the remaining pads for this item.
+fn deliver_to_pad<P>(
+    processor: &Arc<P>,
+    out_pad: &livestream_core::pad::PadSender<P::Output>,
+    item: &P::Output,
+) -> bool
+where
+    P: Processor + 'static,
+    P::Output: Clone,
+{
+    match out_pad.send(item.clone()) {
+        Ok(()) => true,
+        Err(SendError::Full) => {
+            // Backpressure: the item is dropped for this output only,
+            // the remaining outputs still get their copy.
+            tracing::debug!(
+                processor = %processor.name(),
+                "output pad full, item dropped for this output"
+            );
+            true
+        }
+        Err(SendError::Closed) => {
+            // Receiver is gone: this output is dead, stop sending to it.
+            tracing::debug!(
+                processor = %processor.name(),
+                "output pad closed, no longer sending"
+            );
+            false
+        }
+    }
 }
 
 /// Run a sink's consume loop in the current task.
