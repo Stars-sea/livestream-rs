@@ -10,6 +10,7 @@ use crate::flv::FlvEgressHub;
 use crate::registry::SessionRegistry;
 use livestream_codec::SegmentConfig;
 use livestream_core::channel::MpscRx;
+use livestream_core::config::TranscodeConfig;
 use livestream_pipeline::sink::minio::ObjectUploader;
 use tokio_util::sync::CancellationToken;
 
@@ -23,6 +24,7 @@ pub struct ServerConfig {
     pub precreate_ttl: Duration,
     pub minio: Arc<dyn ObjectUploader>,
     pub segment_cfg: SegmentConfig,
+    pub transcode: TranscodeConfig,
     pub cancel_token: CancellationToken,
     /// Maximum concurrent connections (0 = unlimited).
     pub max_connections: usize,

@@ -53,7 +53,7 @@ impl RtpDemuxProcessor {
                 demuxer.time_base_for_stream(si),
             ) {
                 let media_type = match codec {
-                    Codec::H264 | Codec::H265 | Codec::Av1 => MediaType::Video,
+                    Codec::H264 | Codec::H265 | Codec::Av1 | Codec::Mjpeg => MediaType::Video,
                     Codec::Aac | Codec::Mp3 | Codec::Opus => MediaType::Audio,
                 };
                 params.push(CodecParams {

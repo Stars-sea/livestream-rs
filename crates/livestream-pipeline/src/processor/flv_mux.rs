@@ -6,6 +6,7 @@
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 use livestream_codec::EncodedPacket;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use livestream_core::{
     pad::{PadReceiver, PadSender},
@@ -20,6 +21,11 @@ pub struct FlvMux {
     stream_id: String,
     input: PadReceiver<EncodedPacket>,
     outputs: Vec<PadSender<FlvTag>>,
+    /// Whether this stream's H.264 sequence header carries an
+    /// AVCDecoderConfigurationRecord (byte 0 == 0x01). Such streams must
+    /// carry length-prefixed (AVCC) NALs in media tags; Annex B sources
+    /// (RTMP) keep their framing untouched.
+    avcc_framing: AtomicBool,
 }
 
 impl FlvMux {
@@ -32,6 +38,7 @@ impl FlvMux {
             stream_id: stream_id.into(),
             input,
             outputs,
+            avcc_framing: AtomicBool::new(false),
         }
     }
 
@@ -50,7 +57,12 @@ impl FlvMux {
         let is_seq_header = pkt.is_sequence_header;
 
         let payload = if is_seq_header {
-            self.build_avc_sequence_header(pkt.data.as_bytes(), pkt.extradata.as_deref())
+            let ext = pkt.extradata.as_deref();
+            // avcC records (byte 0 == 1) signal length-prefixed media NALs.
+            if pkt.codec == Codec::H264 && ext.is_some_and(|e| !e.is_empty() && e[0] == 0x01) {
+                self.avcc_framing.store(true, Ordering::Relaxed);
+            }
+            self.build_avc_sequence_header(pkt.data.as_bytes(), ext)
         } else {
             self.annex_b_to_avcc(pkt.data.as_bytes())
         };
@@ -106,12 +118,62 @@ impl FlvMux {
         }
     }
 
-    /// Return data unchanged. Annex B → AVCC conversion is deferred:
-    /// the RTMP source produces Annex B, the RTSP source produces raw NALs;
-    /// ffmpeg's FLV demuxer handles both in FLV tags via its built-in parser.
+    /// Convert Annex B to AVCC (length-prefixed) NAL framing.
+    ///
+    /// Only applies to streams whose sequence header is an avcC record —
+    /// FLV media tags for those MUST be length-prefixed (ffmpeg's demuxer
+    /// parses them per the avcC `lengthSizeMinusOne`). Annex B sources
+    /// (RTMP, whose sequence header is raw SPS+PPS) keep their framing
+    /// unchanged, which ffmpeg's demuxer detects and handles.
     fn annex_b_to_avcc(&self, data: &[u8]) -> Bytes {
-        Bytes::copy_from_slice(data)
+        if !self.avcc_framing.load(Ordering::Relaxed) {
+            return Bytes::copy_from_slice(data);
+        }
+        let mut out = BytesMut::with_capacity(data.len() + data.len() / 4);
+        for nal in split_annexb(data) {
+            out.put_u32(nal.len() as u32);
+            out.extend_from_slice(nal);
+        }
+        out.freeze()
     }
+}
+
+/// Split an Annex B bitstream into NAL units (skipping `00 00 01` and
+/// `00 00 00 01` start codes). Small private helper duplicated here rather
+/// than exported from `transcode` (same convention as `av_codec_id_to_codec`
+/// in `hls_segment`).
+fn split_annexb(data: &[u8]) -> Vec<&[u8]> {
+    let mut nals = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut i = 0;
+    while i + 2 < data.len() {
+        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            if let Some(s) = start {
+                nals.push(&data[s..i]);
+            }
+            i += 3;
+            start = Some(i);
+            continue;
+        }
+        if i + 3 < data.len()
+            && data[i] == 0
+            && data[i + 1] == 0
+            && data[i + 2] == 0
+            && data[i + 3] == 1
+        {
+            if let Some(s) = start {
+                nals.push(&data[s..i]);
+            }
+            i += 4;
+            start = Some(i);
+            continue;
+        }
+        i += 1;
+    }
+    if let Some(s) = start {
+        nals.push(&data[s..]);
+    }
+    nals
 }
 
 impl Node for FlvMux {
@@ -255,8 +317,8 @@ mod tests {
         assert!(tags.is_empty());
     }
 
-    // annex_b_to_avcc is a pass-through; ffmpeg's FLV demuxer handles
-    // both Annex B and raw NALs in FLV tags.
+    // Default (Annex B source, e.g. RTMP): annex_b_to_avcc is a pass-through —
+    // ffmpeg's FLV demuxer detects Annex B in the tags itself.
 
     #[test]
     fn annex_b_to_avcc_passthrough() {
@@ -270,5 +332,46 @@ mod tests {
     fn annex_b_to_avcc_empty() {
         let mux = make_mux();
         assert!(mux.annex_b_to_avcc(&[]).is_empty());
+    }
+
+    #[test]
+    fn avcc_stream_converts_media_nals() {
+        let mux = make_mux();
+        // avcC sequence header (configurationVersion=0x01) arms the
+        // length-prefixed framing for this stream.
+        let header = EncodedPacket {
+            codec: Codec::H264,
+            stream_index: 0,
+            data: NalData::AnnexB(Bytes::new()),
+            pts_ms: None,
+            dts_ms: None,
+            is_keyframe: true,
+            is_sequence_header: true,
+            is_script_data: false,
+            extradata: Some(Bytes::from_static(&[0x01, 0x64, 0x00, 0x2C, 0xFF, 0xE1])),
+        };
+        let _ = mux.mux_video(&header).unwrap();
+
+        // Media NALs are now length-prefixed instead of Annex B.
+        let input = &[
+            0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x00, 0x00, 0x00, 0x01, 0x06, 0x01,
+        ];
+        let result = mux.annex_b_to_avcc(input);
+        assert_eq!(
+            &result[..],
+            &[
+                0x00, 0x00, 0x00, 0x02, 0x65, 0x88, 0x00, 0x00, 0x00, 0x02, 0x06, 0x01
+            ]
+        );
+    }
+
+    #[test]
+    fn split_annexb_units() {
+        let data = &[
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x01, 0x00, 0x00, 0x00, 0x01, 0x68, 0x02, 0x00, 0x00,
+            0x01, 0x65,
+        ];
+        let nals = split_annexb(data);
+        assert_eq!(nals, vec![&data[4..6], &data[10..12], &data[15..16]]);
     }
 }

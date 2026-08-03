@@ -12,6 +12,7 @@ pub enum Codec {
     Mp3,
     Opus,
     Av1,
+    Mjpeg,
 }
 
 impl Codec {

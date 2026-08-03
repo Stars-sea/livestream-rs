@@ -44,6 +44,42 @@ impl Default for SegmentConfig {
     }
 }
 
+// ── Transcode ──
+
+/// Configuration for server-side media transcoding (MJPEG → H.264).
+///
+/// Only applies to RTSP sources that announce a MJPEG (RFC 2435) stream;
+/// already-encoded H.264/AAC streams pass through untouched.
+#[derive(Clone, Debug, Deserialize)]
+pub struct TranscodeConfig {
+    /// Target video bitrate in kbps.
+    #[serde(default = "default_transcode_bitrate_kbps")]
+    pub bitrate_kbps: u64,
+
+    /// x264 preset name (only honored by the libx264 encoder).
+    #[serde(default = "default_transcode_preset")]
+    pub preset: String,
+
+    /// Target keyframe interval in seconds.
+    #[serde(default = "default_transcode_gop_secs")]
+    pub gop_secs: f64,
+
+    /// Output frame rate; `None` = follow the source frame rate.
+    #[serde(default)]
+    pub fps: Option<f64>,
+}
+
+impl Default for TranscodeConfig {
+    fn default() -> Self {
+        Self {
+            bitrate_kbps: default_transcode_bitrate_kbps(),
+            preset: default_transcode_preset(),
+            gop_secs: default_transcode_gop_secs(),
+            fps: None,
+        }
+    }
+}
+
 // ── Application ──
 
 #[derive(Clone, Debug, Deserialize)]
@@ -59,6 +95,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub queue: QueueConfig,
+
+    #[serde(default)]
+    pub transcode: TranscodeConfig,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -222,6 +261,18 @@ fn default_http_flv_max_connections() -> usize {
     2000
 }
 
+fn default_transcode_bitrate_kbps() -> u64 {
+    1024
+}
+
+fn default_transcode_preset() -> String {
+    "veryfast".to_string()
+}
+
+fn default_transcode_gop_secs() -> f64 {
+    2.0
+}
+
 // ── Validation ──
 
 impl AppConfig {
@@ -257,6 +308,27 @@ impl AppConfig {
         self.transport.validate()?;
         self.storage.validate()?;
         self.queue.validate()?;
+        self.transcode.validate()?;
+        Ok(())
+    }
+}
+
+impl TranscodeConfig {
+    fn validate(&self) -> Result<()> {
+        if self.bitrate_kbps == 0 {
+            bail!("transcode.bitrate_kbps must be greater than 0");
+        }
+        if self.gop_secs <= 0.0 {
+            bail!("transcode.gop_secs must be greater than 0");
+        }
+        if self.preset.is_empty() {
+            bail!("transcode.preset must not be empty");
+        }
+        if let Some(fps) = self.fps
+            && fps <= 0.0
+        {
+            bail!("transcode.fps must be greater than 0 when set");
+        }
         Ok(())
     }
 }

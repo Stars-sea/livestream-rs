@@ -33,6 +33,7 @@ use crate::registry::SessionRegistry;
 use crate::registry::state::SessionEndpoint;
 use livestream_codec::SegmentConfig;
 use livestream_core::channel::MpscRx;
+use livestream_core::config::TranscodeConfig;
 use livestream_core::types::Protocol;
 use livestream_pipeline::sink::minio::ObjectUploader;
 
@@ -44,6 +45,7 @@ pub(crate) struct ProtocolServerCore {
     pub precreate_ttl: Duration,
     pub minio: Arc<dyn ObjectUploader>,
     pub segment_cfg: SegmentConfig,
+    pub transcode: TranscodeConfig,
     pub cancel_token: CancellationToken,
     pub registry: Arc<SessionRegistry>,
     pub dispatcher: Arc<EventDispatcher>,
@@ -65,6 +67,7 @@ impl ProtocolServerCore {
             precreate_ttl: cfg.precreate_ttl,
             minio: cfg.minio,
             segment_cfg: cfg.segment_cfg,
+            transcode: cfg.transcode,
             cancel_token: cfg.cancel_token,
             registry: cfg.registry,
             dispatcher: cfg.dispatcher,

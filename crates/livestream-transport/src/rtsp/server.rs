@@ -22,6 +22,7 @@ use super::rtp::RtpInterleavedReader;
 use super::session::{self, RtspSession};
 
 use livestream_codec::{RtpPacket, SegmentConfig};
+use livestream_core::config::TranscodeConfig;
 use livestream_core::pad::PadSender;
 use livestream_core::traits::Source;
 use livestream_core::types::Protocol;
@@ -44,6 +45,7 @@ impl RtspServer {
         let hub = self.core.flv_egress_hub.clone();
         let minio = self.core.minio.clone();
         let seg_cfg = self.core.segment_cfg.clone();
+        let transcode_cfg = self.core.transcode.clone();
         let registry = self.core.registry.clone();
 
         self.core
@@ -55,6 +57,7 @@ impl RtspServer {
                     hub.clone(),
                     minio.clone(),
                     seg_cfg.clone(),
+                    transcode_cfg.clone(),
                     registry.clone(),
                 ))
             })
@@ -176,6 +179,7 @@ async fn spawn_connection_handler(
     hub: Arc<FlvEgressHub>,
     minio: Arc<dyn ObjectUploader>,
     segment_cfg: SegmentConfig,
+    transcode_cfg: TranscodeConfig,
     registry: Arc<SessionRegistry>,
 ) {
     let cancel_token = CancellationToken::new();
@@ -185,6 +189,7 @@ async fn spawn_connection_handler(
         hub,
         minio,
         segment_cfg,
+        transcode_cfg,
         registry,
         cancel_token,
     )
@@ -360,12 +365,14 @@ async fn run_rtsp_handshake(
 
 // ── Main connection handler ──
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     stream: TcpStream,
     pending_lifecycle: Arc<DashMap<String, HandlerLifecycle>>,
     hub: Arc<FlvEgressHub>,
     minio: Arc<dyn ObjectUploader>,
     segment_cfg: SegmentConfig,
+    transcode_cfg: TranscodeConfig,
     registry: Arc<SessionRegistry>,
     cancel_token: CancellationToken,
 ) -> Result<()> {
@@ -421,6 +428,7 @@ async fn handle_connection(
         hub.clone(),
         minio,
         &segment_cfg,
+        &transcode_cfg,
         cancel.clone(),
     );
 

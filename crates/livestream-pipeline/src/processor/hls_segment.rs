@@ -224,6 +224,7 @@ fn av_codec_id_to_codec(id: AVCodecID) -> Codec {
         AVCodecID::AV_CODEC_ID_MP3 => Codec::Mp3,
         AVCodecID::AV_CODEC_ID_OPUS => Codec::Opus,
         AVCodecID::AV_CODEC_ID_AV1 => Codec::Av1,
+        AVCodecID::AV_CODEC_ID_MJPEG => Codec::Mjpeg,
         other => {
             tracing::warn!(codec_id = ?other, "Unknown codec id, mapping to H264");
             Codec::H264

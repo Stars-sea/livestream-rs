@@ -50,6 +50,11 @@ pub fn parse_sdp(sdp_body: &str) -> Result<ParsedSdp> {
         let rtpmap = find_attr(sdp_body, &format!("a=rtpmap:{}", payload_type));
         let (codec, clock_rate) = match rtpmap {
             Some(ref map) => parse_rtpmap(map)?,
+            None if media_type == MediaType::Video && payload_type == "26" => {
+                // RFC 3551 static payload type 26 = JPEG; no rtpmap attribute
+                // needed (ffmpeg's RTSP muxer omits it for MJPEG sources).
+                (Codec::Mjpeg, 90_000)
+            }
             None => continue,
         };
 
@@ -104,6 +109,7 @@ fn parse_rtpmap(rtpmap: &str) -> Result<(Codec, u32)> {
         "mpeg4-generic" | "aac" | "mpeg4" => Codec::Aac,
         "opus" => Codec::Opus,
         "mp3" | "mpa" | "mpeg" => Codec::Mp3,
+        "jpeg" | "mjpeg" => Codec::Mjpeg,
         _ => anyhow::bail!("Unsupported codec: {}", codec_name),
     };
     Ok((codec, clock_rate))
@@ -176,6 +182,39 @@ mod tests {
         let (codec, rate) = parse_rtpmap("96 H264/90000").unwrap();
         assert_eq!(codec, Codec::H264);
         assert_eq!(rate, 90000);
+    }
+
+    #[test]
+    fn parse_jpeg_rtpmap() {
+        let (codec, rate) = parse_rtpmap("26 JPEG/90000").unwrap();
+        assert_eq!(codec, Codec::Mjpeg);
+        assert_eq!(rate, 90000);
+    }
+
+    #[test]
+    fn parse_static_payload_type_26_without_rtpmap() {
+        // ffmpeg's RTSP muxer pushes MJPEG with a bare `m=video 0 RTP/AVP 26`
+        // and no rtpmap attribute — RFC 3551 static payload type.
+        let sdp = "\
+            v=0\r\n\
+            m=video 0 RTP/AVP 26\r\n";
+        let result = parse_sdp(sdp).unwrap();
+        assert_eq!(result.codec_params.len(), 1);
+        assert_eq!(result.codec_params[0].codec, Codec::Mjpeg);
+        assert_eq!(result.codec_params[0].media_type, MediaType::Video);
+        assert_eq!(result.codec_params[0].clock_rate, 90000);
+    }
+
+    #[test]
+    fn parse_dynamic_payload_type_96_jpeg_rtpmap() {
+        let sdp = "\
+            v=0\r\n\
+            m=video 0 RTP/AVP 96\r\n\
+            a=rtpmap:96 JPEG/90000\r\n";
+        let result = parse_sdp(sdp).unwrap();
+        assert_eq!(result.codec_params.len(), 1);
+        assert_eq!(result.codec_params[0].codec, Codec::Mjpeg);
+        assert_eq!(result.codec_params[0].clock_rate, 90000);
     }
 
     #[test]

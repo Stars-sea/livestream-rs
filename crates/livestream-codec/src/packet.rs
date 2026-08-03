@@ -125,7 +125,10 @@ impl EncodedPacket {
 
     /// Whether this is a video codec packet.
     pub fn is_video(&self) -> bool {
-        matches!(self.codec, Codec::H264 | Codec::H265 | Codec::Av1)
+        matches!(
+            self.codec,
+            Codec::H264 | Codec::H265 | Codec::Av1 | Codec::Mjpeg
+        )
     }
 
     /// Whether this is an audio codec packet.

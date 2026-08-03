@@ -15,11 +15,12 @@ use crate::processor::hls_segment::HlsSegmenter;
 use crate::processor::otel::OTelProbe;
 use crate::processor::rtp_depack::RtpDemuxProcessor;
 use crate::processor::seq_cache::SeqCacheProbe;
+use crate::processor::transcode::TranscodeProcessor;
 use crate::sink::flv::FlvSink;
 use crate::sink::minio::{MinIoSink, ObjectUploader};
 use anyhow::Result;
 use livestream_codec::{CodecParams, EncodedPacket, MediaType, RtpPacket};
-use livestream_core::config::SegmentConfig;
+use livestream_core::config::{SegmentConfig, TranscodeConfig};
 use livestream_core::pad::{DemandSignal, PadReceiver, PadSender};
 use livestream_core::traits::PipelineHandle;
 use livestream_core::types::Codec;
@@ -110,6 +111,8 @@ pub fn build_pipeline(
 ///
 #[allow(clippy::too_many_arguments)]
 /// Chains RtpDemuxProcessor before the standard EncodedPacket pipeline.
+/// MJPEG sources get a TranscodeProcessor (MJPEG → H.264) inserted between
+/// the demuxer and the encoded chain.
 pub fn build_rtsp_pipeline(
     live_id: &str,
     rtp_rx: PadReceiver<RtpPacket>,
@@ -118,6 +121,7 @@ pub fn build_rtsp_pipeline(
     flv_broadcast: Arc<dyn FlvBroadcast>,
     minio: Arc<dyn ObjectUploader>,
     segment_cfg: &SegmentConfig,
+    transcode_cfg: &TranscodeConfig,
     cancel: CancellationToken,
 ) -> Result<PipelineImpl> {
     let (enc_tx, enc_rx) = PadSender::<EncodedPacket>::new_channel(256);
@@ -132,10 +136,35 @@ pub fn build_rtsp_pipeline(
     let rtp_future: Pin<Box<dyn Future<Output = ()> + Send>> =
         Box::pin(run_processor(depack, cancel.child_token()));
 
+    // MJPEG cannot be muxed to FLV or HLS, so it is transcoded to H.264
+    // server-side; all other sources feed the encoded chain directly.
+    let has_mjpeg = codec_params.iter().any(|p| p.codec == Codec::Mjpeg);
+    let (chain_rx, transcode_future): (PadReceiver<EncodedPacket>, Option<BoxedFuture>) =
+        if has_mjpeg {
+            let (t_tx, t_rx) = PadSender::<EncodedPacket>::new_channel(256);
+            let tp = Arc::new(TranscodeProcessor::new(
+                live_id,
+                codec_params,
+                transcode_cfg.clone(),
+                enc_rx,
+                vec![t_tx],
+            )?);
+            (
+                t_rx,
+                Some(Box::pin(run_processor(tp, cancel.child_token()))),
+            )
+        } else {
+            (enc_rx, None)
+        };
+
+    // The transcoder emits its own H.264 sequence header, so the chain must
+    // build HLS lazily (deferred_hls_init), the same way RTMP sources do.
+    let chain_params: &[CodecParams] = if has_mjpeg { &[] } else { codec_params };
+
     let (handle, encoded_futures, deferred_tasks) = build_encoded_chain(
         live_id,
-        enc_rx,
-        codec_params,
+        chain_rx,
+        chain_params,
         flv_broadcast,
         minio,
         segment_cfg,
@@ -143,6 +172,7 @@ pub fn build_rtsp_pipeline(
     )?;
 
     let mut all_futures = vec![rtp_future];
+    all_futures.extend(transcode_future);
     all_futures.extend(encoded_futures);
     let tasks: Vec<_> = all_futures.into_iter().map(|f| tokio::spawn(f)).collect();
     let pipeline = PipelineImpl::with_shared_tasks(handle, deferred_tasks);
@@ -382,7 +412,7 @@ fn codec_params_from_sequence_header(pkt: &EncodedPacket) -> Option<(MediaType, 
         _ => return None,
     };
     let media_type = match pkt.codec {
-        Codec::H264 | Codec::H265 | Codec::Av1 => MediaType::Video,
+        Codec::H264 | Codec::H265 | Codec::Av1 | Codec::Mjpeg => MediaType::Video,
         Codec::Aac | Codec::Mp3 | Codec::Opus => MediaType::Audio,
     };
     let params = CodecParams {

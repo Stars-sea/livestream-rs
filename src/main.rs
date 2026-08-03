@@ -73,6 +73,7 @@ async fn main() -> Result<()> {
             precreate_ttl: session_ttl,
             minio: minio.clone(),
             segment_cfg: segment_cfg.clone(),
+            transcode: config.transcode.clone(),
             cancel_token: cancel.child_token(),
             max_connections: config.transport.rtmp.max_connections,
         },
@@ -101,6 +102,7 @@ async fn main() -> Result<()> {
         precreate_ttl: rtsp_ttl,
         minio: minio.clone(),
         segment_cfg: segment_cfg.clone(),
+        transcode: config.transcode.clone(),
         cancel_token: cancel.child_token(),
         max_connections: config.transport.rtsp.max_connections,
     })

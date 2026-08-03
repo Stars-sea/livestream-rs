@@ -19,8 +19,8 @@ mod runner;
 pub use client::{ServicePorts, connect_and_get_info, stop_livestream, verify_connected};
 pub use primitives::{env_or, kill_and_wait, pull_and_verify, spawn_push};
 pub use runner::{
-    Protocol, StreamConfig, StreamResult, StressConfig, StressReport, run_single_stream,
-    run_stress_test,
+    Protocol, StreamConfig, StreamResult, StressConfig, StressReport, precreate_streams,
+    run_single_stream, run_stress_test,
 };
 
 pub use proto::livestream_client::LivestreamClient;

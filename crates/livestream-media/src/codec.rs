@@ -158,7 +158,7 @@ impl OwnedCodecParams {
         // SAFETY: ptr is a freshly allocated AVCodecParameters.
         unsafe {
             match params.codec {
-                Codec::H264 | Codec::H265 | Codec::Av1 => {
+                Codec::H264 | Codec::H265 | Codec::Av1 | Codec::Mjpeg => {
                     (*ptr).codec_type = AVMediaType::AVMEDIA_TYPE_VIDEO;
                 }
                 Codec::Aac | Codec::Opus | Codec::Mp3 => {
@@ -319,6 +319,7 @@ fn codec_to_av_codec_id(codec: Codec) -> AVCodecID {
         Codec::Mp3 => AVCodecID::AV_CODEC_ID_MP3,
         Codec::Opus => AVCodecID::AV_CODEC_ID_OPUS,
         Codec::Av1 => AVCodecID::AV_CODEC_ID_AV1,
+        Codec::Mjpeg => AVCodecID::AV_CODEC_ID_MJPEG,
     }
 }
 

@@ -27,12 +27,22 @@ struct Args {
     grpc_addr: String,
 
     /// Input video file for push
-    #[arg(long, required = true)]
-    input_file: PathBuf,
+    #[arg(long, required = false)]
+    input_file: Option<PathBuf>,
 
     /// Protocol: rtmp or rtsp
     #[arg(long, default_value = "rtmp")]
     protocol: String,
+
+    /// Base live_id for the created streams. Stream 0 gets it verbatim,
+    /// subsequent streams get "-{i}" suffixes.
+    #[arg(long)]
+    live_id: Option<String>,
+
+    /// Only precreate sessions (StartLivestream), then exit — no push or
+    /// verification. Used by e2e scripts that push with external tools.
+    #[arg(long)]
+    precreate_only: bool,
 
     /// Output JSON report to stdout
     #[arg(long)]
@@ -62,11 +72,24 @@ async fn main() {
     let duration = Duration::from_secs(args.duration);
     let parallel = args.parallel.unwrap_or(args.streams);
 
+    let input_file = match &args.input_file {
+        Some(p) => p.clone(),
+        None if args.precreate_only => PathBuf::new(),
+        None => {
+            eprintln!("--input-file is required unless --precreate-only is set");
+            std::process::exit(1);
+        }
+    };
+
     let streams: Vec<StreamConfig> = (0..args.streams)
         .map(|i| StreamConfig {
-            live_id: format!("stress-{i}"),
+            live_id: match &args.live_id {
+                Some(base) if i == 0 => base.clone(),
+                Some(base) => format!("{base}-{i}"),
+                None => format!("stress-{i}"),
+            },
             protocol,
-            input_file: args.input_file.clone(),
+            input_file: input_file.clone(),
             duration,
         })
         .collect();
@@ -76,6 +99,15 @@ async fn main() {
         parallel,
         grpc_addr: args.grpc_addr,
     };
+
+    if args.precreate_only {
+        let failed = livestream_test_utils::precreate_streams(&config).await;
+        if failed > 0 {
+            eprintln!("precreate failed for {failed} stream(s)");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let report = run_stress_test(config).await;
 

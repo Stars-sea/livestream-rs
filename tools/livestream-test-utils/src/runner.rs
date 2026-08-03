@@ -284,3 +284,39 @@ pub async fn run_stress_test(config: StressConfig) -> StressReport {
         per_stream,
     }
 }
+
+/// Precreate sessions for all streams without pushing or verifying.
+///
+/// Returns the number of failed precreates. Used by e2e scripts to prepare
+/// RTSP/RTMP sessions for external pushers (e.g. ffmpeg pushing MJPEG over
+/// RTSP) that cannot call the gRPC API themselves.
+pub async fn precreate_streams(config: &StressConfig) -> usize {
+    let (mut client, _ports) = match connect_and_get_info(&config.grpc_addr).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("precreate: connect failed: {e}");
+            return config.streams.len();
+        }
+    };
+    let mut failed = 0;
+    for stream in &config.streams {
+        match client
+            .start_livestream(StartLivestreamRequest {
+                live_id: stream.live_id.clone(),
+                passphrase: None,
+                input_protocol: stream.protocol.input_protocol_i32(),
+            })
+            .await
+        {
+            Ok(resp) => {
+                tracing::info!(live_id = %stream.live_id, "precreated session");
+                let _ = resp;
+            }
+            Err(e) => {
+                eprintln!("precreate {} failed: {e}", stream.live_id);
+                failed += 1;
+            }
+        }
+    }
+    failed
+}
