@@ -270,6 +270,8 @@ impl StorageConfig {
         if cache_dir == "." || cache_dir == ".." {
             bail!("segment.cache_dir cannot be '.' or '..'");
         }
+        // Note: an empty cache_dir is intentionally valid — SegmentWorkspace
+        // falls back to the system temp directory in that case.
         if self.minio.is_none() {
             tracing::warn!("MinIO configuration is missing — HLS segment upload disabled");
         }
@@ -297,6 +299,9 @@ impl RtmpConfig {
                 MAX_RTMP_SESSION_TTL_SECS,
                 self.session_ttl_secs
             );
+        }
+        if self.port == 0 {
+            bail!("RTMP port must be non-zero");
         }
 
         Ok(())

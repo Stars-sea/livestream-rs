@@ -60,6 +60,12 @@ impl EncodedPacket {
     }
 
     /// Create from raw AAC audio data.
+    ///
+    /// Note: the raw AAC frame (ADTS or raw) is carried in
+    /// [`NalData::AnnexB`], whose docs describe H.264/H.265 NAL bitstreams.
+    /// AnnexB is also used as a generic container for raw audio frames;
+    /// downstream consumers MUST dispatch on `pkt.codec` (here
+    /// [`Codec::Aac`]), never on the [`NalData`] variant.
     pub fn new_audio(data: impl Into<Bytes>, pts_ms: i64, stream_index: usize) -> Self {
         Self {
             codec: Codec::Aac,
@@ -94,6 +100,10 @@ impl EncodedPacket {
     }
 
     /// Create an AAC sequence header (AudioSpecificConfig).
+    ///
+    /// The ASC lives in `extradata`; the [`NalData::AnnexB`] payload is
+    /// empty, so as with [`EncodedPacket::new_audio`] consumers MUST dispatch
+    /// on `pkt.codec` ([`Codec::Aac`]), not on the [`NalData`] variant.
     pub fn new_aac_sequence_header(asc: &[u8], stream_index: usize) -> Self {
         Self {
             codec: Codec::Aac,
@@ -177,8 +187,17 @@ impl MediaPacket for TsSegment {
         0 // on-disk size not tracked in struct
     }
 
+    /// Media timestamp of this segment, as `duration * sequence`.
+    ///
+    /// `sequence` is zero-based and monotonically increasing, so this is the
+    /// segment's START time: the media time at which the first sample of the
+    /// segment plays. The `u64` sequence is converted to `u32` saturating
+    /// (overflow clamps to `u32::MAX`) so extremely long playlists never
+    /// wrap the reported timestamp. Returns `None` if the multiplication
+    /// overflows `Duration`.
     fn timestamp(&self) -> Option<Duration> {
-        self.duration.checked_mul(self.sequence as u32)
+        let sequence = u32::try_from(self.sequence).unwrap_or(u32::MAX);
+        self.duration.checked_mul(sequence)
     }
 }
 

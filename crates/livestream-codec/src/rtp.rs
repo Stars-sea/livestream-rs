@@ -75,14 +75,61 @@ impl RtpPacket {
     }
 }
 
-/// Parse a 12-byte RTP header from a raw buffer.
+/// Parse an RTP header from a raw buffer.
 ///
-/// Parse a 12-byte RTP header. Returns the parsed fields + the payload slice.
+/// Handles the full RFC 3550 §5.1 header layout: the fixed 12-byte header,
+/// the CSRC list (4 bytes per entry when CC > 0), the optional extension
+/// header (4 bytes + `extension_len * 4` when X = 1), and strips trailing
+/// padding octets when P = 1.
 ///
-/// Returns `None` if the buffer is shorter than 12 bytes.
+/// Returns the parsed fields + the payload slice (header and padding
+/// excluded). Returns `None` if the buffer is too short, if the version is
+/// not 2, or if the header/padding lengths declared by the flags exceed the
+/// available bytes.
 pub fn parse_rtp_header(data: &[u8]) -> Option<ParsedRtpHeader<'_>> {
     if data.len() < 12 {
         return None;
+    }
+
+    // First byte: V(2 bits) | P(1 bit) | X(1 bit) | CC(4 bits).
+    let first = data[0];
+    if first >> 6 != 2 {
+        // RFC 3550: only RTP version 2 is in use; reject others.
+        return None;
+    }
+    let has_padding = (first & 0x20) != 0;
+    let has_extension = (first & 0x10) != 0;
+    let csrc_count = (first & 0x0F) as usize;
+
+    // Fixed header + CSRC list + optional extension header.
+    let mut header_len = 12 + csrc_count * 4;
+    if has_extension {
+        // Extension header: 16-bit profile + 16-bit length (in 32-bit words,
+        // excluding the 4-octet extension header itself).
+        let ext_start = header_len;
+        let ext_end = ext_start + 4;
+        if data.len() < ext_end {
+            return None;
+        }
+        let extension_len = u16::from_be_bytes([data[ext_start + 2], data[ext_start + 3]]) as usize;
+        header_len = ext_end + extension_len * 4;
+    }
+
+    if data.len() < header_len {
+        return None;
+    }
+
+    let mut payload = &data[header_len..];
+
+    // RFC 3550 §5.1: when P = 1 the last payload byte holds the count of
+    // padding octets (including that byte itself).
+    if has_padding {
+        let &pad_len = payload.last()?;
+        let pad_len = pad_len as usize;
+        if pad_len == 0 || pad_len > payload.len() {
+            return None;
+        }
+        payload = &payload[..payload.len() - pad_len];
     }
 
     Some(ParsedRtpHeader {
@@ -91,7 +138,7 @@ pub fn parse_rtp_header(data: &[u8]) -> Option<ParsedRtpHeader<'_>> {
         sequence_number: u16::from_be_bytes([data[2], data[3]]),
         rtp_timestamp: u32::from_be_bytes([data[4], data[5], data[6], data[7]]),
         ssrc: u32::from_be_bytes([data[8], data[9], data[10], data[11]]),
-        payload: &data[12..],
+        payload,
     })
 }
 
@@ -169,6 +216,117 @@ mod tests {
         let hdr = parse_rtp_header(&data).unwrap();
         assert_eq!(hdr.payload_type, 96);
         assert!(!hdr.marker);
+    }
+
+    #[test]
+    fn parse_with_csrc_list() {
+        // V=2, CC=2 -> header = 12 + 2*4 = 20 bytes.
+        let mut data = vec![0u8; 24];
+        data[0] = 0x80 | 0x02; // V=2, CC=2
+        data[1] = 96;
+        data[8..12].copy_from_slice(&0x11111111u32.to_be_bytes()); // SSRC
+        data[12..16].copy_from_slice(&0x22222222u32.to_be_bytes()); // CSRC[0]
+        data[16..20].copy_from_slice(&0x33333333u32.to_be_bytes()); // CSRC[1]
+        data[20..24].copy_from_slice(&[1, 2, 3, 4]);
+
+        let hdr = parse_rtp_header(&data).unwrap();
+        assert_eq!(hdr.ssrc, 0x11111111);
+        assert_eq!(hdr.payload, &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn parse_with_extension() {
+        // V=2, X=1, CC=0. Extension header: 16-bit profile + 16-bit length
+        // (1 word of extension data) -> header = 12 + 4 + 4 = 20 bytes.
+        let mut data = vec![0u8; 23];
+        data[0] = 0x80 | 0x10; // V=2, X=1
+        data[1] = 96;
+        data[12..14].copy_from_slice(&0xBEDEu16.to_be_bytes()); // profile
+        data[14..16].copy_from_slice(&1u16.to_be_bytes()); // extension length (words)
+        data[16..20].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // extension data
+        data[20..23].copy_from_slice(&[7, 8, 9]);
+
+        let hdr = parse_rtp_header(&data).unwrap();
+        assert_eq!(hdr.payload, &[7, 8, 9]);
+    }
+
+    #[test]
+    fn parse_with_padding() {
+        // V=2, P=1. Last payload byte holds the pad count (incl. itself).
+        let mut data = vec![0u8; 18];
+        data[0] = 0x80 | 0x20; // V=2, P=1
+        data[1] = 96;
+        data[12..15].copy_from_slice(&[0xAA, 0xBB, 0xCC]); // real payload
+        data[15] = 0x00; // padding byte
+        data[16] = 0x00; // padding byte
+        data[17] = 3; // 3 padding octets (last byte holds the count)
+
+        let hdr = parse_rtp_header(&data).unwrap();
+        assert_eq!(hdr.payload, &[0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn parse_with_csrc_extension_and_padding() {
+        // V=2, P=1, X=1, CC=1 -> header = 12 + 4 + 4 + 4 = 24 bytes.
+        let mut data = vec![0u8; 29];
+        data[0] = 0x80 | 0x20 | 0x10 | 0x01; // V=2, P=1, X=1, CC=1
+        data[1] = 96;
+        data[8..12].copy_from_slice(&0xABCDEF01u32.to_be_bytes()); // SSRC
+        data[12..16].copy_from_slice(&0x12345678u32.to_be_bytes()); // CSRC[0]
+        data[16..18].copy_from_slice(&0xBEDEu16.to_be_bytes()); // profile
+        data[18..20].copy_from_slice(&1u16.to_be_bytes()); // extension length (words)
+        data[20..24].copy_from_slice(&[1, 2, 3, 4]); // extension data
+        data[24..27].copy_from_slice(&[0xAA, 0xBB, 0xCC]); // real payload
+        data[27] = 0x00; // padding byte
+        data[28] = 2; // 2 padding octets (last byte holds the count)
+
+        let hdr = parse_rtp_header(&data).unwrap();
+        assert_eq!(hdr.ssrc, 0xABCDEF01);
+        assert_eq!(hdr.payload, &[0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn parse_rejects_wrong_version() {
+        let mut data = vec![0u8; 12];
+        data[0] = 0x00; // V=0
+        assert!(parse_rtp_header(&data).is_none());
+
+        data[0] = 0x80; // V=2
+        assert!(parse_rtp_header(&data).is_some());
+
+        data[0] = 0xC0; // V=3
+        assert!(parse_rtp_header(&data).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_truncated_header() {
+        // CC=3 declares 12 more header bytes than are present.
+        let mut data = vec![0u8; 16];
+        data[0] = 0x80 | 0x03; // V=2, CC=3
+        assert!(parse_rtp_header(&data).is_none());
+
+        // X=1 with an extension length that overruns the buffer.
+        let mut data = vec![0u8; 18];
+        data[0] = 0x80 | 0x10; // V=2, X=1
+        data[14..16].copy_from_slice(&4u16.to_be_bytes()); // claims 16 extension bytes
+        assert!(parse_rtp_header(&data).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_invalid_padding() {
+        // Pad count larger than the available payload.
+        let mut data = vec![0u8; 15];
+        data[0] = 0x80 | 0x20; // V=2, P=1
+        data[12] = 0xAA;
+        data[13] = 0xBB;
+        data[14] = 0x04; // claims 4 padding octets, only 3 payload bytes
+        assert!(parse_rtp_header(&data).is_none());
+
+        // Pad count of 0 is invalid (count includes the count byte itself).
+        let mut data = vec![0u8; 13];
+        data[0] = 0x80 | 0x20; // V=2, P=1
+        data[12] = 0x00;
+        assert!(parse_rtp_header(&data).is_none());
     }
 
     #[test]

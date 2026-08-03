@@ -42,6 +42,9 @@ pub fn broadcast<T: Clone + Send + 'static>(
     live_id: Option<&str>,
     capacity: usize,
 ) -> (BroadcastTx<T>, BroadcastRx<T>) {
+    // tokio::sync::broadcast::channel panics on capacity 0; clamp to 1 to
+    // match mpsc()'s treatment of 0 as 1.
+    let capacity = capacity.max(1);
     let (tx, rx) = tk_broadcast::channel(capacity);
     let live_id: Option<Arc<str>> = live_id.map(|s| s.into());
 

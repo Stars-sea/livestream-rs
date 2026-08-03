@@ -30,8 +30,9 @@ impl<T> MpscSender<T> {
         self
     }
 
-    /// Send an item. Returns `Full` when the channel is at capacity so the
-    /// caller can apply backpressure or retry.
+    /// Send an item. Returns `Full` when the channel is at capacity; in that
+    /// case the item is dropped (live-stream pads intentionally drop under
+    /// backpressure to keep latency bounded).
     pub fn send(&self, item: T) -> Result<(), SendError>
     where
         T: Send + 'static,
@@ -42,7 +43,7 @@ impl<T> MpscSender<T> {
                 tracing::debug!(
                     queue = self.queue,
                     live_id = %self.live_id.as_deref().unwrap_or("N/A"),
-                    "MPSC sender: channel full, retrying"
+                    "MPSC sender: channel full, dropping item"
                 );
                 Err(SendError::Full)
             }
