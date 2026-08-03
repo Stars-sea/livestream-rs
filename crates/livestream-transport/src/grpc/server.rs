@@ -396,7 +396,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
             grpc_port: self.grpc_port as u32,
             rtmp_port: self.rtmp_port.map_or(0, |p| p as u32),
             rtsp_port: self.rtsp_port.map_or(0, |p| p as u32),
-            http_flv_port: self.http_flv_port().unwrap_or(0),
+            http_flv_port: self.http_flv_port(),
         }))
     }
 }
@@ -432,7 +432,7 @@ impl IngestGrpcService {
         let live_id = descriptor.id;
         let rtmp_port = self.rtmp_port.unwrap_or(0) as u32;
         let ingest_port = descriptor.endpoint.port.map(u32::from).unwrap_or(rtmp_port);
-        let http_flv_port = self.http_flv_port();
+        let http_flv_port = Some(self.http_flv_port());
         let http_flv_path = self.http_flv_path(&live_id);
 
         api::StreamDescriptor {
@@ -506,8 +506,10 @@ impl IngestGrpcService {
         }
     }
 
-    fn http_flv_port(&self) -> Option<u32> {
-        self.http_flv_enabled.then_some(self.http_flv_port as u32)
+    /// The HTTP-FLV listener is always bound (health endpoints), so the
+    /// port is always reported; `enabled` only gates the playback route.
+    fn http_flv_port(&self) -> u32 {
+        self.http_flv_port as u32
     }
 
     fn http_flv_path(&self, live_id: &str) -> Option<String> {

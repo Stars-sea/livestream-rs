@@ -16,7 +16,7 @@ use crate::lifecycle::HandlerLifecycle;
 use crate::protocol_server::ProtocolServerCore;
 use crate::registry::SessionRegistry;
 use crate::source::rtsp::{RawRtpFrame, RtspSource};
-use rtsp_types::Message;
+use rtsp_types::{Message, Method};
 
 use super::rtp::RtpInterleavedReader;
 use super::session::{self, RtspSession};
@@ -210,7 +210,45 @@ struct HandshakeOutcome {
     sdp: Option<String>,
     codec_params: Vec<livestream_core::types::CodecParams>,
     live_id: Option<String>,
-    provided_passphrase: Option<String>,
+}
+
+/// Whether the passphrase presented in the ANNOUNCE URI userinfo matches
+/// the precreated session's passphrase. Streams without a passphrase and
+/// unknown streams always pass (enforcement is opt-in per stream).
+async fn passphrase_matches(registry: &SessionRegistry, session: &RtspSession) -> bool {
+    let Some(live_id) = session.live_id() else {
+        return true;
+    };
+    let Some(descriptor) = registry.get_session(live_id) else {
+        return true;
+    };
+    let expected = descriptor.read().await.endpoint.passphrase.clone();
+    match expected {
+        Some(expected) => session.provided_passphrase() == Some(expected.as_str()),
+        None => true,
+    }
+}
+
+/// Respond 401 to an ANNOUNCE with a wrong passphrase and end the handshake.
+async fn deny_announce(
+    write_half: &mut tokio::net::tcp::OwnedWriteHalf,
+    cseq: u32,
+    live_id: Option<&str>,
+) -> Result<HandshakeOutcome> {
+    let denied = session::error_response(rtsp_types::StatusCode::Unauthorized, cseq);
+    if let Ok(resp_bytes) = session::serialize_response(&denied) {
+        let _ = write_half.write_all(&resp_bytes).await;
+    }
+    warn!(
+        live_id = ?live_id,
+        "RTSP publish rejected: invalid or missing passphrase"
+    );
+    Ok(HandshakeOutcome {
+        recording: false,
+        sdp: None,
+        codec_params: vec![],
+        live_id: None,
+    })
 }
 
 /// Runs the RTSP handshake (OPTIONS/ANNOUNCE/SETUP/RECORD).
@@ -218,6 +256,7 @@ struct HandshakeOutcome {
 async fn run_rtsp_handshake(
     reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
     write_half: &mut tokio::net::tcp::OwnedWriteHalf,
+    registry: &SessionRegistry,
 ) -> Result<HandshakeOutcome> {
     let mut session = RtspSession::new();
 
@@ -231,7 +270,6 @@ async fn run_rtsp_handshake(
                     sdp: None,
                     codec_params: vec![],
                     live_id: None,
-                    provided_passphrase: None,
                 });
             }
         };
@@ -246,7 +284,6 @@ async fn run_rtsp_handshake(
                     sdp: None,
                     codec_params: vec![],
                     live_id: None,
-                    provided_passphrase: None,
                 });
             }
         };
@@ -255,6 +292,14 @@ async fn run_rtsp_handshake(
 
         match session.handle_request(&request) {
             Ok(Some(resp)) => {
+                // Passphrase enforcement happens at ANNOUNCE time so the
+                // client gets a 401 instead of a success followed by a
+                // dropped connection.
+                if request.method() == Method::Announce
+                    && !passphrase_matches(registry, &session).await
+                {
+                    return deny_announce(write_half, cseq, session.live_id()).await;
+                }
                 let resp_bytes = match session::serialize_response(&resp) {
                     Ok(b) => b,
                     Err(e) => {
@@ -264,7 +309,6 @@ async fn run_rtsp_handshake(
                             sdp: None,
                             codec_params: vec![],
                             live_id: None,
-                            provided_passphrase: None,
                         });
                     }
                 };
@@ -275,7 +319,6 @@ async fn run_rtsp_handshake(
                         sdp: None,
                         codec_params: vec![],
                         live_id: None,
-                        provided_passphrase: None,
                     });
                 }
             }
@@ -302,7 +345,6 @@ async fn run_rtsp_handshake(
                 sdp: session.sdp_body().map(String::from),
                 codec_params: session.codec_params().unwrap_or(&[]).to_vec(),
                 live_id,
-                provided_passphrase: session.provided_passphrase().map(String::from),
             };
             return Ok(outcome);
         }
@@ -313,7 +355,6 @@ async fn run_rtsp_handshake(
         sdp: None,
         codec_params: vec![],
         live_id: None,
-        provided_passphrase: None,
     })
 }
 
@@ -336,8 +377,8 @@ async fn handle_connection(
         sdp,
         codec_params,
         live_id,
-        provided_passphrase,
-    } = run_rtsp_handshake(&mut reader, &mut write_half).await?;
+        ..
+    } = run_rtsp_handshake(&mut reader, &mut write_half, &registry).await?;
 
     if !recording {
         return Ok(());
@@ -347,20 +388,6 @@ async fn handle_connection(
         anyhow::anyhow!("RTSP ANNOUNCE did not provide a recognizable stream path")
     })?;
     let sdp = sdp.ok_or_else(|| anyhow::anyhow!("SDP missing"))?;
-
-    // Passphrase check: if the precreated session carries a passphrase, the
-    // publisher must present it in the ANNOUNCE URI userinfo.
-    if let Some(descriptor) = registry.get_session(&live_id) {
-        let expected = descriptor.read().await.endpoint.passphrase.clone();
-        if let Some(expected) = expected
-            && provided_passphrase.as_deref() != Some(expected.as_str())
-        {
-            anyhow::bail!(
-                "RTSP publish for '{}' rejected: invalid or missing passphrase",
-                live_id
-            );
-        }
-    }
 
     let Some((_, lifecycle)) = pending_lifecycle.remove(&live_id) else {
         anyhow::bail!("No precreated session found for live_id: {}", live_id);
@@ -470,4 +497,63 @@ async fn handle_connection(
     cancel.cancel();
     hub.remove_channel(&live_id);
     Ok(())
+}
+
+// ── Tests ──
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::state::{SessionDescriptor, SessionEndpoint, SessionState};
+    use livestream_core::types::Protocol;
+    use rtsp_types::{Method, Request, Version, headers::CSeq};
+
+    fn announce_session(uri: &str) -> RtspSession {
+        let mut session = RtspSession::new();
+        let req = Request::builder(Method::Announce, Version::V1_0)
+            .typed_header(&CSeq::from(1u32))
+            .request_uri(rtsp_types::Url::parse(uri).unwrap())
+            .build(b"v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n".to_vec());
+        session.handle_request(&req).unwrap();
+        session
+    }
+
+    async fn register(registry: &SessionRegistry, id: &str, passphrase: Option<&str>) {
+        let ct = CancellationToken::new();
+        registry
+            .register_session(
+                Arc::new(tokio::sync::RwLock::new(SessionDescriptor {
+                    id: id.to_string(),
+                    protocol: Protocol::Rtsp,
+                    endpoint: SessionEndpoint::new(None, passphrase.map(String::from)),
+                    state: SessionState::Pending,
+                })),
+                ct.child_token(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn passphrase_matches_enforces_opt_in() {
+        let registry = Arc::new(SessionRegistry::new());
+        register(&registry, "plain", None).await;
+        register(&registry, "secure", Some("secret")).await;
+
+        // 无 passphrase 的流：任意提供都通过
+        let plain = announce_session("rtsp://example.com/live/plain");
+        assert!(passphrase_matches(&registry, &plain).await);
+
+        // 带 passphrase 的流：正确 → 通过；错误/缺失 → 拒绝
+        let ok = announce_session("rtsp://secret@example.com/live/secure");
+        assert!(passphrase_matches(&registry, &ok).await);
+        let wrong = announce_session("rtsp://wrong@example.com/live/secure");
+        assert!(!passphrase_matches(&registry, &wrong).await);
+        let missing = announce_session("rtsp://example.com/live/secure");
+        assert!(!passphrase_matches(&registry, &missing).await);
+
+        // 未知流：不强制（无凭据可查）
+        let unknown = announce_session("rtsp://example.com/live/nope");
+        assert!(passphrase_matches(&registry, &unknown).await);
+    }
 }

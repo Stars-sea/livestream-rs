@@ -196,5 +196,10 @@ mod tests {
         // Annex B 起始码，不再含长度前缀
         assert!(data.starts_with(&[0x00, 0x00, 0x00, 0x01]));
         assert!(!data.windows(4).any(|w| w == [0x00, 0x00, 0x00, 0x05]));
+        // NAL 数据保真：IDR 负载原样保留在输出尾部
+        assert!(
+            data.ends_with(&[0x65, 0x88, 0x84, 0x01, 0x2C]),
+            "NAL payload must survive the conversion unchanged: {data:?}"
+        );
     }
 }
