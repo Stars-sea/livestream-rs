@@ -130,30 +130,29 @@ async fn main() -> Result<()> {
         dispatcher: dispatcher.clone(),
     })?;
 
-    // 9. Create HTTP-FLV server (optional). Like RTMP/RTSP, a bind failure
-    // degrades to a warning and the server stays disabled rather than
-    // aborting the process. (gRPC, by contrast, stays fatal: see step 8.)
-    let http_flv_server = if config.services.http_flv.enabled {
-        match HttpFlvServer::create(
-            config.services.http_flv.port,
-            config.services.http_flv.max_connections,
-            flv_egress_hub.clone(),
-            registry.clone(),
-            cancel.child_token(),
-        )
-        .await
-        {
-            Ok(server) => Some(server),
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "HTTP-FLV server failed to start, HTTP-FLV playback disabled"
-                );
-                None
-            }
+    // 9. Create HTTP-FLV server. Always binds so the /alive and /health
+    // endpoints stay available for orchestration probes; HTTP_FLV__ENABLED
+    // only gates the FLV playback route. A bind failure degrades to a
+    // warning and the server stays disabled rather than aborting the
+    // process. (gRPC, by contrast, stays fatal: see step 8.)
+    let http_flv_server = match HttpFlvServer::create(
+        config.services.http_flv.port,
+        config.services.http_flv.max_connections,
+        flv_egress_hub.clone(),
+        registry.clone(),
+        cancel.child_token(),
+        config.services.http_flv.enabled,
+    )
+    .await
+    {
+        Ok(server) => Some(server),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "HTTP-FLV server failed to start, health and playback endpoints disabled"
+            );
+            None
         }
-    } else {
-        None
     };
 
     // 10. Spawn signal handler for graceful shutdown (SIGINT + SIGTERM)

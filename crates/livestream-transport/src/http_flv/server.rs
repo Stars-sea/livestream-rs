@@ -52,6 +52,7 @@ impl HttpFlvServer {
         flv_egress_hub: Arc<FlvEgressHub>,
         registry: Arc<SessionRegistry>,
         cancel_token: CancellationToken,
+        flv_enabled: bool,
     ) -> Result<Self> {
         let addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
         let listener = TcpListener::bind(addr).await?;
@@ -63,17 +64,21 @@ impl HttpFlvServer {
             cancel_token: cancel_token.clone(),
             connection_semaphore,
         };
-        let router = Router::new()
+        // Health endpoints are always served so orchestration probes do not
+        // depend on the FLV playback feature; the playback route is gated.
+        let mut router = Router::new()
             .route("/alive", get(handle_alive))
             .route("/health", get(handle_health))
-            .route("/health/stream/{live_id}", get(handle_stream_health))
-            .route(
+            .route("/health/stream/{live_id}", get(handle_stream_health));
+        if flv_enabled {
+            router = router.route(
                 ROUTE_PATH,
                 get(handle_http_flv).options(handle_cors_preflight),
-            )
-            .with_state(state);
+            );
+        }
+        let router = router.with_state(state);
 
-        info!(address = %addr, route = %ROUTE_PATH, "HTTP-FLV server will listen");
+        info!(address = %addr, route = %ROUTE_PATH, flv_enabled = %flv_enabled, "HTTP-FLV server will listen");
 
         Ok(Self {
             listener,
