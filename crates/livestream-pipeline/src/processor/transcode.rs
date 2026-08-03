@@ -602,10 +602,8 @@ mod tests {
         // Second frame at pts=100 → encoded pts >= 100.
         let out2 = proc.process(mjpeg_packet(100)).await.unwrap();
         assert!(!out2.is_empty());
-        for pkt in &out2 {
-            if let Some(pts) = pkt.pts_ms {
-                assert!(pts >= 100, "encoded pts {} should follow input", pts);
-            }
-        }
+        out2.iter()
+            .filter_map(|p| p.pts_ms)
+            .for_each(|pts| assert!(pts >= 100, "encoded pts {} should follow input", pts));
     }
 }

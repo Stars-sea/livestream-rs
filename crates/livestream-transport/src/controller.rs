@@ -15,7 +15,6 @@ const SESSION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 pub enum ControlMessage {
     PrecreateStream {
         live_id: String,
-        passphrase: Option<String>,
         /// Resolved by the protocol server with the outcome of the session
         /// registration (descriptor on success, error on failure), so the
         /// caller learns the authoritative result instead of polling the
@@ -51,15 +50,14 @@ impl TransportController {
         &self,
         live_id: String,
     ) -> Result<RxOneshot<Result<SessionDescriptor>>> {
-        self.precreate_session(self.rtmp_channel.clone(), "RTMP", live_id, None)
+        self.precreate_session(self.rtmp_channel.clone(), "RTMP", live_id)
     }
 
     pub fn precreate_rtsp_session(
         &self,
         live_id: String,
-        passphrase: Option<String>,
     ) -> Result<RxOneshot<Result<SessionDescriptor>>> {
-        self.precreate_session(self.rtsp_channel.clone(), "RTSP", live_id, passphrase)
+        self.precreate_session(self.rtsp_channel.clone(), "RTSP", live_id)
     }
 
     pub fn close_session(&self, live_id: String) -> Result<RxOneshot<Result<()>>> {
@@ -96,7 +94,6 @@ impl TransportController {
         channel: MpscTx<ControlMessage>,
         transport_name: &'static str,
         live_id: String,
-        passphrase: Option<String>,
     ) -> Result<RxOneshot<Result<SessionDescriptor>>> {
         // The protocol server resolves this oneshot with the registration
         // result; the caller no longer polls the registry for a descriptor.
@@ -105,7 +102,6 @@ impl TransportController {
         let channel = channel.with_live_id(live_id.clone());
         let msg = ControlMessage::PrecreateStream {
             live_id,
-            passphrase,
             ack: ack_tx,
         };
 

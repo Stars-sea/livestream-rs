@@ -3,7 +3,6 @@ use livestream_core::types::Protocol;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionEndpoint {
     pub port: Option<u16>,
-    pub passphrase: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,7 +22,7 @@ pub struct SessionDescriptor {
 }
 
 impl SessionEndpoint {
-    pub fn new(port: Option<u16>, passphrase: Option<String>) -> Self {
-        Self { port, passphrase }
+    pub fn new(port: Option<u16>) -> Self {
+        Self { port }
     }
 }

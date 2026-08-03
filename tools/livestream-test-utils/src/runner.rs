@@ -116,7 +116,6 @@ pub async fn run_single_stream(
     let start_resp = match client
         .start_livestream(StartLivestreamRequest {
             live_id: config.live_id.clone(),
-            passphrase: None,
             input_protocol: config.protocol.input_protocol_i32(),
         })
         .await
@@ -303,7 +302,6 @@ pub async fn precreate_streams(config: &StressConfig) -> usize {
         match client
             .start_livestream(StartLivestreamRequest {
                 live_id: stream.live_id.clone(),
-                passphrase: None,
                 input_protocol: stream.protocol.input_protocol_i32(),
             })
             .await

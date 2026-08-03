@@ -270,7 +270,7 @@ impl api::livestream_server::Livestream for IngestGrpcService {
                 .map_err(|e| Status::internal(e.to_string()))?,
             api::InputProtocol::Rtsp => self
                 .control
-                .precreate_rtsp_session(live_id.clone(), request.passphrase)
+                .precreate_rtsp_session(live_id.clone())
                 .map_err(|e| Status::internal(e.to_string()))?,
             api::InputProtocol::Unspecified => {
                 return Err(Status::invalid_argument(

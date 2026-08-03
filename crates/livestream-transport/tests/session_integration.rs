@@ -34,7 +34,7 @@ async fn wait_for_state(
 async fn test_session_registry_state_transitions() {
     let registry = Arc::new(SessionRegistry::new());
     let ct = CancellationToken::new();
-    let endpoint = SessionEndpoint::new(None, None);
+    let endpoint = SessionEndpoint::new(None);
 
     let descriptor = Arc::new(tokio::sync::RwLock::new(
         livestream_transport::registry::state::SessionDescriptor {
@@ -128,7 +128,7 @@ async fn test_handler_lifecycle_full_lifecycle() {
         dispatcher.clone(),
     );
 
-    let endpoint = SessionEndpoint::new(Some(1935), None);
+    let endpoint = SessionEndpoint::new(Some(1935));
     let ct = CancellationToken::new();
 
     // pending: registers in Pending state.
@@ -179,7 +179,7 @@ async fn test_handler_lifecycle_disconnect_reason() {
         dispatcher.clone(),
     );
 
-    let endpoint = SessionEndpoint::new(Some(1935), None);
+    let endpoint = SessionEndpoint::new(Some(1935));
     let ct = CancellationToken::new();
 
     // Set up full lifecycle to Connected.

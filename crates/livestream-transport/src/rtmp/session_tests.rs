@@ -38,7 +38,7 @@ fn descriptor(id: &str) -> Arc<tokio::sync::RwLock<SessionDescriptor>> {
     Arc::new(tokio::sync::RwLock::new(SessionDescriptor {
         id: id.to_string(),
         protocol: Protocol::Rtmp,
-        endpoint: SessionEndpoint::new(None, None),
+        endpoint: SessionEndpoint::new(None),
         state: SessionState::Pending,
     }))
 }

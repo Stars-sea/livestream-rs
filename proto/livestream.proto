@@ -1,28 +1,28 @@
 syntax = "proto3";
 
-option csharp_namespace = "LiveService.Protos";
-
 package livestream;
+
+option csharp_namespace = "LiveService.Protos";
 
 // Livestream control plane for creating/stopping/querying stream sessions.
 service Livestream {
   // Start an ingest stream session and return structured session descriptor.
-  rpc StartLivestream (StartLivestreamRequest) returns (StartLivestreamResponse);
+  rpc StartLivestream(StartLivestreamRequest) returns (StartLivestreamResponse);
 
   // Stop an active ingest stream session by live_id.
-  rpc StopLivestream (StopLivestreamRequest) returns (StopLivestreamResponse);
+  rpc StopLivestream(StopLivestreamRequest) returns (StopLivestreamResponse);
 
   // List all active ingest stream descriptors currently managed by the service.
-  rpc ListLivestreams (ListLivestreamsRequest) returns (ListLivestreamsResponse);
+  rpc ListLivestreams(ListLivestreamsRequest) returns (ListLivestreamsResponse);
 
   // Query stream descriptor for an existing live_id.
-  rpc GetLivestreamInfo (GetLivestreamInfoRequest) returns (GetLivestreamInfoResponse);
+  rpc GetLivestreamInfo(GetLivestreamInfoRequest) returns (GetLivestreamInfoResponse);
 
   // Watch stream session lifecycle events for a given live_id.
-  rpc WatchLivestream (WatchLivestreamRequest) returns (stream WatchLivestreamResponse);
+  rpc WatchLivestream(WatchLivestreamRequest) returns (stream WatchLivestreamResponse);
 
   // Return the listening ports for each protocol. Ports are 0 when disabled.
-  rpc GetServiceInfo (GetServiceInfoRequest) returns (GetServiceInfoResponse);
+  rpc GetServiceInfo(GetServiceInfoRequest) returns (GetServiceInfoResponse);
 }
 
 enum InputProtocol {
@@ -42,10 +42,8 @@ enum SessionStatus {
 message StartLivestreamRequest {
   // Business stream identifier.
   string live_id = 1;
-  // Optional for RTMP, required for RTSP according to server-side validation.
-  optional string passphrase = 2;
   // Ingest protocol expected by this stream.
-  InputProtocol input_protocol = 3;
+  InputProtocol input_protocol = 2;
 }
 
 // All transport endpoints related to a stream.
@@ -58,7 +56,7 @@ message StreamEndpoints {
 
 message IngestEndpoints {
   optional RtmpEndpoint rtmp = 1;
-  optional RtspEndpoint rtsp = 3;
+  optional RtspEndpoint rtsp = 2;
 }
 
 // Playback-side endpoints.
@@ -113,8 +111,7 @@ message StopLivestreamResponse {
   bool is_success = 1;
 }
 
-message ListLivestreamsRequest {
-}
+message ListLivestreamsRequest {}
 
 message ListLivestreamsResponse {
   repeated StreamDescriptor streams = 1;
