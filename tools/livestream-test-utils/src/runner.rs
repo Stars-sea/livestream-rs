@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
-use crate::client::{ServicePorts, connect_and_get_info, stop_livestream, verify_connected};
+use crate::client::{
+    PortOverrides, ServicePorts, connect_and_get_info, stop_livestream, verify_connected,
+};
 use crate::primitives::{kill_and_wait, pull_and_verify, spawn_push};
 use crate::proto::{StartLivestreamRequest, livestream_client::LivestreamClient};
 
@@ -71,6 +73,9 @@ pub struct StreamConfig {
     pub protocol: Protocol,
     pub input_file: PathBuf,
     pub duration: Duration,
+    /// Host-reachable media port overrides (see `PortOverrides`).
+    #[serde(default)]
+    pub port_overrides: PortOverrides,
 }
 
 /// Result of a single stream test.
@@ -191,7 +196,9 @@ fn build_push_url(
             .map(|e| {
                 format!(
                     "rtmp://localhost:{}/{}/{}",
-                    e.port, e.app_name, e.stream_key
+                    config.port_overrides.rtmp.unwrap_or(e.port as u16),
+                    e.app_name,
+                    e.stream_key
                 )
             })
             .unwrap_or_else(|| {
@@ -203,7 +210,7 @@ fn build_push_url(
             .map(|e| {
                 format!(
                     "rtsp://localhost:{}/{}",
-                    e.port,
+                    config.port_overrides.rtsp.unwrap_or(e.port as u16),
                     e.path.trim_start_matches('/')
                 )
             })
@@ -242,18 +249,19 @@ pub async fn run_stress_test(config: StressConfig) -> StressReport {
 
         handles.push(tokio::spawn(async move {
             let _permit = permit;
-            let (mut client, ports) = match connect_and_get_info(&grpc_addr).await {
-                Ok(c) => c,
-                Err(e) => {
-                    return StreamResult {
-                        live_id: stream_cfg.live_id.clone(),
-                        success: false,
-                        push_latency_ms: 0,
-                        pull_frames_detected: false,
-                        errors: vec![format!("connect failed: {e}")],
-                    };
-                }
-            };
+            let (mut client, ports) =
+                match connect_and_get_info(&grpc_addr, stream_cfg.port_overrides).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return StreamResult {
+                            live_id: stream_cfg.live_id.clone(),
+                            success: false,
+                            push_latency_ms: 0,
+                            pull_frames_detected: false,
+                            errors: vec![format!("connect failed: {e}")],
+                        };
+                    }
+                };
             run_single_stream(&mut client, &ports, &stream_cfg).await
         }));
     }
@@ -290,13 +298,14 @@ pub async fn run_stress_test(config: StressConfig) -> StressReport {
 /// RTSP/RTMP sessions for external pushers (e.g. ffmpeg pushing MJPEG over
 /// RTSP) that cannot call the gRPC API themselves.
 pub async fn precreate_streams(config: &StressConfig) -> usize {
-    let (mut client, _ports) = match connect_and_get_info(&config.grpc_addr).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("precreate: connect failed: {e}");
-            return config.streams.len();
-        }
-    };
+    let (mut client, _ports) =
+        match connect_and_get_info(&config.grpc_addr, PortOverrides::default()).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("precreate: connect failed: {e}");
+                return config.streams.len();
+            }
+        };
     let mut failed = 0;
     for stream in &config.streams {
         match client

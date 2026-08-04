@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
-use livestream_test_utils::{Protocol, StreamConfig, StressConfig, run_stress_test};
+use livestream_test_utils::{PortOverrides, Protocol, StreamConfig, StressConfig, run_stress_test};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -34,6 +34,18 @@ struct Args {
     #[arg(long, default_value = "rtmp")]
     protocol: String,
 
+    /// Override the RTMP port reported by GetServiceInfo (host-reachable port).
+    #[arg(long)]
+    rtmp_port: Option<u16>,
+
+    /// Override the RTSP port reported by GetServiceInfo (host-reachable port).
+    #[arg(long)]
+    rtsp_port: Option<u16>,
+
+    /// Override the HTTP-FLV port reported by GetServiceInfo (host-reachable port).
+    #[arg(long)]
+    http_flv_port: Option<u16>,
+
     /// Base live_id for the created streams. Stream 0 gets it verbatim,
     /// subsequent streams get "-{i}" suffixes.
     #[arg(long)]
@@ -56,6 +68,8 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        // 日志走 stderr，保证 stdout 只含 JSON 报告（--json 模式依赖）。
+        .with_writer(std::io::stderr)
         .init();
 
     let args = Args::parse();
@@ -91,6 +105,11 @@ async fn main() {
             protocol,
             input_file: input_file.clone(),
             duration,
+            port_overrides: PortOverrides {
+                rtmp: args.rtmp_port,
+                rtsp: args.rtsp_port,
+                http_flv: args.http_flv_port,
+            },
         })
         .collect();
 

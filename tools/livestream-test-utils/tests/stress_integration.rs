@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use livestream_test_utils::{Protocol, StreamConfig, StressConfig, env_or, run_stress_test};
+use livestream_test_utils::{
+    PortOverrides, Protocol, StreamConfig, StressConfig, env_or, run_stress_test,
+};
 
 /// Returns the path to the test video. Looks for `testdata/sample.mp4`
 /// relative to the workspace root, or the `SAMPLE_VIDEO` env var.
@@ -45,6 +47,7 @@ async fn stress_3_streams_rtmp() {
                 protocol: Protocol::Rtmp,
                 input_file: test_input_path(),
                 duration: Duration::from_secs(10),
+                port_overrides: PortOverrides::default(),
             })
             .collect(),
         parallel: 3,

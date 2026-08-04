@@ -16,7 +16,9 @@ mod client;
 mod primitives;
 mod runner;
 
-pub use client::{ServicePorts, connect_and_get_info, stop_livestream, verify_connected};
+pub use client::{
+    PortOverrides, ServicePorts, connect_and_get_info, stop_livestream, verify_connected,
+};
 pub use primitives::{env_or, kill_and_wait, pull_and_verify, spawn_push};
 pub use runner::{
     Protocol, StreamConfig, StreamResult, StressConfig, StressReport, precreate_streams,
