@@ -15,33 +15,58 @@ use serde::Deserialize;
 #[derive(Clone, Debug, Deserialize)]
 pub struct SegmentConfig {
     /// Target duration of each TS segment in seconds.
+    #[serde(default = "default_segment_duration_secs")]
     pub duration_secs: u64,
 
     /// Directory for temporary segment files before upload.
+    #[serde(default = "default_segment_cache_dir")]
     pub cache_dir: String,
 
     /// Maximum number of segments to keep in the playlist (0 = unlimited).
+    #[serde(default = "default_playlist_size")]
     pub playlist_size: usize,
 
     /// Object key prefix in MinIO (e.g., "hls/{live_id}/").
+    #[serde(default = "default_minio_prefix")]
     pub minio_prefix: String,
 
     /// Maximum number of staged-but-not-yet-uploaded segment files.
     /// When exceeded, the oldest staged file is evicted (LRU).
     /// Prevents disk exhaustion when MinIO is unreachable.
+    #[serde(default = "default_max_staged_segments")]
     pub max_staged_segments: usize,
 }
 
 impl Default for SegmentConfig {
     fn default() -> Self {
         Self {
-            duration_secs: 10,
-            cache_dir: String::new(),
-            playlist_size: 5,
-            minio_prefix: "hls".into(),
-            max_staged_segments: 100,
+            duration_secs: default_segment_duration_secs(),
+            cache_dir: default_segment_cache_dir(),
+            playlist_size: default_playlist_size(),
+            minio_prefix: default_minio_prefix(),
+            max_staged_segments: default_max_staged_segments(),
         }
     }
+}
+
+fn default_segment_duration_secs() -> u64 {
+    10
+}
+
+fn default_segment_cache_dir() -> String {
+    String::new()
+}
+
+fn default_playlist_size() -> usize {
+    5
+}
+
+fn default_minio_prefix() -> String {
+    "hls".into()
+}
+
+fn default_max_staged_segments() -> usize {
+    100
 }
 
 // ── Transcode ──
