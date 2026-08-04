@@ -1,21 +1,17 @@
-# cargo-chef has no prebuilt image for rust 1.97 (v0.1.77 predates it), so
-# install the pinned cargo-chef version into the official rust image instead.
-FROM rust:1.97-slim AS chef
-RUN cargo install cargo-chef --locked --version 0.1.77
-WORKDIR /app
-
-FROM chef AS planner
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-FROM chef AS builder
+# The CI runner is ubuntu-26.04 (see .github/workflows/ci.yml), whose apt
+# packages provide FFmpeg 8 dev headers — the codebase uses libswscale's
+# `SwsFlags` enum, which only exists in libswscale >= 9 (FFmpeg 8). Debian
+# trixie ships FFmpeg 7.1 (flags are bare #defines there), so the image is
+# built on the same distro as CI. The runtime stage must match the builder:
+# the binary links libavcodec.so.62 / libswscale.so.9 dynamically.
+FROM ubuntu:26.04 AS chef
 
 ARG USE_MIRROR=true
 
 # Conditionally configure CN mirrors (build-time only; CI builds with
 # USE_MIRROR=false against official sources).
 RUN if [ "$USE_MIRROR" = "true" ]; then \
-    sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
+    sed -i 's|//archive.ubuntu.com|//mirrors.ustc.edu.cn|g; s|//security.ubuntu.com|//mirrors.ustc.edu.cn|g' /etc/apt/sources.list.d/ubuntu.sources && \
     mkdir -p ~/.cargo && \
     echo "[source.crates-io]" > ~/.cargo/config.toml && \
     echo "replace-with = 'tuna'" >> ~/.cargo/config.toml && \
@@ -29,6 +25,7 @@ RUN if [ "$USE_MIRROR" = "true" ]; then \
     echo "index = 'sparse+https://mirrors.ustc.edu.cn/crates.io-index/'" >> ~/.cargo/config.toml; \
     fi
 
+# Same system dependencies as the CI runner (ci.yml), including FFmpeg 8 dev headers.
 RUN apt-get update && apt-get install -y \
     build-essential \
     clang \
@@ -40,8 +37,29 @@ RUN apt-get update && apt-get install -y \
     libavutil-dev \
     libswscale-dev \
     protobuf-compiler \
+    curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Rust (rustup, like CI) and the pinned cargo-chef version.
+# cargo-chef has no prebuilt image for rust 1.97 (v0.1.77 predates it).
+RUN if [ "$USE_MIRROR" = "true" ]; then \
+    export RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static \
+    RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup; \
+    fi && \
+    curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain 1.97 && \
+    export PATH="$HOME/.cargo/bin:$PATH" && \
+    cargo install cargo-chef --locked --version 0.1.77
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /app
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
 
@@ -53,12 +71,12 @@ COPY . .
 RUN cargo build --release && \
     strip target/release/livestream
 
-FROM debian:trixie-slim
+FROM ubuntu:26.04
 
 ARG USE_MIRROR=true
 
 RUN if [ "$USE_MIRROR" = "true" ]; then \
-    sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources; \
+    sed -i 's|//archive.ubuntu.com|//mirrors.ustc.edu.cn|g; s|//security.ubuntu.com|//mirrors.ustc.edu.cn|g' /etc/apt/sources.list.d/ubuntu.sources; \
     fi
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
