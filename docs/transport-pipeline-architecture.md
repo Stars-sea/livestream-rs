@@ -98,7 +98,7 @@ RTSP 源 ANNOUNCE 的 SDP 声明 MJPEG（RFC 2435）时，`build_rtsp_pipeline` 
 | `HandlerBuilder` / `PublishHandler` / `PlayHandler` | `transport/src/rtmp/handler/` | RTMP publish/play 分发 |
 | `RtspServer` | `transport/src/rtsp/server.rs` | RTSP ingest |
 | `RtspSession` | `transport/src/rtsp/session.rs` | ANNOUNCE/SETUP/RECORD/TEARDOWN 状态机 |
-| `RtpInterleavedReader` | `transport/src/rtsp/rtp.rs` | $ + channel + length 帧解析 |
+| `RtpInterleavedReader` | `transport/src/rtsp/rtp.rs` | $ + channel + length 帧解析；RECORD 后带内 RTSP 请求（TEARDOWN/OPTIONS）识别 |
 | `SdpParser` | `transport/src/rtsp/sdp.rs` | SDP → CodecParams 提取 |
 | `HttpFlvServer` | `transport/src/http_flv/server.rs` | HTTP-FLV + /alive + /health 端点 |
 | `GrpcServer` | `transport/src/grpc/server.rs` | gRPC 控制面 + reflection + auth |

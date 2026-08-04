@@ -264,4 +264,33 @@ mod tests {
         let params = session.codec_params().unwrap();
         assert_eq!(params.len(), 2);
     }
+
+    #[test]
+    fn teardown_during_recording_acknowledged() {
+        let mut session = RtspSession::new();
+        let announce = Request::builder(Method::Announce, Version::V1_0)
+            .typed_header(&CSeq::from(1u32))
+            .build(b"v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n".to_vec());
+        session.handle_request(&announce).unwrap();
+
+        let setup = Request::builder(Method::Setup, Version::V1_0)
+            .request_uri(rtsp_types::Url::parse("rtsp://example.com/live/track1").unwrap())
+            .typed_header(&CSeq::from(2u32))
+            .build(b"".to_vec());
+        session.handle_request(&setup).unwrap();
+
+        let record = Request::builder(Method::Record, Version::V1_0)
+            .typed_header(&CSeq::from(3u32))
+            .build(b"".to_vec());
+        session.handle_request(&record).unwrap();
+        assert!(session.is_recording());
+
+        // TEARDOWN sent in-band on the same connection after RECORD.
+        let teardown = Request::builder(Method::Teardown, Version::V1_0)
+            .typed_header(&CSeq::from(4u32))
+            .build(b"".to_vec());
+        let resp = session.handle_request(&teardown).unwrap();
+        assert_eq!(resp.unwrap().status(), StatusCode::Ok);
+        assert!(session.is_teardown());
+    }
 }
