@@ -1,10 +1,10 @@
 //! livestream-pipeline: PipelineGraph, PipelineBuilder, engine, Processors, Sinks.
 //!
-//! Phase 4 — This crate builds on `livestream-core` traits to provide:
+//! This crate builds on `livestream-core` traits to provide:
 //! - `PipelineGraph` + `PipelineBuilder<Current>` type-state API
 //! - Pipeline execution engine with task layout and pad backend assignment
 //! - `FlvBroadcast` trait (breaks circular dep with transport)
-//! - Processors: OTelProbe, SeqCacheProbe, FlvMux, HlsSegmenter, Transcode (stub)
+//! - Processors: OTelProbe, SeqCacheProbe, FlvMux, HlsSegmenter, TranscodeProcessor
 //! - Sinks: FlvSink, MinIoSink
 //! - PipelineFactory convenience wiring
 
