@@ -8,6 +8,7 @@ on:
 
 permissions:
     contents: read
+    packages: write
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
@@ -55,8 +56,24 @@ jobs:
             - name: Build release
               run: cargo build --release
 
-            - name: Build Docker image (official sources)
-              run: docker build --build-arg USE_MIRROR=false -t livestream-rs:ci .
+            - name: Log in to GHCR
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Build and push Docker image (official sources)
+              # 推送到 GHCR 供主仓库（Makerverse）CI 直接拉取（AppHostFixture
+              # RemoveDockerfileBuildInCi 复用 livestream-svc:latest）。按 commit SHA 精确 tag，
+              # 避免 :latest 漂移；仅 push 事件推送（fork PR 的 GITHUB_TOKEN 无写权限）。
+              uses: docker/build-push-action@v6
+              with:
+                  build-args: USE_MIRROR=false
+                  tags: ghcr.io/stars-sea/livestream-svc:${{ github.sha }}
+                  push: ${{ github.event_name == 'push' }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
 
             - name: E2E test (stress)
               run: bash scripts/e2e-test.sh
