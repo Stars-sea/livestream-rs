@@ -13,12 +13,14 @@ mod proto {
 }
 
 mod client;
+mod minio;
 mod primitives;
 mod runner;
 
 pub use client::{
     PortOverrides, ServicePorts, connect_and_get_info, stop_livestream, verify_connected,
 };
+pub use minio::{HlsVerification, MinioConfig, parse_connection_string, verify_hls};
 pub use primitives::{env_or, kill_and_wait, pull_and_verify, spawn_push};
 pub use runner::{
     Protocol, StreamConfig, StreamResult, StressConfig, StressReport, precreate_streams,

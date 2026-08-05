@@ -19,11 +19,13 @@ license = "GPL-3.0"
 # core
 tokio = { version = "1", default-features = false }
 tokio-util = "0.7"
+futures-util = "0.3"
 crossfire = "3"
 serde = { version = "1", features = ["derive"] }
 config = "0.15"
 anyhow = "1"
 async-trait = "0.1"
+minio = "0.2"
 
 # codec / media
 bytes = "1"
@@ -67,4 +69,4 @@ tracing-subscriber.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 config.workspace = true
-minio = "0.2"
+minio.workspace = true

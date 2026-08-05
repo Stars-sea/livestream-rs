@@ -11,6 +11,7 @@ use tokio::time::sleep;
 use crate::client::{
     PortOverrides, ServicePorts, connect_and_get_info, stop_livestream, verify_connected,
 };
+use crate::minio::{HLS_VERIFY_TIMEOUT, MinioConfig, verify_hls};
 use crate::primitives::{kill_and_wait, pull_and_verify, spawn_push};
 use crate::proto::{StartLivestreamRequest, livestream_client::LivestreamClient};
 
@@ -85,6 +86,12 @@ pub struct StreamResult {
     pub success: bool,
     pub push_latency_ms: u64,
     pub pull_frames_detected: bool,
+    /// Whether HLS segment + playlist objects were observed in MinIO.
+    #[serde(default)]
+    pub hls_verified: bool,
+    /// Number of `.ts` objects observed at verification time.
+    #[serde(default)]
+    pub hls_segments: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
 }
@@ -95,6 +102,9 @@ pub struct StressConfig {
     pub streams: Vec<StreamConfig>,
     pub parallel: usize,
     pub grpc_addr: String,
+    /// MinIO access config; when set, HLS persistence is verified per stream.
+    #[serde(default)]
+    pub minio: Option<MinioConfig>,
 }
 
 /// Stress test report.
@@ -114,6 +124,7 @@ pub async fn run_single_stream(
     client: &mut LivestreamClient<tonic::transport::Channel>,
     ports: &ServicePorts,
     config: &StreamConfig,
+    minio: Option<&MinioConfig>,
 ) -> StreamResult {
     let t0 = Instant::now();
     let mut errors: Vec<String> = vec![];
@@ -149,7 +160,39 @@ pub async fn run_single_stream(
         errors.push(format!("verify_connected: {e}"));
     }
 
+    // HLS persistence check runs concurrently with the pull: the first
+    // segment + playlist appear ~10s into the push (segment duration 10s,
+    // keyframes every 0.5s in sample.mp4), well inside the 12s window.
+    let hls_handle = minio.map(|m| {
+        let m = m.clone();
+        let live_id = config.live_id.clone();
+        tokio::spawn(async move { verify_hls(&m, &live_id).await })
+    });
+
     let pull_frames = run_pull_verify(config, ports, &mut errors).await;
+
+    let (hls_verified, hls_segments) = match hls_handle {
+        Some(h) => match h.await {
+            Ok(Ok(v)) => {
+                if !v.verified {
+                    errors.push(format!(
+                        "hls: no segment objects uploaded within {HLS_VERIFY_TIMEOUT:?} (found {} .ts, playlist missing or absent)",
+                        v.segments
+                    ));
+                }
+                (v.verified, v.segments)
+            }
+            Ok(Err(e)) => {
+                errors.push(format!("hls verify failed: {e}"));
+                (false, 0)
+            }
+            Err(e) => {
+                errors.push(format!("hls verify task panicked: {e}"));
+                (false, 0)
+            }
+        },
+        None => (false, 0),
+    };
 
     kill_and_wait(&mut push);
     stop_livestream(client, &config.live_id).await;
@@ -159,6 +202,8 @@ pub async fn run_single_stream(
         success: errors.is_empty(),
         push_latency_ms: push_latency,
         pull_frames_detected: pull_frames,
+        hls_verified,
+        hls_segments,
         errors,
     }
 }
@@ -174,6 +219,8 @@ fn stream_error(
         success: false,
         push_latency_ms: latency_ms,
         pull_frames_detected: frames,
+        hls_verified: false,
+        hls_segments: 0,
         errors: errors.to_vec(),
     }
 }
@@ -246,6 +293,7 @@ pub async fn run_stress_test(config: StressConfig) -> StressReport {
         let permit = sem.clone().acquire_owned().await;
         let stream_cfg = stream_cfg.clone();
         let grpc_addr = config.grpc_addr.clone();
+        let minio = config.minio.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = permit;
@@ -258,11 +306,13 @@ pub async fn run_stress_test(config: StressConfig) -> StressReport {
                             success: false,
                             push_latency_ms: 0,
                             pull_frames_detected: false,
+                            hls_verified: false,
+                            hls_segments: 0,
                             errors: vec![format!("connect failed: {e}")],
                         };
                     }
                 };
-            run_single_stream(&mut client, &ports, &stream_cfg).await
+            run_single_stream(&mut client, &ports, &stream_cfg, minio.as_ref()).await
         }));
     }
 
@@ -276,6 +326,8 @@ pub async fn run_stress_test(config: StressConfig) -> StressReport {
                     success: false,
                     push_latency_ms: 0,
                     pull_frames_detected: false,
+                    hls_verified: false,
+                    hls_segments: 0,
                     errors: vec![format!("task panic: {e}")],
                 });
             }

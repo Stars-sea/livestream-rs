@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use livestream_test_utils::{PortOverrides, Protocol, StreamConfig, StressConfig, run_stress_test};
 
@@ -59,15 +60,33 @@ struct Args {
     /// Output JSON report to stdout
     #[arg(long)]
     json: bool,
+
+    /// MinIO connection string (Endpoint=...;AccessKey=...;SecretKey=...).
+    /// When set, HLS persistence is verified for every stream.
+    #[arg(long)]
+    minio_connection_string: Option<String>,
+
+    /// MinIO bucket for HLS objects (used when the connection string has no Bucket key).
+    #[arg(long, default_value = "videos")]
+    minio_bucket: String,
 }
+
+/// live_id for stream `i`: base verbatim for stream 0, "{base}-{i}" otherwise,
+/// "stress-{i}" when no base is given.
+fn stream_live_id(base: Option<&str>, i: usize) -> String {
+    match base {
+        Some(b) if i == 0 => b.to_string(),
+        Some(b) => format!("{b}-{i}"),
+        None => format!("stress-{i}"),
+    }
+}
+
 #[tokio::main]
-#[allow(clippy::excessive_nesting)]
-async fn main() {
+async fn main() -> Result<()> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+        .with_env_filter(filter)
         // 日志走 stderr，保证 stdout 只含 JSON 报告（--json 模式依赖）。
         .with_writer(std::io::stderr)
         .init();
@@ -77,39 +96,37 @@ async fn main() {
     let protocol = match args.protocol.as_str() {
         "rtmp" => Protocol::Rtmp,
         "rtsp" => Protocol::Rtsp,
-        other => {
-            eprintln!("unknown protocol: {other} (use rtmp or rtsp)");
-            std::process::exit(1);
-        }
+        other => bail!("unknown protocol: {other} (use rtmp or rtsp)"),
     };
-
     let duration = Duration::from_secs(args.duration);
     let parallel = args.parallel.unwrap_or(args.streams);
 
     let input_file = match &args.input_file {
         Some(p) => p.clone(),
         None if args.precreate_only => PathBuf::new(),
-        None => {
-            eprintln!("--input-file is required unless --precreate-only is set");
-            std::process::exit(1);
-        }
+        None => bail!("--input-file is required unless --precreate-only is set"),
     };
 
+    let minio = match &args.minio_connection_string {
+        Some(conn) => Some(
+            livestream_test_utils::parse_connection_string(conn, &args.minio_bucket)
+                .context("invalid --minio-connection-string")?,
+        ),
+        None => None,
+    };
+
+    let port_overrides = PortOverrides {
+        rtmp: args.rtmp_port,
+        rtsp: args.rtsp_port,
+        http_flv: args.http_flv_port,
+    };
     let streams: Vec<StreamConfig> = (0..args.streams)
         .map(|i| StreamConfig {
-            live_id: match &args.live_id {
-                Some(base) if i == 0 => base.clone(),
-                Some(base) => format!("{base}-{i}"),
-                None => format!("stress-{i}"),
-            },
+            live_id: stream_live_id(args.live_id.as_deref(), i),
             protocol,
             input_file: input_file.clone(),
             duration,
-            port_overrides: PortOverrides {
-                rtmp: args.rtmp_port,
-                rtsp: args.rtsp_port,
-                http_flv: args.http_flv_port,
-            },
+            port_overrides,
         })
         .collect();
 
@@ -117,40 +134,42 @@ async fn main() {
         streams,
         parallel,
         grpc_addr: args.grpc_addr,
+        minio,
     };
 
     if args.precreate_only {
         let failed = livestream_test_utils::precreate_streams(&config).await;
-        if failed > 0 {
-            eprintln!("precreate failed for {failed} stream(s)");
-            std::process::exit(1);
-        }
-        return;
+        ensure!(failed == 0, "precreate failed for {failed} stream(s)");
+        return Ok(());
     }
 
     let report = run_stress_test(config).await;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).context("serialize stress report")?
+        );
     } else {
         println!("Stress test complete:");
         println!("  Total: {}", report.total_streams);
         println!("  Success: {}", report.successful);
         println!("  Failed: {}", report.failed);
         println!("  Duration: {:.1}s", report.total_duration_secs);
-        let mut fail_count = 0usize;
-        for r in &report.per_stream {
-            if !r.success {
-                fail_count += 1;
-                println!("  [FAIL] {} errors: {:?}", r.live_id, r.errors);
-            }
+        for r in report.per_stream.iter().filter(|r| !r.success) {
+            println!("  [FAIL] {} errors: {:?}", r.live_id, r.errors);
         }
-        if fail_count == 0 {
+        if report.failed == 0 {
             println!("  All {} streams succeeded.", report.total_streams);
         }
     }
 
     if report.failed > 0 {
-        std::process::exit(1);
+        bail!(
+            "stress test failed: {}/{} streams",
+            report.failed,
+            report.total_streams
+        );
     }
+    Ok(())
 }

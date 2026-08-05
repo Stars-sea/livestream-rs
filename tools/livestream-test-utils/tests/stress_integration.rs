@@ -52,6 +52,7 @@ async fn stress_3_streams_rtmp() {
             .collect(),
         parallel: 3,
         grpc_addr: grpc_addr_from_env(),
+        minio: None,
     };
     let report = run_stress_test(config).await;
     assert_eq!(
