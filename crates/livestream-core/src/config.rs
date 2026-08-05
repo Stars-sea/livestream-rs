@@ -287,11 +287,11 @@ fn default_http_flv_max_connections() -> usize {
 }
 
 fn default_transcode_bitrate_kbps() -> u64 {
-    1024
+    4096
 }
 
 fn default_transcode_preset() -> String {
-    "veryfast".to_string()
+    "medium".to_string()
 }
 
 fn default_transcode_gop_secs() -> f64 {

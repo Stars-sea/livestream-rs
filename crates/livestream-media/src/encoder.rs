@@ -43,13 +43,24 @@ impl Encoder {
         pix_fmt: AVPixelFormat,
         time_base: AVRational,
         bit_rate: i64,
+        framerate: AVRational,
     ) -> Result<Self> {
         // SAFETY: avcodec_find_encoder returns a static descriptor or NULL.
         let codec = unsafe { avcodec_find_encoder(codec_id) };
         if codec.is_null() {
             anyhow::bail!("Encoder not found for codec ID: {:?}", codec_id);
         }
-        Self::init(codec, width, height, pix_fmt, time_base, bit_rate, 60, &[])
+        Self::init(
+            codec,
+            width,
+            height,
+            pix_fmt,
+            time_base,
+            bit_rate,
+            60,
+            framerate,
+            &[],
+        )
     }
 
     /// Create a new encoder by codec name (e.g., `"libx264"`).
@@ -63,6 +74,7 @@ impl Encoder {
         pix_fmt: AVPixelFormat,
         time_base: AVRational,
         bit_rate: i64,
+        framerate: AVRational,
     ) -> Result<Self> {
         Self::new_named_with_opts(
             codec_name,
@@ -72,19 +84,20 @@ impl Encoder {
             time_base,
             bit_rate,
             60,
+            framerate,
             &[],
         )
     }
 
-    /// Create an encoder by name with pre-open tuning: GOP size and private
-    /// options (e.g. libx264 `preset`/`tune`) are applied to the context
-    /// **before** `avcodec_open2`.
+    /// Create an encoder by name with pre-open tuning: GOP size, frame rate,
+    /// and private options (e.g. libx264 `preset`/`tune`) are applied to the
+    /// context **before** `avcodec_open2`.
     ///
-    /// This matters: libx264 reads `gop_size` and its private options once
-    /// during open — setting them afterwards (see [`Encoder::set_gop_size`],
-    /// [`Encoder::apply_private_option`]) has no effect on the running
-    /// encoder. Private options unknown to the encoder are logged at debug
-    /// level and skipped; they never fail construction.
+    /// This matters: libx264 reads `gop_size`, `framerate`, and its private
+    /// options once during open — setting them afterwards (see
+    /// [`Encoder::set_gop_size`], [`Encoder::apply_private_option`]) has no
+    /// effect on the running encoder. Private options unknown to the encoder
+    /// are logged at debug level and skipped; they never fail construction.
     #[allow(clippy::too_many_arguments)]
     pub fn new_named_with_opts(
         codec_name: &str,
@@ -94,6 +107,7 @@ impl Encoder {
         time_base: AVRational,
         bit_rate: i64,
         gop_size: i32,
+        framerate: AVRational,
         options: &[(&str, &str)],
     ) -> Result<Self> {
         let c_name = CString::new(codec_name)?;
@@ -103,7 +117,7 @@ impl Encoder {
             anyhow::bail!("Encoder not found by name: {}", codec_name);
         }
         Self::init(
-            codec, width, height, pix_fmt, time_base, bit_rate, gop_size, options,
+            codec, width, height, pix_fmt, time_base, bit_rate, gop_size, framerate, options,
         )
     }
 
@@ -117,6 +131,7 @@ impl Encoder {
         time_base: AVRational,
         bit_rate: i64,
         gop_size: i32,
+        framerate: AVRational,
         options: &[(&str, &str)],
     ) -> Result<Self> {
         // SAFETY: avcodec_alloc_context3 returns a heap-allocated context or NULL.
@@ -132,6 +147,7 @@ impl Encoder {
             (*ctx).height = height;
             (*ctx).pix_fmt = pix_fmt;
             (*ctx).time_base = time_base;
+            (*ctx).framerate = framerate;
             (*ctx).bit_rate = bit_rate;
             (*ctx).gop_size = gop_size;
             (*ctx).max_b_frames = 0;
@@ -249,6 +265,12 @@ impl Encoder {
         unsafe { (*self.ctx).time_base }
     }
 
+    /// Get the frame rate the encoder was opened with.
+    pub fn framerate(&self) -> AVRational {
+        // SAFETY: reading field from valid AVCodecContext pointer.
+        unsafe { (*self.ctx).framerate }
+    }
+
     /// Get the encoder's pixel format.
     pub fn pixel_format(&self) -> AVPixelFormat {
         // SAFETY: reading field from valid AVCodecContext pointer.
@@ -291,6 +313,7 @@ mod tests {
             AVPixelFormat::AV_PIX_FMT_YUV420P,
             AVRational { num: 1, den: 30 },
             2_000_000,
+            AVRational { num: 30, den: 1 },
         );
         assert!(enc.is_ok());
     }
@@ -304,6 +327,7 @@ mod tests {
             AVPixelFormat::AV_PIX_FMT_YUV420P,
             AVRational { num: 1, den: 25 },
             1_000_000,
+            AVRational { num: 25, den: 1 },
         )
         .unwrap();
         assert_eq!(enc.width(), 1280);
@@ -311,6 +335,8 @@ mod tests {
         assert_eq!(enc.pixel_format(), AVPixelFormat::AV_PIX_FMT_YUV420P);
         assert_eq!(enc.time_base().num, 1);
         assert_eq!(enc.time_base().den, 25);
+        assert_eq!(enc.framerate().num, 25);
+        assert_eq!(enc.framerate().den, 1);
     }
 
     #[test]
@@ -324,6 +350,7 @@ mod tests {
             AVPixelFormat::AV_PIX_FMT_YUV420P,
             AVRational { num: 1, den: 1000 },
             1_000_000,
+            AVRational { num: 30, den: 1 },
         ) {
             Ok(_) => {}
             Err(e) => {
@@ -346,6 +373,7 @@ mod tests {
             AVPixelFormat::AV_PIX_FMT_YUV420P,
             AVRational { num: 1, den: 1000 },
             1_000_000,
+            AVRational { num: 30, den: 1 },
         )
         .unwrap();
         enc.set_gop_size(30);

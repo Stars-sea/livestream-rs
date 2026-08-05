@@ -44,6 +44,11 @@ struct TranscodeState {
     frames_since_init: u64,
     /// Last kept frame's `floor(pts_ms / interval)` bucket for fps downsampling.
     last_kept_slot: i64,
+    /// Frame rate handed to the current encoder (rate-control fps assumption).
+    fps_assumed: f64,
+    /// Smallest observed inter-frame delta (ms) since the encoder was created;
+    /// used to recalibrate the encoder's fps when `cfg.fps` is unset.
+    min_delta_ms: Option<i64>,
 }
 
 /// Decodes MJPEG packets and re-encodes them as H.264 (Annex B, avcC
@@ -96,6 +101,8 @@ impl TranscodeProcessor {
                 last_pts: 0,
                 frames_since_init: 0,
                 last_kept_slot: i64::MIN,
+                fps_assumed: 30.0,
+                min_delta_ms: None,
             }),
             emitted_seq_header: AtomicBool::new(false),
             output_params: OnceLock::new(),
@@ -172,6 +179,7 @@ impl TranscodeProcessor {
         mut frame: Frame,
         out: &mut Vec<EncodedPacket>,
     ) {
+        let prev_pts = state.last_pts;
         let pts = match frame.pts() {
             Some(p) => p,
             None => {
@@ -185,6 +193,19 @@ impl TranscodeProcessor {
 
         if !self.should_keep_frame(state, pts) {
             return;
+        }
+
+        // Measure the source cadence while the encoder is young. With
+        // `cfg.fps` unset the fps filter is inactive, so consecutive kept
+        // frames reflect the real source frame rate; the smallest delta wins
+        // (tolerates a dropped frame or start pause). `encode_frame` uses
+        // this to recalibrate the encoder's fps assumption. Deltas < 5 ms
+        // are jitter/duplicate timestamps and are ignored.
+        if self.cfg.fps.is_none() && state.frames_since_init > 0 && state.frames_since_init <= 5 {
+            let delta = pts - prev_pts;
+            if delta >= 5 {
+                state.min_delta_ms = Some(state.min_delta_ms.map_or(delta, |m| m.min(delta)));
+            }
         }
 
         if let Err(e) = self.encode_frame(state, &frame, out) {
@@ -225,6 +246,81 @@ impl TranscodeProcessor {
         true
     }
 
+    /// Recalibrate the encoder's fps from the measured source cadence (see
+    /// `process_frame`) when it drifts >10% from the assumption. Only active
+    /// while `cfg.fps` is unset and the encoder is young (first 6 frames).
+    /// The old encoder is dropped — its packets were already emitted — and
+    /// the new one opens with a fresh IDR, which is harmless to FLV (in-band
+    /// SPS on keyframes) and HLS (keyframe boundaries).
+    fn maybe_recalibrate_encoder(
+        &self,
+        state: &mut TranscodeState,
+        ew: i32,
+        eh: i32,
+    ) -> Result<()> {
+        if self.cfg.fps.is_some() || state.frames_since_init > 5 {
+            return Ok(());
+        }
+        let Some(delta) = state.min_delta_ms else {
+            return Ok(());
+        };
+        let derived = 1000.0 / delta as f64;
+        let drift = (derived - state.fps_assumed).abs() / state.fps_assumed;
+        if drift <= 0.1 {
+            return Ok(());
+        }
+        tracing::debug!(
+            stream = %self.stream_id,
+            assumed_fps = state.fps_assumed,
+            derived_fps = derived,
+            "recreating encoder with measured source frame rate"
+        );
+        state.encoder = Some(self.create_encoder(ew, eh, derived)?);
+        state.fps_assumed = derived;
+        Ok(())
+    }
+
+    /// Create the H.264 encoder for the given frame dimensions and fps.
+    ///
+    /// The time base stays 1/1000 (PTS is in ms) but `framerate` is set
+    /// explicitly before open: libx264 derives its rate-control fps from
+    /// `framerate`, falling back to the time base — which would read as
+    /// 1000 fps and starve every frame to ~bitrate/1000 bits (QP pinned at
+    /// ~51 regardless of the configured bitrate). preset/tune are also read
+    /// at open time, so they must be applied before construction returns
+    /// (post-open setters are no-ops for libx264). tune=zerolatency disables
+    /// lookahead so x264 emits each frame immediately instead of buffering.
+    fn create_encoder(&self, ew: i32, eh: i32, fps: f64) -> Result<Encoder> {
+        let bit_rate = (self.cfg.bitrate_kbps * 1000) as i64;
+        let time_base = AVRational { num: 1, den: 1000 };
+        let framerate = fps_to_rational(fps);
+        // GOP target in frames; keyframe interval in seconds matches
+        // `gop_secs` because the same fps feeds framerate and gop_frames.
+        let gop_frames = (self.cfg.gop_secs * fps).round().max(1.0) as i32;
+        Encoder::new_named_with_opts(
+            "libx264",
+            ew,
+            eh,
+            AVPixelFormat::AV_PIX_FMT_YUV420P,
+            time_base,
+            bit_rate,
+            gop_frames,
+            framerate,
+            &[("preset", &self.cfg.preset), ("tune", "zerolatency")],
+        )
+        .or_else(|_| {
+            Encoder::new(
+                AVCodecID::AV_CODEC_ID_H264,
+                ew,
+                eh,
+                AVPixelFormat::AV_PIX_FMT_YUV420P,
+                time_base,
+                bit_rate,
+                framerate,
+            )
+        })
+    }
+
     /// Encode one decoded frame into H.264 packets. The encoder is created
     /// lazily on the first frame (dimensions are only known after decode);
     /// per-frame failures drop the frame without interrupting the stream.
@@ -244,36 +340,14 @@ impl TranscodeProcessor {
         let eh = h & !1;
 
         if state.encoder.is_none() {
-            let bit_rate = (self.cfg.bitrate_kbps * 1000) as i64;
-            let time_base = AVRational { num: 1, den: 1000 };
-            // GOP target; approximate when the source fps is unknown.
-            let fps = self.cfg.fps.unwrap_or(15.0);
-            let gop_frames = (self.cfg.gop_secs * fps).round().max(1.0) as i32;
-            // preset/tune are read by libx264 at open time, so they must be
-            // applied before construction returns (post-open setters are
-            // no-ops for libx264). tune=zerolatency disables lookahead so
-            // x264 emits each frame immediately instead of buffering.
-            let encoder = Encoder::new_named_with_opts(
-                "libx264",
-                ew,
-                eh,
-                AVPixelFormat::AV_PIX_FMT_YUV420P,
-                time_base,
-                bit_rate,
-                gop_frames,
-                &[("preset", &self.cfg.preset), ("tune", "zerolatency")],
-            )
-            .or_else(|_| {
-                Encoder::new(
-                    AVCodecID::AV_CODEC_ID_H264,
-                    ew,
-                    eh,
-                    AVPixelFormat::AV_PIX_FMT_YUV420P,
-                    time_base,
-                    bit_rate,
-                )
-            })?;
-            state.encoder = Some(encoder);
+            // First frame: use the configured fps, else a 30 fps guess. The
+            // guess only affects the first few frames — cadence measurement
+            // below recalibrates the encoder when it is materially wrong.
+            let fps = self.cfg.fps.unwrap_or(30.0);
+            state.encoder = Some(self.create_encoder(ew, eh, fps)?);
+            state.fps_assumed = fps;
+        } else {
+            self.maybe_recalibrate_encoder(state, ew, eh)?;
         }
         let encoder = state.encoder.as_mut().expect("encoder just initialized");
 
@@ -460,6 +534,23 @@ impl Processor for TranscodeProcessor {
         self.maybe_emit_sequence_header(&mut out);
 
         Ok(out)
+    }
+}
+
+/// Convert an f64 fps into a reduced `AVRational` (denominator 1000 before
+/// reduction): 25.0 → {25, 1}; 1000/33 ≈ 30.303 → {30303, 1000}.
+fn fps_to_rational(fps: f64) -> AVRational {
+    let num = (fps * 1000.0).round().max(1.0) as i64;
+    let mut a = num;
+    let mut b = 1000i64;
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    AVRational {
+        num: (num / a) as i32,
+        den: (1000 / a) as i32,
     }
 }
 
